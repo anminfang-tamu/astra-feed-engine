@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "MessageType.hpp"
@@ -18,4 +19,6 @@ struct WireMessage {      // 38 bytes
 };
 #pragma pack(pop)
 
-static_assert(sizeof(WireMessage) == 38, "WireMessage layout changed");
+constexpr std::size_t WireMessageSize = 38;
+static_assert(sizeof(WireMessage) == WireMessageSize,
+              "WireMessage layout changed");

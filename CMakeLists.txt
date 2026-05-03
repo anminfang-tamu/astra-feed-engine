@@ -5,6 +5,8 @@ project(astra_feed_engine
     LANGUAGES CXX
 )
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(ASTRA_BUILD_APPS "Build application binaries" OFF)
 option(ASTRA_BUILD_TESTS "Build tests" ON)
 option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
