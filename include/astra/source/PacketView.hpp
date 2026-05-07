@@ -1,8 +1,8 @@
 #include <cstddef>
 #include <cstdint>
 
-struct PacketView {
-  const std::byte *data{nullptr};
-  std::size_t size{0};
-  uint64_t receive_ts_ns{0};
+struct PacketView {               // 24 bytes
+  const std::byte *data{nullptr}; // 8 bytes
+  std::size_t size{0};            // 8 bytes
+  uint64_t receive_ts_ns{0};      // 8 bytes
 };

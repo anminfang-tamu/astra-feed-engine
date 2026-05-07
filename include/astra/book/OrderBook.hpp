@@ -1,0 +1,71 @@
+#pragma once
+
+#include "BookUpdate.hpp"
+#include "TopOfBook.hpp"
+#include "astra/book/Order.hpp"
+#include "astra/book/OrderAction.hpp"
+#include "astra/book/PriceLevel.hpp"
+#include "astra/protocol/MarketDataMessage.hpp"
+#include "astra/protocol/OrderSide.hpp"
+#include "astra/utils/Bitmap.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
+#include <vector>
+
+class OrderBook {
+public:
+  explicit OrderBook(uint32_t symbol_id);
+
+  void addOrder(const MarketDataMessage &msg);
+  void modifyOrder(const MarketDataMessage &msg);
+  void deleteOrder(const MarketDataMessage &msg);
+  void trade(const MarketDataMessage &msg);
+
+  TopOfBook getTopOfBook() const;
+  BookUpdate getBookUpdate() const;
+
+private:
+  // order
+  Order *allocateOrder();
+  void freeOrder(Order *order);
+
+  // price level management
+  PriceLevel *findPriceLevel(uint32_t price, OrderSide side);
+  PriceLevel *findOrCreatePriceLevel(uint32_t price, OrderSide side);
+  void removePriceLevelIfEmpty(uint32_t price, OrderSide side);
+  void updatePriceLevelLinks(Order *order, PriceLevel *pl, OrderAction action);
+  uint32_t priceIndex(uint32_t price) const;
+  void markPriceLevelActive(uint32_t price_index, OrderSide side);
+  void markPriceLevelInactive(uint32_t price_index, OrderSide side);
+
+  // best bid/ask management
+  void updateBestOnAdd(uint32_t price_index, OrderSide side);
+  void updateBestOnRemove(uint32_t price_index, OrderSide side);
+
+  uint32_t symbol_id_;
+
+  // Order pool
+  static constexpr size_t kOrderPoolSize = 1 << 20; // 1 million orders
+  static constexpr uint32_t kPriceScale = 10000;
+  static constexpr uint32_t kNoPriceIndex =
+      std::numeric_limits<uint32_t>::max();
+  std::vector<Order> order_pool_;
+  std::vector<uint32_t> free_list_; // stack of free order indices
+
+  // Price levels for bids and asks, indexed by normalized price.
+  std::vector<PriceLevel> bid_levels_;
+  std::vector<PriceLevel> ask_levels_;
+
+  Bitmap bid_bitmap_;
+  Bitmap ask_bitmap_;
+
+  // Best bid and ask are normalized price indexes.
+  uint32_t best_bid_;
+  uint32_t best_ask_;
+
+  // Tracking orders by ID for quick access
+  std::unordered_map<uint64_t, uint32_t> order_by_id_;
+};

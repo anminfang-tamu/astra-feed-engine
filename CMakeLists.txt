@@ -34,6 +34,7 @@ add_library(astra_feed_engine STATIC
     src/utils/Logger.cpp
     src/utils/MemoryPool.cpp
     src/utils/RingBuffer.cpp
+    src/utils/Bitmap.cpp
 )
 
 add_library(astra::feed_engine ALIAS astra_feed_engine)
