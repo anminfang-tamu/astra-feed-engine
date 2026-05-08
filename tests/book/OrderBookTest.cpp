@@ -117,6 +117,32 @@ TEST(OrderBookTest, ModifyOrderMovesBestBidToNewPrice) {
   EXPECT_EQ(top.bid_qty, 75u);
 }
 
+TEST(OrderBookTest, HandlesSparseLargeOrderIdWithoutDenseAllocation) {
+  constexpr uint64_t large_order_id = 9'000'000'000'000'000'000ULL;
+  OrderBook book(42);
+
+  ASSERT_NO_THROW(book.addOrder(makeMessage(
+      large_order_id, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder)));
+
+  TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 100u);
+
+  ASSERT_NO_THROW(book.modifyOrder(makeMessage(
+      large_order_id, 42, 12, 40, OrderSide::Buy, MessageType::ModifyOrder)));
+
+  top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 12u);
+  EXPECT_EQ(top.bid_qty, 40u);
+
+  ASSERT_NO_THROW(book.deleteOrder(makeMessage(
+      large_order_id, 42, 0, 0, OrderSide::Buy, MessageType::DeleteOrder)));
+
+  top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty, 0u);
+}
+
 TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
   OrderBook book(42);
 

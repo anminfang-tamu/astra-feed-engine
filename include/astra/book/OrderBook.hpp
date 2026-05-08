@@ -9,10 +9,11 @@
 #include "astra/protocol/OrderSide.hpp"
 #include "astra/utils/Bitmap.hpp"
 
+#include "absl/container/flat_hash_map.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <unordered_map>
 #include <vector>
 
 class OrderBook {
@@ -31,6 +32,7 @@ private:
   // order
   Order *allocateOrder();
   void freeOrder(Order *order);
+  Order *findOrder(uint64_t order_id);
 
   // price level management
   PriceLevel *findPriceLevel(uint32_t price, OrderSide side);
@@ -66,6 +68,7 @@ private:
   uint32_t best_bid_;
   uint32_t best_ask_;
 
-  // Tracking orders by ID for quick access
-  std::unordered_map<uint64_t, uint32_t> order_by_id_;
+  // Tracking orders by ID for quick access.
+  // order_id -> order pool index
+  absl::flat_hash_map<uint64_t, uint32_t> order_by_id_;
 };

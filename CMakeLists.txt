@@ -12,6 +12,21 @@ option(ASTRA_BUILD_TESTS "Build tests" ON)
 option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
 
+find_package(absl QUIET)
+
+if(NOT absl_FOUND)
+    include(FetchContent)
+
+    set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+    set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        abseil
+        URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.1.zip
+    )
+    FetchContent_MakeAvailable(abseil)
+endif()
+
 add_library(astra_feed_engine STATIC
     src/book/BookManager.cpp
     src/book/OrderBook.cpp
@@ -44,6 +59,11 @@ target_compile_features(astra_feed_engine PUBLIC cxx_std_20)
 target_include_directories(astra_feed_engine
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(astra_feed_engine
+    PUBLIC
+        absl::flat_hash_map
 )
 
 target_compile_options(astra_feed_engine
