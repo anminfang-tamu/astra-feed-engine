@@ -18,5 +18,6 @@ private:
 
   static constexpr uint32_t kBitmapWordBits = 64;
   static constexpr uint32_t kNoIndex = std::numeric_limits<uint32_t>::max();
+
   std::vector<uint64_t> words_;
 };

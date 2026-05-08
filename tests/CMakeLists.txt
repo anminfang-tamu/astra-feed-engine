@@ -17,6 +17,7 @@ endif()
 
 add_executable(astra_tests
     book/OrderBookTest.cpp
+    utils/BitmapTest.cpp
 )
 
 target_link_libraries(astra_tests
