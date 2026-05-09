@@ -40,14 +40,10 @@ void BookManager::onMessage(const MarketDataMessage &msg) {
 }
 
 const OrderBook *BookManager::getOrderBook(uint32_t symbol_id) const {
-  if (symbol_id >= book_by_symbol_id_.size()) {
-    return nullptr;
-  }
-
-  return book_by_symbol_id_[symbol_id];
+  return findOrderBook(symbol_id);
 }
 
-OrderBook *BookManager::findOrderBook(uint32_t symbol_id) {
+OrderBook *BookManager::findOrderBook(uint32_t symbol_id) const {
   if (symbol_id >= book_by_symbol_id_.size()) {
     return nullptr;
   }

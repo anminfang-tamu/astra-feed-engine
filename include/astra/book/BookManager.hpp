@@ -16,7 +16,7 @@ public:
   const OrderBook *getOrderBook(uint32_t symbol_id) const;
 
 private:
-  OrderBook *findOrderBook(uint32_t symbol_id);
+  OrderBook *findOrderBook(uint32_t symbol_id) const;
   OrderBook *getOrCreateOrderBook(uint32_t symbol_id);
 
   std::vector<std::unique_ptr<OrderBook>> books_;
