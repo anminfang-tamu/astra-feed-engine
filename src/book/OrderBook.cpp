@@ -13,6 +13,10 @@ OrderBook::OrderBook(uint32_t symbol_id)
 }
 
 Order *OrderBook::allocateOrder() {
+  if (free_list_.empty()) {
+    return nullptr;
+  }
+
   uint32_t index = free_list_.back();
   free_list_.pop_back();
   Order *order = &order_pool_[index];
@@ -148,8 +152,16 @@ void OrderBook::updatePriceLevelLinks(Order *order, PriceLevel *pl,
 }
 
 void OrderBook::addOrder(const MarketDataMessage &msg) {
+  if (msg.qty == 0 || findOrder(msg.order_id) != nullptr) {
+    return;
+  }
+
   // allocate a new order from the pool
   Order *order = allocateOrder();
+  if (order == nullptr) {
+    return;
+  }
+
   order->order_id = msg.order_id;
   order->symbol_id = symbol_id_;
   order->price = msg.price;
@@ -176,6 +188,11 @@ void OrderBook::addOrder(const MarketDataMessage &msg) {
 void OrderBook::modifyOrder(const MarketDataMessage &msg) {
   Order *order = findOrder(msg.order_id);
   if (order == nullptr) {
+    return;
+  }
+
+  if (msg.qty == 0) {
+    deleteOrder(msg);
     return;
   }
 
@@ -238,10 +255,18 @@ void OrderBook::deleteOrder(const MarketDataMessage &msg) {
 }
 
 void OrderBook::trade(const MarketDataMessage &msg) {
+  if (msg.qty == 0) {
+    return;
+  }
+
   Order *order = findOrder(msg.order_id);
   if (order == nullptr) {
     return;
   }
+  if (msg.qty > order->qty) {
+    return;
+  }
+
   PriceLevel *pl = findPriceLevel(order->price, order->side);
   if (pl == nullptr || pl->qty < msg.qty || pl->num_orders == 0) {
     return;

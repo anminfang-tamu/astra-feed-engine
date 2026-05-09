@@ -1,4 +1,5 @@
 #include "astra/book/OrderBook.hpp"
+#include "astra/book/TopOfBook.hpp"
 
 #include <gtest/gtest.h>
 
@@ -168,4 +169,162 @@ TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
   EXPECT_EQ(update.asks[0].qty, 75u);
   EXPECT_EQ(update.asks[1].price, 13u);
   EXPECT_EQ(update.asks[1].qty, 25u);
+}
+
+TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.addOrder(
+      makeMessage(2, 42, 10, 40, OrderSide::Buy, MessageType::AddOrder));
+
+  TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 140u);
+
+  book.deleteOrder(
+      makeMessage(1, 42, 0, 0, OrderSide::Buy, MessageType::DeleteOrder));
+
+  top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 40u);
+}
+
+TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.trade(makeMessage(1, 42, 0, 25, OrderSide::Buy, MessageType::Trade));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 75u);
+}
+
+TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.addOrder(
+      makeMessage(2, 42, 11, 50, OrderSide::Buy, MessageType::AddOrder));
+
+  book.trade(makeMessage(2, 42, 0, 50, OrderSide::Buy, MessageType::Trade));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 100u);
+}
+
+TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.addOrder(
+      makeMessage(2, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+
+  book.trade(makeMessage(1, 42, 0, 150, OrderSide::Buy, MessageType::Trade));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 200u);
+}
+
+TEST(OrderBookTest, DuplicateActiveOrderIdIsIgnored) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.addOrder(
+      makeMessage(1, 42, 11, 50, OrderSide::Buy, MessageType::AddOrder));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 100u);
+
+  book.deleteOrder(
+      makeMessage(1, 42, 0, 0, OrderSide::Buy, MessageType::DeleteOrder));
+
+  const TopOfBook top_after_delete = book.getTopOfBook();
+  EXPECT_EQ(top_after_delete.bid_price, 0u);
+  EXPECT_EQ(top_after_delete.bid_qty, 0u);
+}
+
+TEST(OrderBookTest, ZeroQuantityAddIsIgnored) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 0, OrderSide::Buy, MessageType::AddOrder));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty, 0u);
+}
+
+TEST(OrderBookTest, ModifyToZeroQuantityRemovesOrder) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.modifyOrder(
+      makeMessage(1, 42, 10, 0, OrderSide::Buy, MessageType::ModifyOrder));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty, 0u);
+}
+
+TEST(OrderBookTest, ModifyOrderCanMoveBetweenSides) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+  book.modifyOrder(
+      makeMessage(1, 42, 12, 80, OrderSide::Sell, MessageType::ModifyOrder));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty, 0u);
+  EXPECT_EQ(top.ask_price, 12u);
+  EXPECT_EQ(top.ask_qty, 80u);
+}
+
+TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
+  OrderBook book(42);
+
+  book.addOrder(
+      makeMessage(1, 42, 10, 100, OrderSide::Buy, MessageType::AddOrder));
+
+  book.modifyOrder(
+      makeMessage(2, 42, 11, 50, OrderSide::Buy, MessageType::ModifyOrder));
+  book.deleteOrder(
+      makeMessage(3, 42, 0, 0, OrderSide::Buy, MessageType::DeleteOrder));
+  book.trade(makeMessage(4, 42, 0, 50, OrderSide::Buy, MessageType::Trade));
+
+  const TopOfBook top = book.getTopOfBook();
+  EXPECT_EQ(top.bid_price, 10u);
+  EXPECT_EQ(top.bid_qty, 100u);
+}
+
+TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
+  OrderBook book(42);
+
+  for (uint32_t i = 0; i < 12; ++i) {
+    book.addOrder(makeMessage(100 + i, 42, 10 + i, 10 + i, OrderSide::Buy,
+                              MessageType::AddOrder));
+    book.addOrder(makeMessage(200 + i, 42, 20 + i, 20 + i, OrderSide::Sell,
+                              MessageType::AddOrder));
+  }
+
+  const BookUpdate update = book.getBookUpdate();
+
+  ASSERT_EQ(update.bids_depth, 10u);
+  ASSERT_EQ(update.asks_depth, 10u);
+  EXPECT_EQ(update.bids[0].price, 21u);
+  EXPECT_EQ(update.bids[9].price, 12u);
+  EXPECT_EQ(update.asks[0].price, 20u);
+  EXPECT_EQ(update.asks[9].price, 29u);
 }
