@@ -5,7 +5,7 @@
 #include "astra/book/Order.hpp"
 #include "astra/book/OrderAction.hpp"
 #include "astra/book/PriceLevel.hpp"
-#include "astra/protocol/MarketDataMessage.hpp"
+#include "astra/protocol/MarketDataMessageView.hpp"
 #include "astra/protocol/OrderSide.hpp"
 #include "astra/utils/Bitmap.hpp"
 
@@ -20,10 +20,10 @@ class OrderBook {
 public:
   explicit OrderBook(uint32_t symbol_id);
 
-  void addOrder(const MarketDataMessage &msg);
-  void modifyOrder(const MarketDataMessage &msg);
-  void deleteOrder(const MarketDataMessage &msg);
-  void trade(const MarketDataMessage &msg);
+  void addOrder(const MarketDataMessageView &msg);
+  void modifyOrder(const MarketDataMessageView &msg);
+  void deleteOrder(const MarketDataMessageView &msg);
+  void trade(const MarketDataMessageView &msg);
 
   TopOfBook getTopOfBook() const;
   BookUpdate getBookUpdate() const;

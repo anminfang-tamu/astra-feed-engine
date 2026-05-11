@@ -5,30 +5,30 @@ BookManager::BookManager() = default;
 
 BookManager::~BookManager() = default;
 
-void BookManager::onMessage(const MarketDataMessage &msg) {
+void BookManager::onMessage(const MarketDataMessageView &msg) {
   OrderBook *book = nullptr;
 
-  switch (msg.type) {
+  switch (msg.type()) {
   case MessageType::AddOrder:
-    book = getOrCreateOrderBook(msg.symbol_id);
+    book = getOrCreateOrderBook(msg.symbolId());
     book->addOrder(msg);
     break;
   case MessageType::ModifyOrder:
-    book = findOrderBook(msg.symbol_id);
+    book = findOrderBook(msg.symbolId());
     if (book == nullptr) {
       return;
     }
     book->modifyOrder(msg);
     break;
   case MessageType::DeleteOrder:
-    book = findOrderBook(msg.symbol_id);
+    book = findOrderBook(msg.symbolId());
     if (book == nullptr) {
       return;
     }
     book->deleteOrder(msg);
     break;
   case MessageType::Trade:
-    book = findOrderBook(msg.symbol_id);
+    book = findOrderBook(msg.symbolId());
     if (book == nullptr) {
       return;
     }

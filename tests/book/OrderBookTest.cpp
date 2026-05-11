@@ -1,21 +1,33 @@
 #include "astra/book/OrderBook.hpp"
 #include "astra/book/TopOfBook.hpp"
+#include "astra/protocol/WireMessage.hpp"
 
 #include <gtest/gtest.h>
 
 namespace {
 
-MarketDataMessage makeMessage(uint64_t order_id, uint32_t symbol_id,
-                              uint32_t price, uint32_t qty, OrderSide side,
-                              MessageType type) {
-  MarketDataMessage msg{};
-  msg.order_id = order_id;
-  msg.symbol_id = symbol_id;
-  msg.price = price;
-  msg.qty = qty;
-  msg.side = side;
-  msg.type = type;
-  return msg;
+struct TestMessage {
+  WireMessage wire{};
+
+  MarketDataMessageView view() const {
+    return MarketDataMessageView{
+        reinterpret_cast<const std::byte *>(&wire),
+    };
+  }
+
+  operator MarketDataMessageView() const { return view(); }
+};
+
+TestMessage makeMessage(uint64_t order_id, uint32_t symbol_id, uint32_t price,
+                        uint32_t qty, OrderSide side, MessageType type) {
+  TestMessage message{};
+  message.wire.order_id = order_id;
+  message.wire.symbol_id = symbol_id;
+  message.wire.price = price;
+  message.wire.qty = qty;
+  message.wire.side = side;
+  message.wire.type = type;
+  return message;
 }
 
 } // namespace

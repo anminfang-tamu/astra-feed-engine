@@ -151,8 +151,8 @@ void OrderBook::updatePriceLevelLinks(Order *order, PriceLevel *pl,
   }
 }
 
-void OrderBook::addOrder(const MarketDataMessage &msg) {
-  if (msg.qty == 0 || findOrder(msg.order_id) != nullptr) {
+void OrderBook::addOrder(const MarketDataMessageView &msg) {
+  if (msg.qty() == 0 || findOrder(msg.orderId()) != nullptr) {
     return;
   }
 
@@ -162,11 +162,11 @@ void OrderBook::addOrder(const MarketDataMessage &msg) {
     return;
   }
 
-  order->order_id = msg.order_id;
+  order->order_id = msg.orderId();
   order->symbol_id = symbol_id_;
-  order->price = msg.price;
-  order->qty = msg.qty;
-  order->side = msg.side;
+  order->price = msg.price();
+  order->qty = msg.qty();
+  order->side = msg.side();
   order->active = true;
   order->prev = nullptr;
   order->next = nullptr;
@@ -181,17 +181,17 @@ void OrderBook::addOrder(const MarketDataMessage &msg) {
   updateBestOnAdd(target_price, order->side);
 
   // track order by ID
-  order_by_id_.insert_or_assign(
-      order->order_id, static_cast<uint32_t>(order - &order_pool_[0]));
+  order_by_id_.insert_or_assign(order->order_id,
+                                static_cast<uint32_t>(order - &order_pool_[0]));
 }
 
-void OrderBook::modifyOrder(const MarketDataMessage &msg) {
-  Order *order = findOrder(msg.order_id);
+void OrderBook::modifyOrder(const MarketDataMessageView &msg) {
+  Order *order = findOrder(msg.orderId());
   if (order == nullptr) {
     return;
   }
 
-  if (msg.qty == 0) {
+  if (msg.qty() == 0) {
     deleteOrder(msg);
     return;
   }
@@ -199,9 +199,9 @@ void OrderBook::modifyOrder(const MarketDataMessage &msg) {
   uint32_t old_price = order->price;
   uint32_t old_qty = order->qty;
   OrderSide old_side = order->side;
-  uint32_t new_price = msg.price;
-  uint32_t new_qty = msg.qty;
-  OrderSide new_side = msg.side;
+  uint32_t new_price = msg.price();
+  uint32_t new_qty = msg.qty();
+  OrderSide new_side = msg.side();
 
   PriceLevel *old_pl = findPriceLevel(old_price, old_side);
   if (old_pl == nullptr || old_pl->qty < old_qty || old_pl->num_orders == 0) {
@@ -238,8 +238,8 @@ void OrderBook::modifyOrder(const MarketDataMessage &msg) {
   }
 }
 
-void OrderBook::deleteOrder(const MarketDataMessage &msg) {
-  Order *order = findOrder(msg.order_id);
+void OrderBook::deleteOrder(const MarketDataMessageView &msg) {
+  Order *order = findOrder(msg.orderId());
   if (order == nullptr) {
     return;
   }
@@ -254,31 +254,31 @@ void OrderBook::deleteOrder(const MarketDataMessage &msg) {
   freeOrder(order);
 }
 
-void OrderBook::trade(const MarketDataMessage &msg) {
-  if (msg.qty == 0) {
+void OrderBook::trade(const MarketDataMessageView &msg) {
+  if (msg.qty() == 0) {
     return;
   }
 
-  Order *order = findOrder(msg.order_id);
+  Order *order = findOrder(msg.orderId());
   if (order == nullptr) {
     return;
   }
-  if (msg.qty > order->qty) {
+  if (msg.qty() > order->qty) {
     return;
   }
 
   PriceLevel *pl = findPriceLevel(order->price, order->side);
-  if (pl == nullptr || pl->qty < msg.qty || pl->num_orders == 0) {
+  if (pl == nullptr || pl->qty < msg.qty() || pl->num_orders == 0) {
     return;
   }
-  pl->qty -= msg.qty;
-  if (msg.qty >= order->qty) {
+  pl->qty -= msg.qty();
+  if (msg.qty() >= order->qty) {
     pl->num_orders -= 1;
     updatePriceLevelLinks(order, pl, OrderAction::Delete);
     removePriceLevelIfEmpty(order->price, order->side);
     freeOrder(order);
   } else {
-    order->qty -= msg.qty;
+    order->qty -= msg.qty();
   }
 }
 

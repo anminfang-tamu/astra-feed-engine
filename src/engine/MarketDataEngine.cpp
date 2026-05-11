@@ -1,6 +1,7 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/core/Time.hpp"
 #include "astra/protocol/MarketDataMessage.hpp"
+#include "astra/protocol/MarketDataMessageView.hpp"
 #include "astra/source/PacketView.hpp"
 
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
@@ -22,9 +23,9 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    MarketDataMessage message;
+    MarketDataMessageView message;
 
-    auto decode_result = decoder_.decode(packet.data, packet.size, message);
+    auto decode_result = decoder_.decode(packet, message);
     if (decode_result.status != DecodeStatus::Ok) {
       if (config_.stop_on_decode_error) {
         stop();
@@ -32,7 +33,7 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    auto seq_status = sequence_tracker_.onMessage(message.seq_num);
+    auto seq_status = sequence_tracker_.onMessage(message.seqNum());
 
     if (seq_status == SequenceStatus::Gap) {
       if (config_.stop_on_sequence_gap) {
@@ -47,7 +48,7 @@ void MarketDataEngine::run() {
     publisher_.publish();
 
     if (config_.enable_latency_metrics) {
-      latency_recorder_.record(packet.receive_ts_ns, nowNs());
+      latency_recorder_.record(message.exchangeTsNs(), nowNs());
     }
   }
 }

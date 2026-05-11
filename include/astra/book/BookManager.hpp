@@ -1,7 +1,7 @@
 #pragma once
 
 #include "OrderBook.hpp"
-#include "astra/protocol/MarketDataMessage.hpp"
+#include "astra/protocol/MarketDataMessageView.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -12,7 +12,7 @@ public:
   BookManager();
   ~BookManager();
 
-  void onMessage(const MarketDataMessage &message);
+  void onMessage(const MarketDataMessageView &message);
   const OrderBook *getOrderBook(uint32_t symbol_id) const;
 
 private:

@@ -7,7 +7,8 @@ enum class DecodeStatus {
   PacketTooSmall,
   InvalidMessageType,
   InvalidSize,
-  UnSupportedVersion
+  UnSupportedVersion,
+  InvalidOrderSide
 };
 
 struct DecodeResult {
