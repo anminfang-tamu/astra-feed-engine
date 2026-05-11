@@ -8,6 +8,8 @@
 #include "astra/sequencing/SequenceTracker.hpp"
 #include "astra/source/IMarketDataSource.hpp"
 
+#include <atomic>
+
 class MarketDataEngine {
 public:
   MarketDataEngine(IMarketDataSource &source, BinaryDecoder &decoder,

@@ -32,7 +32,9 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    if (!sequence_tracker_.onMessage(message.seq_num)) {
+    auto seq_status = sequence_tracker_.onMessage(message.seq_num);
+
+    if (seq_status == SequenceStatus::Gap) {
       if (config_.stop_on_sequence_gap) {
         stop();
       }
