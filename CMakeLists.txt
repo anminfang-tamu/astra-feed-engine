@@ -7,7 +7,7 @@ project(astra_feed_engine
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(ASTRA_BUILD_APPS "Build application binaries" OFF)
+option(ASTRA_BUILD_APPS "Build application binaries" ON)
 option(ASTRA_BUILD_TESTS "Build tests" ON)
 option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
@@ -44,6 +44,7 @@ add_library(astra_feed_engine STATIC
     src/sequencing/SequenceTracker.cpp
     src/source/ReplayReceiver.cpp
     src/source/UdpReceiver.cpp
+    src/source/UdpSender.cpp
     src/strategy/SimpleStrategy.cpp
     src/utils/CpuAffinity.cpp
     src/utils/Logger.cpp

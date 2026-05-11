@@ -20,6 +20,7 @@ add_executable(astra_tests
     book/OrderBookTest.cpp
     source/UdpReceiverTest.cpp
     utils/BitmapTest.cpp
+    simulator/MarketSimulatorTest.cpp
 )
 
 target_link_libraries(astra_tests

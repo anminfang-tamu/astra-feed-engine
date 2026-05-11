@@ -3,6 +3,8 @@
 #include "astra/protocol/MarketDataMessageView.hpp"
 #include "astra/source/PacketView.hpp"
 
+#include <iostream>
+
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    BinaryDecoder &decoder,
                                    SequenceTracker &sequence_tracker,
@@ -30,6 +32,7 @@ void MarketDataEngine::run() {
     MarketDataMessageView message;
 
     auto decode_result = decoder_.decode(packet, message);
+
     if (decode_result.status != DecodeStatus::Ok) {
       if (config_.stop_on_decode_error) {
         stop();
@@ -46,6 +49,11 @@ void MarketDataEngine::run() {
       // logging
       continue;
     }
+
+    std::cout << "seq=" << message.seqNum()
+              << " symbol=" << message.symbolId()
+              << " price=" << message.price()
+              << " ts=" << message.exchangeTsNs() << "\n";
 
     book_manager_.onMessage(message);
 
