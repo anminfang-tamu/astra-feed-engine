@@ -1,6 +1,5 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/core/Time.hpp"
-#include "astra/protocol/MarketDataMessage.hpp"
 #include "astra/protocol/MarketDataMessageView.hpp"
 #include "astra/source/PacketView.hpp"
 
@@ -15,8 +14,13 @@ MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
       book_manager_(book_manager), publisher_(publisher),
       latency_recorder_(latency_recorder), config_(config) {}
 
+bool MarketDataEngine::stop() {
+  bool was_running = running_.exchange(false);
+  return was_running;
+}
+
 void MarketDataEngine::run() {
-  while (true) {
+  while (running_) {
     PacketView packet;
 
     if (!source_.next(packet)) {
