@@ -33,6 +33,14 @@ TEST(NyseTaqParserTest, ParsesSubCentPriceAtFourDecimalScale) {
   EXPECT_EQ(price_ticks, 1250);
 }
 
+TEST(NyseTaqParserTest, ParsesLeadingDecimalPrice) {
+  int64_t price_ticks = 0;
+
+  ASSERT_TRUE(NyseTaqParser::parsePriceTicks(".83", price_ticks));
+
+  EXPECT_EQ(price_ticks, 8300);
+}
+
 TEST(NyseTaqParserTest, ParsesModifyOrderSideAfterPositionChange) {
   SymbolTable symbols;
   NyseTaqParser parser(symbols);

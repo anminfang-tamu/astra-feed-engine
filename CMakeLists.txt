@@ -80,6 +80,9 @@ if(ASTRA_BUILD_APPS)
     add_executable(taq_replay_sender apps/taq_replay_sender_main.cpp)
     target_link_libraries(taq_replay_sender PRIVATE astra::feed_engine)
 
+    add_executable(udp_book_validator apps/udp_book_validator_main.cpp)
+    target_link_libraries(udp_book_validator PRIVATE astra::feed_engine)
+
     add_executable(replay_writer apps/replay_writer_main.cpp)
     target_link_libraries(replay_writer PRIVATE astra::feed_engine)
 

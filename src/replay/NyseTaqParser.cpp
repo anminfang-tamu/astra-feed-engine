@@ -327,11 +327,20 @@ bool NyseTaqParser::parsePriceTicks(std::string_view value,
     value.remove_prefix(1);
   }
 
-  int64_t whole = 0;
   std::size_t dot = value.find('.');
   const std::string_view whole_part =
       dot == std::string_view::npos ? value : value.substr(0, dot);
-  if (whole_part.empty() || !parseUnsigned(whole_part, whole)) {
+
+  int64_t whole = 0;
+  bool has_digit = false;
+  if (!whole_part.empty()) {
+    if (!parseUnsigned(whole_part, whole)) {
+      return false;
+    }
+    has_digit = true;
+  }
+
+  if (whole_part.empty() && dot == std::string_view::npos) {
     return false;
   }
 
@@ -343,11 +352,16 @@ bool NyseTaqParser::parsePriceTicks(std::string_view value,
       if (!std::isdigit(static_cast<unsigned char>(ch))) {
         return false;
       }
+      has_digit = true;
       if (scale > 0) {
         frac += static_cast<int64_t>(ch - '0') * scale;
         scale /= 10;
       }
     }
+  }
+
+  if (!has_digit) {
+    return false;
   }
 
   price_ticks = whole * kPriceScale + frac;
