@@ -4,8 +4,8 @@
 
 #include "Order.hpp"
 
-struct PriceLevel {    // 12 bytes total
-  uint32_t price;      // 4 bytes, price level
+struct PriceLevel {
+  uint64_t price;      // 8 bytes, fixed-point ticks
   uint32_t qty;        // 4 bytes, total quantity at this price level
   uint32_t num_orders; // 4 bytes, number of orders at this price level
 

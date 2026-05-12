@@ -17,14 +17,14 @@ public:
   uint64_t exchangeTsNs() const { return load<uint64_t>(8); }
   uint64_t orderId() const { return load<uint64_t>(16); }
   uint32_t symbolId() const { return load<uint32_t>(24); }
-  uint32_t price() const { return load<uint32_t>(28); }
-  uint32_t qty() const { return load<uint32_t>(32); }
+  uint64_t price() const { return load<uint64_t>(28); }
+  uint32_t qty() const { return load<uint32_t>(36); }
 
   MessageType type() const {
-    return static_cast<MessageType>(load<uint8_t>(36));
+    return static_cast<MessageType>(load<uint8_t>(40));
   }
 
-  OrderSide side() const { return static_cast<OrderSide>(load<uint8_t>(37)); }
+  OrderSide side() const { return static_cast<OrderSide>(load<uint8_t>(41)); }
 
 private:
   template <typename T> T load(std::size_t offset) const {

@@ -12,20 +12,7 @@ option(ASTRA_BUILD_TESTS "Build tests" ON)
 option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
 
-find_package(absl QUIET)
-
-if(NOT absl_FOUND)
-    include(FetchContent)
-
-    set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-    set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-    FetchContent_Declare(
-        abseil
-        URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.1.zip
-    )
-    FetchContent_MakeAvailable(abseil)
-endif()
+find_library(ZLIB_LIBRARY z REQUIRED)
 
 add_library(astra_feed_engine STATIC
     src/book/BookManager.cpp
@@ -41,6 +28,10 @@ add_library(astra_feed_engine STATIC
     src/metrics/MetricsReporter.cpp
     src/publish/ConsolePublisher.cpp
     src/publish/NullPublisher.cpp
+    src/replay/GzipLineReader.cpp
+    src/replay/NyseTaqParser.cpp
+    src/replay/NyseTaqReplaySource.cpp
+    src/replay/SymbolTable.cpp
     src/sequencing/SequenceTracker.cpp
     src/source/ReplayReceiver.cpp
     src/source/UdpReceiver.cpp
@@ -63,8 +54,8 @@ target_include_directories(astra_feed_engine
 )
 
 target_link_libraries(astra_feed_engine
-    PUBLIC
-        absl::flat_hash_map
+    PRIVATE
+        ${ZLIB_LIBRARY}
 )
 
 target_compile_options(astra_feed_engine
@@ -85,6 +76,9 @@ if(ASTRA_BUILD_APPS)
 
     add_executable(replay_player apps/replay_player_main.cpp)
     target_link_libraries(replay_player PRIVATE astra::feed_engine)
+
+    add_executable(taq_replay_sender apps/taq_replay_sender_main.cpp)
+    target_link_libraries(taq_replay_sender PRIVATE astra::feed_engine)
 
     add_executable(replay_writer apps/replay_writer_main.cpp)
     target_link_libraries(replay_writer PRIVATE astra::feed_engine)

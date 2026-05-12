@@ -1,36 +1,35 @@
 #include "astra/book/OrderBook.hpp"
 #include "astra/book/OrderAction.hpp"
 
-OrderBook::OrderBook(uint32_t symbol_id)
-    : symbol_id_(symbol_id), order_pool_(kOrderPoolSize),
-      best_bid_(kNoPriceIndex), best_ask_(kNoPriceIndex) {
-  // Initialize
-  for (uint32_t i = 0; i < kOrderPoolSize; ++i) {
-    free_list_.push_back(i);
-    order_pool_[i].active = false;
-  }
-  order_by_id_.reserve(kOrderPoolSize);
-}
+OrderBook::OrderBook(uint32_t symbol_id) : symbol_id_(symbol_id) {}
 
 Order *OrderBook::allocateOrder() {
-  if (free_list_.empty()) {
+  if (!free_list_.empty()) {
+    const uint32_t index = free_list_.back();
+    free_list_.pop_back();
+    Order *order = &order_pool_[index];
+    order->active = true;
+    return order;
+  }
+
+  if (order_pool_.size() >= kOrderPoolSize) {
     return nullptr;
   }
 
-  uint32_t index = free_list_.back();
-  free_list_.pop_back();
-  Order *order = &order_pool_[index];
+  const uint32_t index = static_cast<uint32_t>(order_pool_.size());
+  order_pool_.push_back(Order{});
+  Order *order = &order_pool_.back();
+  order->pool_index = index;
   order->active = true;
   return order;
 }
 
 void OrderBook::freeOrder(Order *order) {
   order->active = false;
-  uint32_t index = order - &order_pool_[0];
   order_by_id_.erase(order->order_id);
   order->prev = nullptr;
   order->next = nullptr;
-  free_list_.push_back(index);
+  free_list_.push_back(order->pool_index);
 }
 
 Order *OrderBook::findOrder(uint64_t order_id) {
@@ -48,61 +47,22 @@ Order *OrderBook::findOrder(uint64_t order_id) {
   return order->active ? order : nullptr;
 }
 
-uint32_t OrderBook::priceIndex(uint32_t price) const {
-  return price * kPriceScale;
-}
-
-void OrderBook::markPriceLevelActive(uint32_t price_index, OrderSide side) {
-  Bitmap &bitmap = (side == OrderSide::Buy) ? bid_bitmap_ : ask_bitmap_;
-  bitmap.set(price_index);
-}
-
-void OrderBook::markPriceLevelInactive(uint32_t price_index, OrderSide side) {
-  Bitmap &bitmap = (side == OrderSide::Buy) ? bid_bitmap_ : ask_bitmap_;
-  bitmap.reset(price_index);
-}
-
-void OrderBook::updateBestOnAdd(uint32_t price_index, OrderSide side) {
-  if (side == OrderSide::Buy) {
-    if (best_bid_ == kNoPriceIndex || price_index > best_bid_) {
-      best_bid_ = price_index;
-    }
-  } else if (best_ask_ == kNoPriceIndex || price_index < best_ask_) {
-    best_ask_ = price_index;
-  }
-}
-
-void OrderBook::updateBestOnRemove(uint32_t price_index, OrderSide side) {
-  if (side == OrderSide::Buy) {
-    if (price_index == best_bid_) {
-      best_bid_ = price_index == 0 ? kNoPriceIndex
-                                   : bid_bitmap_.findPrevSet(price_index - 1);
-    }
-  } else if (price_index == best_ask_) {
-    best_ask_ = ask_bitmap_.findNextSet(price_index + 1);
-  }
-}
-
-PriceLevel *OrderBook::findPriceLevel(uint32_t price, OrderSide side) {
-  std::vector<PriceLevel> &levels =
+PriceLevel *OrderBook::findPriceLevel(uint64_t price, OrderSide side) {
+  std::map<uint64_t, PriceLevel> &levels =
       (side == OrderSide::Buy) ? bid_levels_ : ask_levels_;
-  uint32_t target_price = priceIndex(price);
-  if (target_price >= levels.size()) {
+  const auto it = levels.find(price);
+  if (it == levels.end() || it->second.num_orders == 0) {
     return nullptr;
   }
-  PriceLevel &pl = levels[target_price];
-  return pl.num_orders == 0 ? nullptr : &pl;
+  return &it->second;
 }
 
-PriceLevel *OrderBook::findOrCreatePriceLevel(uint32_t price, OrderSide side) {
-  std::vector<PriceLevel> &levels =
+PriceLevel *OrderBook::findOrCreatePriceLevel(uint64_t price, OrderSide side) {
+  std::map<uint64_t, PriceLevel> &levels =
       (side == OrderSide::Buy) ? bid_levels_ : ask_levels_;
-  uint32_t target_price = priceIndex(price);
-  if (target_price >= levels.size()) {
-    levels.resize(static_cast<size_t>(target_price) + 1);
-  }
-  PriceLevel &pl = levels[target_price];
-  if (pl.num_orders == 0) {
+  const auto [it, inserted] = levels.try_emplace(price);
+  PriceLevel &pl = it->second;
+  if (inserted) {
     pl.price = price;
     pl.qty = 0;
     pl.head = nullptr;
@@ -111,18 +71,15 @@ PriceLevel *OrderBook::findOrCreatePriceLevel(uint32_t price, OrderSide side) {
   return &pl;
 }
 
-void OrderBook::removePriceLevelIfEmpty(uint32_t price, OrderSide side) {
-  std::vector<PriceLevel> &levels =
+void OrderBook::removePriceLevelIfEmpty(uint64_t price, OrderSide side) {
+  std::map<uint64_t, PriceLevel> &levels =
       (side == OrderSide::Buy) ? bid_levels_ : ask_levels_;
-  uint32_t target_price = priceIndex(price);
-  if (target_price >= levels.size()) {
+  const auto it = levels.find(price);
+  if (it == levels.end()) {
     return;
   }
-  PriceLevel &pl = levels[target_price];
-  if (pl.qty == 0) {
-    pl = PriceLevel{};
-    markPriceLevelInactive(target_price, side);
-    updateBestOnRemove(target_price, side);
+  if (it->second.qty == 0) {
+    levels.erase(it);
   }
 }
 
@@ -176,13 +133,8 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) {
   updatePriceLevelLinks(order, pl, OrderAction::Add);
   pl->qty += order->qty;
   pl->num_orders += 1;
-  const uint32_t target_price = priceIndex(order->price);
-  markPriceLevelActive(target_price, order->side);
-  updateBestOnAdd(target_price, order->side);
-
   // track order by ID
-  order_by_id_.insert_or_assign(order->order_id,
-                                static_cast<uint32_t>(order - &order_pool_[0]));
+  order_by_id_.insert_or_assign(order->order_id, order->pool_index);
 }
 
 void OrderBook::modifyOrder(const MarketDataMessageView &msg) {
@@ -196,10 +148,10 @@ void OrderBook::modifyOrder(const MarketDataMessageView &msg) {
     return;
   }
 
-  uint32_t old_price = order->price;
+  uint64_t old_price = order->price;
   uint32_t old_qty = order->qty;
   OrderSide old_side = order->side;
-  uint32_t new_price = msg.price();
+  uint64_t new_price = msg.price();
   uint32_t new_qty = msg.qty();
   OrderSide new_side = msg.side();
 
@@ -229,9 +181,6 @@ void OrderBook::modifyOrder(const MarketDataMessageView &msg) {
     updatePriceLevelLinks(order, new_pl, OrderAction::Add);
     new_pl->qty += new_qty;
     new_pl->num_orders += 1;
-    const uint32_t new_target_price = priceIndex(new_price);
-    markPriceLevelActive(new_target_price, new_side);
-    updateBestOnAdd(new_target_price, new_side);
   } else if (old_qty != new_qty) {
     old_pl->qty = old_pl->qty - old_qty + new_qty;
     order->qty = new_qty;
@@ -286,14 +235,14 @@ TopOfBook OrderBook::getTopOfBook() const {
   TopOfBook top{};
   top.symbol_id = symbol_id_;
 
-  if (best_bid_ != kNoPriceIndex) {
-    const PriceLevel &bid = bid_levels_[best_bid_];
+  if (!bid_levels_.empty()) {
+    const PriceLevel &bid = bid_levels_.rbegin()->second;
     top.bid_price = bid.price;
     top.bid_qty = bid.qty;
   }
 
-  if (best_ask_ != kNoPriceIndex) {
-    const PriceLevel &ask = ask_levels_[best_ask_];
+  if (!ask_levels_.empty()) {
+    const PriceLevel &ask = ask_levels_.begin()->second;
     top.ask_price = ask.price;
     top.ask_qty = ask.qty;
   }
@@ -305,28 +254,18 @@ BookUpdate OrderBook::getBookUpdate() const {
   BookUpdate update{};
   update.symbol_id = symbol_id_;
 
-  uint32_t bid_index = best_bid_;
-  while (bid_index != kNoPriceIndex && update.bids_depth < update.bids.size()) {
-    update.bids[update.bids_depth] = bid_levels_[bid_index];
+  for (auto it = bid_levels_.rbegin();
+       it != bid_levels_.rend() && update.bids_depth < update.bids.size();
+       ++it) {
+    update.bids[update.bids_depth] = it->second;
     ++update.bids_depth;
-
-    if (bid_index == 0) {
-      break;
-    }
-
-    bid_index = bid_bitmap_.findPrevSet(bid_index - 1);
   }
 
-  uint32_t ask_index = best_ask_;
-  while (ask_index != kNoPriceIndex && update.asks_depth < update.asks.size()) {
-    update.asks[update.asks_depth] = ask_levels_[ask_index];
+  for (auto it = ask_levels_.begin();
+       it != ask_levels_.end() && update.asks_depth < update.asks.size();
+       ++it) {
+    update.asks[update.asks_depth] = it->second;
     ++update.asks_depth;
-
-    if (ask_index == kNoPriceIndex - 1) {
-      break;
-    }
-
-    ask_index = ask_bitmap_.findNextSet(ask_index + 1);
   }
 
   return update;
