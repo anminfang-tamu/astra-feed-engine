@@ -18,9 +18,11 @@ endif()
 add_executable(astra_tests
     book/BookManagerTest.cpp
     book/OrderBookTest.cpp
+    metrics/LatencyRecorderTest.cpp
     replay/NyseTaqParserTest.cpp
     source/UdpReceiverTest.cpp
     utils/BitmapTest.cpp
+    utils/CpuAffinityTest.cpp
     simulator/MarketSimulatorTest.cpp
 )
 

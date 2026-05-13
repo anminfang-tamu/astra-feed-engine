@@ -50,6 +50,9 @@ int main(int argc, char *argv[]) {
     engine.run();
 
     std::cout << "Engine stopped\n";
+    if (config.enable_latency_metrics) {
+      latency_recorder.report();
+    }
   } catch (const std::exception &e) {
     std::cerr << "Fatal: " << e.what() << "\n";
     return EXIT_FAILURE;

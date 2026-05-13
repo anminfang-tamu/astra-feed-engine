@@ -3,8 +3,6 @@
 #include "astra/protocol/MarketDataMessageView.hpp"
 #include "astra/source/PacketView.hpp"
 
-#include <iostream>
-
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    BinaryDecoder &decoder,
                                    SequenceTracker &sequence_tracker,
@@ -46,21 +44,15 @@ void MarketDataEngine::run() {
       if (config_.stop_on_sequence_gap) {
         stop();
       }
-      // logging
       continue;
     }
-
-    std::cout << "seq=" << message.seqNum()
-              << " symbol=" << message.symbolId()
-              << " price=" << message.price()
-              << " ts=" << message.exchangeTsNs() << "\n";
 
     book_manager_.onMessage(message);
 
     publisher_.publish();
 
     if (config_.enable_latency_metrics) {
-      latency_recorder_.record(message.exchangeTsNs(), nowNs());
+      latency_recorder_.record(packet.receive_ts_ns, nowNs());
     }
   }
 }
