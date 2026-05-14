@@ -6,7 +6,7 @@
 #include "astra/source/IMarketDataSource.hpp"
 #include "replay/GzipLineReader.hpp"
 #include "replay/MdEvent.hpp"
-#include "replay/NyseTaqParser.hpp"
+#include "replay/taq/NyseTaqParser.hpp"
 #include "replay/SymbolTable.hpp"
 
 #include <array>

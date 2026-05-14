@@ -1,4 +1,4 @@
-#include "replay/NyseTaqParser.hpp"
+#include "replay/taq/NyseTaqParser.hpp"
 #include "replay/SymbolTable.hpp"
 
 #include <gtest/gtest.h>

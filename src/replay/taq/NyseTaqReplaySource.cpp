@@ -1,4 +1,4 @@
-#include "replay/NyseTaqReplaySource.hpp"
+#include "replay/taq/NyseTaqReplaySource.hpp"
 
 #include "astra/protocol/MessageType.hpp"
 #include "astra/protocol/OrderSide.hpp"

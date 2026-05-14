@@ -29,9 +29,11 @@ add_library(astra_feed_engine STATIC
     src/publish/ConsolePublisher.cpp
     src/publish/NullPublisher.cpp
     src/replay/GzipLineReader.cpp
-    src/replay/NyseTaqParser.cpp
-    src/replay/NyseTaqReplaySource.cpp
+    src/replay/itch/ItchParser.cpp
+    src/replay/itch/ItchReplaySource.cpp
     src/replay/SymbolTable.cpp
+    src/replay/taq/NyseTaqParser.cpp
+    src/replay/taq/NyseTaqReplaySource.cpp
     src/sequencing/SequenceTracker.cpp
     src/source/ReplayReceiver.cpp
     src/source/UdpReceiver.cpp
@@ -41,7 +43,6 @@ add_library(astra_feed_engine STATIC
     src/utils/Logger.cpp
     src/utils/MemoryPool.cpp
     src/utils/RingBuffer.cpp
-    src/utils/Bitmap.cpp
 )
 
 add_library(astra::feed_engine ALIAS astra_feed_engine)
@@ -76,6 +77,12 @@ if(ASTRA_BUILD_APPS)
 
     add_executable(replay_player apps/replay_player_main.cpp)
     target_link_libraries(replay_player PRIVATE astra::feed_engine)
+
+    add_executable(itch_replay_player apps/itch_replay_player_main.cpp)
+    target_link_libraries(itch_replay_player PRIVATE astra::feed_engine)
+
+    add_executable(itch_replay_sender apps/itch_replay_sender_main.cpp)
+    target_link_libraries(itch_replay_sender PRIVATE astra::feed_engine)
 
     add_executable(taq_replay_sender apps/taq_replay_sender_main.cpp)
     target_link_libraries(taq_replay_sender PRIVATE astra::feed_engine)

@@ -1,12 +1,13 @@
 #include "astra/source/UdpSender.hpp"
-#include "replay/taq/NyseTaqReplaySource.hpp"
 #include "replay/SymbolTable.hpp"
+#include "replay/itch/ItchReplaySource.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -38,7 +39,7 @@ uint8_t parseChannelId(const char *value) {
 int main(int argc, char *argv[]) {
   if (argc < 4 || argc > 7) {
     std::cerr << "Usage: " << argv[0]
-              << " <nyse-ibf.csv.gz> <dest-ip> <port> "
+              << " <NASDAQ_ITCH50> <dest-ip> <port> "
                  "[max_messages] [channel_id] [msg/s]\n";
     return EXIT_FAILURE;
   }
@@ -54,7 +55,7 @@ int main(int argc, char *argv[]) {
 
   try {
     SymbolTable symbols;
-    NyseTaqReplaySource source(path, symbols, channel_id);
+    ItchReplaySource source(path, symbols, channel_id);
     if (!source.isOpen()) {
       std::cerr << source.lastError() << "\n";
       return EXIT_FAILURE;
@@ -64,7 +65,7 @@ int main(int argc, char *argv[]) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    std::cout << "TAQ replay sender -> " << ip << ":" << port
+    std::cout << "ITCH replay sender -> " << ip << ":" << port
               << " file=" << path;
     if (messages_per_second > 0) {
       std::cout << " rate=" << messages_per_second << " msg/s";
@@ -101,18 +102,19 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    const NyseTaqReplayStats &stats = source.stats();
+    const ItchReplayStats &stats = source.stats();
     std::cout << "consumed=" << consumed << " sent=" << sent
               << " send_failures=" << send_failures
-              << " lines=" << stats.lines_read
+              << " records=" << stats.records_read
+              << " bytes=" << stats.bytes_read
               << " parsed_events=" << stats.parsed_events
               << " emitted_messages=" << stats.emitted_messages
               << " ignored_events=" << stats.ignored_events
-              << " skipped_lines=" << stats.skipped_lines
-              << " bad_lines=" << stats.bad_lines
+              << " skipped_messages=" << stats.skipped_messages
+              << " bad_messages=" << stats.bad_messages
               << " symbols=" << symbols.size() << "\n";
 
-    return stats.bad_lines == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    return stats.bad_messages == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
   } catch (const std::exception &e) {
     std::cerr << "Fatal: " << e.what() << "\n";
     return EXIT_FAILURE;

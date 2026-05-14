@@ -2,9 +2,9 @@
 #include "astra/book/TopOfBook.hpp"
 #include "astra/codec/BinaryDecoder.hpp"
 #include "astra/protocol/MarketDataMessageView.hpp"
-#include "replay/taq/NyseTaqParser.hpp"
-#include "replay/taq/NyseTaqReplaySource.hpp"
 #include "replay/SymbolTable.hpp"
+#include "replay/itch/ItchParser.hpp"
+#include "replay/itch/ItchReplaySource.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -32,9 +32,8 @@ uint8_t parseChannelId(const char *value) {
 
 std::string formatPrice(uint64_t price_ticks) {
   std::ostringstream out;
-  out << (price_ticks / NyseTaqParser::kPriceScale) << '.'
-      << std::setfill('0') << std::setw(4)
-      << (price_ticks % NyseTaqParser::kPriceScale);
+  out << (price_ticks / ItchParser::kPriceScale) << '.' << std::setfill('0')
+      << std::setw(4) << (price_ticks % ItchParser::kPriceScale);
   return out.str();
 }
 
@@ -43,7 +42,7 @@ std::string formatPrice(uint64_t price_ticks) {
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     std::cerr << "usage: " << argv[0]
-              << " <nyse-ibf.csv.gz> [max_messages] [channel_id]\n";
+              << " <NASDAQ_ITCH50> [max_messages] [channel_id]\n";
     return EXIT_FAILURE;
   }
 
@@ -53,7 +52,7 @@ int main(int argc, char *argv[]) {
   const uint8_t channel_id = argc >= 4 ? parseChannelId(argv[3]) : 0;
 
   SymbolTable symbols;
-  NyseTaqReplaySource source(path, symbols, channel_id);
+  ItchReplaySource source(path, symbols, channel_id);
   if (!source.isOpen()) {
     std::cerr << source.lastError() << "\n";
     return EXIT_FAILURE;
@@ -80,13 +79,14 @@ int main(int argc, char *argv[]) {
     ++consumed;
   }
 
-  const NyseTaqReplayStats &stats = source.stats();
-  std::cout << "messages=" << consumed << " lines=" << stats.lines_read
+  const ItchReplayStats &stats = source.stats();
+  std::cout << "messages=" << consumed << " records=" << stats.records_read
+            << " bytes=" << stats.bytes_read
             << " parsed_events=" << stats.parsed_events
             << " emitted_messages=" << stats.emitted_messages
             << " ignored_events=" << stats.ignored_events
-            << " skipped_lines=" << stats.skipped_lines
-            << " bad_lines=" << stats.bad_lines
+            << " skipped_messages=" << stats.skipped_messages
+            << " bad_messages=" << stats.bad_messages
             << " symbols=" << symbols.size() << "\n";
 
   uint32_t printed = 0;
@@ -106,9 +106,9 @@ int main(int argc, char *argv[]) {
     ++printed;
   }
 
-  if (stats.bad_lines > 0 && !source.lastError().empty()) {
+  if (stats.bad_messages > 0 && !source.lastError().empty()) {
     std::cerr << source.lastError() << "\n";
   }
 
-  return stats.bad_lines == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+  return stats.bad_messages == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

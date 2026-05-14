@@ -1,4 +1,69 @@
-# NYSE TAQ Integrated Replay
+# Market Data Replay
+
+Replay parsers are grouped by source format:
+
+```text
+include/replay/taq   NYSE TAQ Integrated CSV parsing
+include/replay/itch  Nasdaq TotalView-ITCH 5.0 binary parsing
+```
+
+## Nasdaq ITCH Replay
+
+The ITCH path reads the standard historical file framing: a 2-byte big-endian
+message length followed by one TotalView-ITCH message payload.
+
+```text
+NASDAQ_ITCH50 -> ItchReplaySource -> ItchParser -> MdEvent
+              -> MarketDataMessage -> BookManager
+```
+
+Keep compressed ITCH files under `data/itch/raw/` and unzipped binary files
+under `data/itch/unzipped/`. The repo ignores `data/itch` because the files are
+large and licensed.
+
+The parser normalizes visible-book Add, Execute, Execute-with-Price, Cancel,
+Delete, Replace, and Broken Trade messages. Hidden trades, crosses, NOII, LULD,
+stock status, and administrative records are skipped for displayed-book replay.
+
+Run the local book-building smoke player:
+
+```sh
+./build/itch_replay_player data/itch/unzipped/01302019.NASDAQ_ITCH50
+./build/itch_replay_player data/itch/unzipped/01302019.NASDAQ_ITCH50 100000 1
+```
+
+Arguments are:
+
+```text
+1. file path
+2. optional max emitted book messages
+3. optional channel id
+```
+
+To replay ITCH over UDP, run the engine receiver first:
+
+```sh
+./build/md_engine 127.0.0.1 9000
+```
+
+Then run the ITCH replay sender from another terminal:
+
+```sh
+./build/itch_replay_sender data/itch/unzipped/01302019.NASDAQ_ITCH50 127.0.0.1 9000 100000 1 10000
+```
+
+Sender arguments are:
+
+```text
+1. file path
+2. destination IP
+3. destination port
+4. optional max emitted book messages
+5. optional channel id
+6. optional messages per second; omit for max speed
+```
+
+## NYSE TAQ Integrated Replay
 
 The replay path starts from NYSE TAQ Integrated Book CSV files, including
 `.gz` files:

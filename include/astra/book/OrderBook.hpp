@@ -3,54 +3,52 @@
 #include "BookUpdate.hpp"
 #include "TopOfBook.hpp"
 #include "astra/book/Order.hpp"
-#include "astra/book/OrderAction.hpp"
 #include "astra/book/PriceLevel.hpp"
 #include "astra/protocol/MarketDataMessageView.hpp"
-#include "astra/protocol/OrderSide.hpp"
+#include "astra/utils/OrderIdMap.hpp"
+#include "astra/utils/PriceBitmap.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
-#include <map>
-#include <unordered_map>
+#include <sys/types.h>
 #include <vector>
 
 class OrderBook {
 public:
+  static constexpr uint32_t kInvalidIdx = UINT32_MAX;
+  static constexpr size_t kOrderPoolSize = 1 << 20; // 1 million orders
+  static constexpr size_t kMaxPriceLevels =
+      1 << 16; // 65,536 price levels per side
+
   explicit OrderBook(uint32_t symbol_id);
 
-  void addOrder(const MarketDataMessageView &msg);
-  void modifyOrder(const MarketDataMessageView &msg);
-  void deleteOrder(const MarketDataMessageView &msg);
-  void trade(const MarketDataMessageView &msg);
+  void addOrder(const MarketDataMessageView &msg) noexcept;
+  void modifyOrder(const MarketDataMessageView &msg) noexcept;
+  void deleteOrder(const MarketDataMessageView &msg) noexcept;
+  void trade(const MarketDataMessageView &msg) noexcept;
 
-  TopOfBook getTopOfBook() const;
-  BookUpdate getBookUpdate() const;
+  TopOfBook getTopOfBook() const noexcept;
+  BookUpdate getBookUpdate() const noexcept;
 
 private:
-  // order
-  Order *allocateOrder();
-  void freeOrder(Order *order);
-  Order *findOrder(uint64_t order_id);
-
-  // price level management
-  PriceLevel *findPriceLevel(uint64_t price, OrderSide side);
-  PriceLevel *findOrCreatePriceLevel(uint64_t price, OrderSide side);
-  void removePriceLevelIfEmpty(uint64_t price, OrderSide side);
-  void updatePriceLevelLinks(Order *order, PriceLevel *pl, OrderAction action);
+  uint32_t priceToIndex(uint64_t price) const noexcept;
+  uint32_t allocateOrder() noexcept;
+  void freeOrder(uint32_t order_idx) noexcept;
 
   uint32_t symbol_id_;
+  uint64_t reference_price_;
+  uint64_t tick_size_;
 
-  // Order pool
-  static constexpr size_t kOrderPoolSize = 1 << 20; // 1 million orders
-  std::deque<Order> order_pool_;
+  // Order Arena
+  alignas(64) std::vector<Order> order_pool_;
   std::vector<uint32_t> free_list_; // stack of free order indices
 
-  // Price levels keyed by fixed-point price ticks.
-  std::map<uint64_t, PriceLevel> bid_levels_;
-  std::map<uint64_t, PriceLevel> ask_levels_;
+  // Price levels - dense arrays
+  std::vector<PriceLevel> bid_levels_;
+  std::vector<PriceLevel> ask_levels_;
 
-  // Tracking orders by ID for quick access.
-  // order_id -> order pool index
-  std::unordered_map<uint64_t, uint32_t> order_by_id_;
+  PriceBitmap bid_bitmap_;
+  PriceBitmap ask_bitmap_;
+
+  OrderIdMap order_id_map_; // maps order_id to order_idx in order_pool_
 };
