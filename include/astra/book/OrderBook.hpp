@@ -34,6 +34,7 @@ private:
   uint32_t priceToIndex(uint64_t price) const noexcept;
   uint32_t allocateOrder() noexcept;
   void freeOrder(uint32_t order_idx) noexcept;
+  bool ensureLevelStorage() noexcept;
 
   uint32_t symbol_id_;
   uint64_t reference_price_;

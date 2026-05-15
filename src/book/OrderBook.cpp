@@ -83,17 +83,32 @@ void unlinkOrder(std::vector<Order> &orders, PriceLevel &level,
 
 OrderBook::OrderBook(uint32_t symbol_id)
     : symbol_id_(symbol_id), reference_price_(0), tick_size_(1),
-      bid_levels_(kMaxPriceLevels), ask_levels_(kMaxPriceLevels),
       order_id_map_(kOrderIdMapCapacity) {
-  order_pool_.reserve(kOrderPoolSize);
-  free_list_.reserve(kOrderPoolSize);
+}
 
-  for (PriceLevel &level : bid_levels_) {
-    resetLevel(level);
+bool OrderBook::ensureLevelStorage() noexcept {
+  if (bid_levels_.size() == kMaxPriceLevels &&
+      ask_levels_.size() == kMaxPriceLevels) {
+    return true;
   }
-  for (PriceLevel &level : ask_levels_) {
-    resetLevel(level);
+
+  try {
+    bid_levels_.resize(kMaxPriceLevels);
+    ask_levels_.resize(kMaxPriceLevels);
+
+    for (PriceLevel &level : bid_levels_) {
+      resetLevel(level);
+    }
+    for (PriceLevel &level : ask_levels_) {
+      resetLevel(level);
+    }
+  } catch (...) {
+    std::vector<PriceLevel>().swap(bid_levels_);
+    std::vector<PriceLevel>().swap(ask_levels_);
+    return false;
   }
+
+  return true;
 }
 
 uint32_t OrderBook::priceToIndex(uint64_t price) const noexcept {
@@ -140,7 +155,11 @@ uint32_t OrderBook::allocateOrder() noexcept {
   }
 
   const uint32_t order_idx = static_cast<uint32_t>(order_pool_.size());
-  order_pool_.push_back(Order{});
+  try {
+    order_pool_.push_back(Order{});
+  } catch (...) {
+    return kInvalidIdx;
+  }
   resetOrder(order_pool_.back());
   return order_idx;
 }
@@ -153,7 +172,10 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
   Order &order = order_pool_[order_idx];
   order_id_map_.erase(order.order_id);
   resetOrder(order);
-  free_list_.push_back(order_idx);
+  try {
+    free_list_.push_back(order_idx);
+  } catch (...) {
+  }
 }
 
 void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
@@ -169,6 +191,10 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
 
   const uint32_t level_idx = priceToIndex(msg.price());
   if (level_idx == kInvalidIdx) {
+    return;
+  }
+
+  if (!ensureLevelStorage()) {
     return;
   }
 
@@ -192,6 +218,11 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   order.order_id = msg.orderId();
   order.side = msg.side();
 
+  if (!order_id_map_.tryInsert(order.order_id, order_idx)) {
+    freeOrder(order_idx);
+    return;
+  }
+
   appendOrder(order_pool_, level, order_idx);
   level.total_qty += order.qty;
   ++level.num_orders;
@@ -199,7 +230,6 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
     bitmap.set(level_idx);
   }
 
-  order_id_map_.insert(order.order_id, order_idx);
 }
 
 void OrderBook::modifyOrder(const MarketDataMessageView &msg) noexcept {
