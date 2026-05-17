@@ -3,53 +3,105 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <new>
+#include <sys/mman.h>
+#include <unistd.h>
 
-// Fixed-capacity open-addressed hash table:
+// Fixed-capacity lazy mmap open-addressed hash table:
 //
-//   uint64_t order_id  ->  uint32_t pool_index
+//   uint64_t order_id -> uint32_t pool_index
 //
 // Design:
-//   - Structure of Arrays:
-//
+//   - SoA layout:
 //       keys_[slot]    = order id
 //       indices_[slot] = pool index
 //
 //   - Linear probing
 //   - Backward-shift deletion
-//   - No growth
+//   - mmap allocation
+//   - No memset on construction
+//   - No heap traffic in hot path
 //   - No rehash
-//   - No heap allocation after construction
+//   - No growth
 //
 // Important:
-//   - kEmptyKey is reserved and cannot be inserted.
-//   - kInvalidIdx is reserved and cannot be used as a pool index.
-//   - Keep load factor around <= 50% for stable low-latency behavior.
+//   - kEmptyKey is 0.
+//   - order_id == 0 is reserved and cannot be inserted.
+//   - indices_ is not initialized because it is only read after key match.
+//   - Anonymous mmap memory is zero-filled lazily by Linux.
 class OrderIdMap {
 public:
+  static constexpr uint64_t kEmptyKey = 0;
+
   static constexpr uint32_t kInvalidIdx = std::numeric_limits<uint32_t>::max();
 
-  static constexpr uint64_t kEmptyKey = std::numeric_limits<uint64_t>::max();
-
   explicit OrderIdMap(uint32_t capacity_pow2)
-      : capacity_(capacity_pow2), mask_(capacity_pow2 - 1),
-        keys_(new uint64_t[capacity_pow2]),
-        indices_(new uint32_t[capacity_pow2]) {
+      : capacity_(capacity_pow2),
+        mask_(static_cast<uint64_t>(capacity_pow2 - 1)) {
     assert(capacity_pow2 >= 2);
     assert((capacity_pow2 & (capacity_pow2 - 1)) == 0 &&
            "capacity must be power of two");
 
-    clear();
+    keys_bytes_ =
+        roundUpToPageSize(static_cast<size_t>(capacity_) * sizeof(uint64_t));
+
+    indices_bytes_ =
+        roundUpToPageSize(static_cast<size_t>(capacity_) * sizeof(uint32_t));
+
+    keys_ = static_cast<uint64_t *>(::mmap(nullptr, keys_bytes_,
+                                           PROT_READ | PROT_WRITE,
+                                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+
+    if (keys_ == MAP_FAILED) {
+      keys_ = nullptr;
+      std::abort();
+    }
+
+    indices_ = static_cast<uint32_t *>(
+        ::mmap(nullptr, indices_bytes_, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+
+    if (indices_ == MAP_FAILED) {
+      ::munmap(keys_, keys_bytes_);
+      keys_ = nullptr;
+      indices_ = nullptr;
+      std::abort();
+    }
+
+#ifdef MADV_HUGEPAGE
+    // Optional. Linux may ignore this.
+    // Good for large maps because it can reduce TLB misses.
+    ::madvise(keys_, keys_bytes_, MADV_HUGEPAGE);
+    ::madvise(indices_, indices_bytes_, MADV_HUGEPAGE);
+#endif
+  }
+
+  ~OrderIdMap() {
+    if (keys_) {
+      ::munmap(keys_, keys_bytes_);
+    }
+
+    if (indices_) {
+      ::munmap(indices_, indices_bytes_);
+    }
   }
 
   OrderIdMap(const OrderIdMap &) = delete;
   OrderIdMap &operator=(const OrderIdMap &) = delete;
 
-  OrderIdMap(OrderIdMap &&) noexcept = default;
-  OrderIdMap &operator=(OrderIdMap &&) noexcept = default;
+  OrderIdMap(OrderIdMap &&other) noexcept { moveFrom(other); }
+
+  OrderIdMap &operator=(OrderIdMap &&other) noexcept {
+    if (this != &other) {
+      this->~OrderIdMap();
+      moveFrom(other);
+    }
+
+    return *this;
+  }
 
   uint32_t find(uint64_t order_id) const noexcept {
     assert(order_id != kEmptyKey);
@@ -75,24 +127,17 @@ public:
     return find(order_id) != kInvalidIdx;
   }
 
-  // Returns:
-  //   true  -> inserted new key
-  //   false -> updated existing key
-  //
-  // Precondition:
-  //   table must not be full.
+  enum class InsertResult : uint8_t { Inserted, Updated, Full };
+
   bool insert(uint64_t order_id, uint32_t pool_index) noexcept {
     const InsertResult result = tryInsert(order_id, pool_index);
+
     assert(result != InsertResult::Full &&
            "OrderIdMap full; increase capacity");
+
     return result == InsertResult::Inserted;
   }
 
-  enum class InsertResult : uint8_t { Inserted, Updated, Full };
-
-  // Production-safe version.
-  // Use this in places where you do not want release builds to silently loop
-  // forever if the map is full.
   InsertResult tryInsert(uint64_t order_id, uint32_t pool_index) noexcept {
     assert(order_id != kEmptyKey);
     assert(pool_index != kInvalidIdx);
@@ -106,16 +151,16 @@ public:
     while (true) {
       const uint64_t k = keys_[h];
 
+      if (k == order_id) {
+        indices_[h] = pool_index;
+        return InsertResult::Updated;
+      }
+
       if (k == kEmptyKey) {
         keys_[h] = order_id;
         indices_[h] = pool_index;
         ++size_;
         return InsertResult::Inserted;
-      }
-
-      if (k == order_id) {
-        indices_[h] = pool_index;
-        return InsertResult::Updated;
       }
 
       h = (h + 1) & mask_;
@@ -146,9 +191,17 @@ public:
     return true;
   }
 
+  // This is lazy-friendly because MADV_DONTNEED releases physical pages
+  // and returns them to zero-fill-on-demand state.
   void clear() noexcept {
-    std::memset(keys_.get(), 0xFF, capacity_ * sizeof(uint64_t));
-    std::memset(indices_.get(), 0xFF, capacity_ * sizeof(uint32_t));
+    if (keys_) {
+      ::madvise(keys_, keys_bytes_, MADV_DONTNEED);
+    }
+
+    if (indices_) {
+      ::madvise(indices_, indices_bytes_, MADV_DONTNEED);
+    }
+
     size_ = 0;
   }
 
@@ -163,10 +216,19 @@ public:
   }
 
 private:
+  static size_t pageSize() noexcept {
+    static const size_t page_size =
+        static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+
+    return page_size;
+  }
+
+  static size_t roundUpToPageSize(size_t n) noexcept {
+    const size_t page = pageSize();
+    return (n + page - 1) & ~(page - 1);
+  }
+
   // MurmurHash3 64-bit finalizer.
-  //
-  // Slightly more expensive than one Fibonacci multiply, but safer for
-  // structured/sequential exchange order IDs.
   static uint64_t hash(uint64_t k) noexcept {
     k ^= k >> 33;
     k *= 0xff51afd7ed558ccdULL;
@@ -189,10 +251,6 @@ private:
 
       const uint64_t natural = hash(next_key) & mask_;
 
-      // We can move next -> gap if the key at `next` would have probed
-      // through `gap` during lookup.
-      //
-      // Distance is calculated modulo capacity because the table is circular.
       const uint64_t dist_next_from_natural = (next - natural) & mask_;
       const uint64_t dist_gap_from_natural = (gap - natural) & mask_;
 
@@ -209,11 +267,36 @@ private:
     indices_[gap] = kInvalidIdx;
   }
 
+  void moveFrom(OrderIdMap &other) noexcept {
+    capacity_ = other.capacity_;
+    mask_ = other.mask_;
+    size_ = other.size_;
+
+    keys_ = other.keys_;
+    indices_ = other.indices_;
+
+    keys_bytes_ = other.keys_bytes_;
+    indices_bytes_ = other.indices_bytes_;
+
+    other.capacity_ = 0;
+    other.mask_ = 0;
+    other.size_ = 0;
+
+    other.keys_ = nullptr;
+    other.indices_ = nullptr;
+
+    other.keys_bytes_ = 0;
+    other.indices_bytes_ = 0;
+  }
+
 private:
   uint32_t capacity_{0};
   uint64_t mask_{0};
   uint32_t size_{0};
 
-  std::unique_ptr<uint64_t[]> keys_;
-  std::unique_ptr<uint32_t[]> indices_;
+  uint64_t *keys_{nullptr};
+  uint32_t *indices_{nullptr};
+
+  size_t keys_bytes_{0};
+  size_t indices_bytes_{0};
 };
