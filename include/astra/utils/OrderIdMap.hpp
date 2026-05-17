@@ -1,119 +1,172 @@
 // OrderIdMap.hpp
 #pragma once
 
+#include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
 
+// Fixed-capacity open-addressed hash table:
+//
+//   uint64_t order_id  ->  uint32_t pool_index
+//
+// Design:
+//   - Structure of Arrays:
+//
+//       keys_[slot]    = order id
+//       indices_[slot] = pool index
+//
+//   - Linear probing
+//   - Backward-shift deletion
+//   - No growth
+//   - No rehash
+//   - No heap allocation after construction
+//
+// Important:
+//   - kEmptyKey is reserved and cannot be inserted.
+//   - kInvalidIdx is reserved and cannot be used as a pool index.
+//   - Keep load factor around <= 50% for stable low-latency behavior.
 class OrderIdMap {
 public:
   static constexpr uint32_t kInvalidIdx = std::numeric_limits<uint32_t>::max();
+
   static constexpr uint64_t kEmptyKey = std::numeric_limits<uint64_t>::max();
 
-  // capacity_pow2 must be a power of two; load factor target ~0.5.
-  // Buckets are allocated lazily on first insert so empty books stay cheap.
-  explicit OrderIdMap(uint32_t capacity_pow2) noexcept
-      : max_capacity_(capacity_pow2) {}
+  explicit OrderIdMap(uint32_t capacity_pow2)
+      : capacity_(capacity_pow2), mask_(capacity_pow2 - 1),
+        keys_(new uint64_t[capacity_pow2]),
+        indices_(new uint32_t[capacity_pow2]) {
+    assert(capacity_pow2 >= 2);
+    assert((capacity_pow2 & (capacity_pow2 - 1)) == 0 &&
+           "capacity must be power of two");
 
-  // Returns kInvalidIdx if not found.
+    clear();
+  }
+
+  OrderIdMap(const OrderIdMap &) = delete;
+  OrderIdMap &operator=(const OrderIdMap &) = delete;
+
+  OrderIdMap(OrderIdMap &&) noexcept = default;
+  OrderIdMap &operator=(OrderIdMap &&) noexcept = default;
+
   uint32_t find(uint64_t order_id) const noexcept {
-    if (!buckets_) {
-      return kInvalidIdx;
-    }
+    assert(order_id != kEmptyKey);
 
     uint64_t h = hash(order_id) & mask_;
+
     while (true) {
-      const Bucket &b = buckets_[h];
-      if (b.order_id == order_id)
-        return b.pool_index;
-      if (b.order_id == kEmptyKey)
+      const uint64_t k = keys_[h];
+
+      if (k == order_id) {
+        return indices_[h];
+      }
+
+      if (k == kEmptyKey) {
         return kInvalidIdx;
+      }
+
       h = (h + 1) & mask_;
     }
   }
 
-  // Insert or update. Caller guarantees room (load factor managed externally).
-  void insert(uint64_t order_id, uint32_t pool_index) noexcept {
-    (void)tryInsert(order_id, pool_index);
+  bool contains(uint64_t order_id) const noexcept {
+    return find(order_id) != kInvalidIdx;
   }
 
-  bool tryInsert(uint64_t order_id, uint32_t pool_index) noexcept {
-    if (buckets_) {
-      uint64_t h = hash(order_id) & mask_;
-      for (uint32_t probe = 0; probe < capacity_; ++probe) {
-        Bucket &b = buckets_[h];
-        if (b.order_id == order_id) {
-          b.pool_index = pool_index;
-          return true;
-        }
-        if (b.order_id == kEmptyKey) {
-          break;
-        }
-        h = (h + 1) & mask_;
-      }
-    }
+  // Returns:
+  //   true  -> inserted new key
+  //   false -> updated existing key
+  //
+  // Precondition:
+  //   table must not be full.
+  bool insert(uint64_t order_id, uint32_t pool_index) noexcept {
+    const InsertResult result = tryInsert(order_id, pool_index);
+    assert(result != InsertResult::Full &&
+           "OrderIdMap full; increase capacity");
+    return result == InsertResult::Inserted;
+  }
 
-    if (!ensureCapacityForInsert()) {
-      return false;
+  enum class InsertResult : uint8_t { Inserted, Updated, Full };
+
+  // Production-safe version.
+  // Use this in places where you do not want release builds to silently loop
+  // forever if the map is full.
+  InsertResult tryInsert(uint64_t order_id, uint32_t pool_index) noexcept {
+    assert(order_id != kEmptyKey);
+    assert(pool_index != kInvalidIdx);
+
+    if (size_ >= capacity_) {
+      return InsertResult::Full;
     }
 
     uint64_t h = hash(order_id) & mask_;
+
     while (true) {
-      Bucket &b = buckets_[h];
-      if (b.order_id == kEmptyKey || b.order_id == order_id) {
-        b.order_id = order_id;
-        b.pool_index = pool_index;
+      const uint64_t k = keys_[h];
+
+      if (k == kEmptyKey) {
+        keys_[h] = order_id;
+        indices_[h] = pool_index;
         ++size_;
-        return true;
+        return InsertResult::Inserted;
       }
+
+      if (k == order_id) {
+        indices_[h] = pool_index;
+        return InsertResult::Updated;
+      }
+
       h = (h + 1) & mask_;
     }
   }
 
-  // Remove and reinsert the following probe cluster to preserve lookup invariants.
   bool erase(uint64_t order_id) noexcept {
-    if (!buckets_) {
-      return false;
-    }
+    assert(order_id != kEmptyKey);
 
     uint64_t h = hash(order_id) & mask_;
+
     while (true) {
-      Bucket &b = buckets_[h];
-      if (b.order_id == kEmptyKey)
+      const uint64_t k = keys_[h];
+
+      if (k == kEmptyKey) {
         return false;
-      if (b.order_id == order_id) {
-        clearBucket(b);
-        --size_;
-
-        uint64_t next = (h + 1) & mask_;
-        while (buckets_[next].order_id != kEmptyKey) {
-          const Bucket moved = buckets_[next];
-          clearBucket(buckets_[next]);
-          --size_;
-          insertInto(buckets_.get(), mask_, moved.order_id, moved.pool_index);
-          ++size_;
-          next = (next + 1) & mask_;
-        }
-
-        return true;
       }
+
+      if (k == order_id) {
+        break;
+      }
+
       h = (h + 1) & mask_;
     }
+
+    eraseAt(h);
+    --size_;
+    return true;
+  }
+
+  void clear() noexcept {
+    std::memset(keys_.get(), 0xFF, capacity_ * sizeof(uint64_t));
+    std::memset(indices_.get(), 0xFF, capacity_ * sizeof(uint32_t));
+    size_ = 0;
+  }
+
+  uint32_t size() const noexcept { return size_; }
+
+  uint32_t capacity() const noexcept { return capacity_; }
+
+  bool empty() const noexcept { return size_ == 0; }
+
+  double loadFactor() const noexcept {
+    return static_cast<double>(size_) / static_cast<double>(capacity_);
   }
 
 private:
-  static constexpr uint32_t kInitialCapacity = 1024;
-
-  struct Bucket {
-    uint64_t order_id = kEmptyKey; // sentinel for empty
-    uint32_t pool_index = kInvalidIdx;
-    uint32_t _pad = 0; // 16-byte bucket — pair fits cache line nicely
-  };
-  static_assert(sizeof(Bucket) == 16, "Bucket should be 16 bytes");
-
-  // Fast integer hash — Murmur3 64-bit finalizer. Order IDs are not adversarial
-  // here, but they may be sequential or clustered, so we still mix them.
+  // MurmurHash3 64-bit finalizer.
+  //
+  // Slightly more expensive than one Fibonacci multiply, but safer for
+  // structured/sequential exchange order IDs.
   static uint64_t hash(uint64_t k) noexcept {
     k ^= k >> 33;
     k *= 0xff51afd7ed558ccdULL;
@@ -123,79 +176,44 @@ private:
     return k;
   }
 
-  bool ensureCapacityForInsert() noexcept {
-    if (max_capacity_ == 0) {
-      return false;
-    }
+  void eraseAt(uint64_t erase_pos) noexcept {
+    uint64_t gap = erase_pos;
+    uint64_t next = (gap + 1) & mask_;
 
-    if (capacity_ == 0) {
-      const uint32_t initial_capacity =
-          max_capacity_ < kInitialCapacity ? max_capacity_ : kInitialCapacity;
-      return rehash(initial_capacity);
-    }
-
-    if ((static_cast<uint64_t>(size_) + 1) * 2 <= capacity_) {
-      return true;
-    }
-
-    if (capacity_ >= max_capacity_) {
-      return size_ < capacity_;
-    }
-
-    uint32_t next_capacity = capacity_ << 1;
-    if (next_capacity <= capacity_ || next_capacity > max_capacity_) {
-      next_capacity = max_capacity_;
-    }
-
-    if (next_capacity == capacity_) {
-      return true;
-    }
-
-    return rehash(next_capacity) || size_ < capacity_;
-  }
-
-  bool rehash(uint32_t capacity) noexcept {
-    std::unique_ptr<Bucket[]> next(new (std::nothrow) Bucket[capacity]);
-    if (!next) {
-      return false;
-    }
-
-    const uint64_t next_mask = static_cast<uint64_t>(capacity - 1);
-    for (uint32_t i = 0; i < capacity_; ++i) {
-      const Bucket &bucket = buckets_[i];
-      if (bucket.order_id != kEmptyKey) {
-        insertInto(next.get(), next_mask, bucket.order_id, bucket.pool_index);
-      }
-    }
-
-    buckets_ = std::move(next);
-    capacity_ = capacity;
-    mask_ = next_mask;
-    return true;
-  }
-
-  static void insertInto(Bucket *buckets, uint64_t mask, uint64_t order_id,
-                         uint32_t pool_index) noexcept {
-    uint64_t h = hash(order_id) & mask;
     while (true) {
-      Bucket &bucket = buckets[h];
-      if (bucket.order_id == kEmptyKey) {
-        bucket.order_id = order_id;
-        bucket.pool_index = pool_index;
-        return;
+      const uint64_t next_key = keys_[next];
+
+      if (next_key == kEmptyKey) {
+        break;
       }
-      h = (h + 1) & mask;
+
+      const uint64_t natural = hash(next_key) & mask_;
+
+      // We can move next -> gap if the key at `next` would have probed
+      // through `gap` during lookup.
+      //
+      // Distance is calculated modulo capacity because the table is circular.
+      const uint64_t dist_next_from_natural = (next - natural) & mask_;
+      const uint64_t dist_gap_from_natural = (gap - natural) & mask_;
+
+      if (dist_gap_from_natural <= dist_next_from_natural) {
+        keys_[gap] = keys_[next];
+        indices_[gap] = indices_[next];
+        gap = next;
+      }
+
+      next = (next + 1) & mask_;
     }
+
+    keys_[gap] = kEmptyKey;
+    indices_[gap] = kInvalidIdx;
   }
 
-  static void clearBucket(Bucket &bucket) noexcept {
-    bucket.order_id = kEmptyKey;
-    bucket.pool_index = kInvalidIdx;
-  }
-
-  uint64_t mask_{0};
-  uint32_t max_capacity_{0};
+private:
   uint32_t capacity_{0};
+  uint64_t mask_{0};
   uint32_t size_{0};
-  std::unique_ptr<Bucket[]> buckets_;
+
+  std::unique_ptr<uint64_t[]> keys_;
+  std::unique_ptr<uint32_t[]> indices_;
 };

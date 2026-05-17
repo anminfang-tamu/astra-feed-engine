@@ -218,7 +218,8 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   order.order_id = msg.orderId();
   order.side = msg.side();
 
-  if (!order_id_map_.tryInsert(order.order_id, order_idx)) {
+  if (order_id_map_.tryInsert(order.order_id, order_idx) !=
+      OrderIdMap::InsertResult::Inserted) {
     freeOrder(order_idx);
     return;
   }
