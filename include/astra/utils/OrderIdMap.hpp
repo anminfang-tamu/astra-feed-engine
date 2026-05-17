@@ -1,93 +1,30 @@
-// OrderIdMap.hpp
 #pragma once
 
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <limits>
-#include <new>
-#include <sys/mman.h>
-#include <unistd.h>
+#include <utility>
+#include <vector>
 
-// Fixed-capacity lazy mmap open-addressed hash table:
-//
-//   uint64_t order_id -> uint32_t pool_index
-//
-// Design:
-//   - SoA layout:
-//       keys_[slot]    = order id
-//       indices_[slot] = pool index
-//
-//   - Linear probing
-//   - Backward-shift deletion
-//   - mmap allocation
-//   - No memset on construction
-//   - No heap traffic in hot path
-//   - No rehash
-//   - No growth
-//
-// Important:
-//   - kEmptyKey is 0.
-//   - order_id == 0 is reserved and cannot be inserted.
-//   - indices_ is not initialized because it is only read after key match.
-//   - Anonymous mmap memory is zero-filled lazily by Linux.
 class OrderIdMap {
 public:
-  static constexpr uint64_t kEmptyKey = 0;
-
   static constexpr uint32_t kInvalidIdx = std::numeric_limits<uint32_t>::max();
 
+private:
+  static constexpr uint8_t kEmpty = 0;
+  static constexpr uint8_t kOccupied = 1;
+
+  struct Entry {
+    uint64_t order_ref{0};
+    uint32_t pool_index{kInvalidIdx};
+    uint8_t state{kEmpty};
+  };
+
+public:
   explicit OrderIdMap(uint32_t capacity_pow2)
-      : capacity_(capacity_pow2),
-        mask_(static_cast<uint64_t>(capacity_pow2 - 1)) {
-    assert(capacity_pow2 >= 2);
-    assert((capacity_pow2 & (capacity_pow2 - 1)) == 0 &&
-           "capacity must be power of two");
-
-    keys_bytes_ =
-        roundUpToPageSize(static_cast<size_t>(capacity_) * sizeof(uint64_t));
-
-    indices_bytes_ =
-        roundUpToPageSize(static_cast<size_t>(capacity_) * sizeof(uint32_t));
-
-    keys_ = static_cast<uint64_t *>(::mmap(nullptr, keys_bytes_,
-                                           PROT_READ | PROT_WRITE,
-                                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-
-    if (keys_ == MAP_FAILED) {
-      keys_ = nullptr;
-      std::abort();
-    }
-
-    indices_ = static_cast<uint32_t *>(
-        ::mmap(nullptr, indices_bytes_, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-
-    if (indices_ == MAP_FAILED) {
-      ::munmap(keys_, keys_bytes_);
-      keys_ = nullptr;
-      indices_ = nullptr;
-      std::abort();
-    }
-
-#ifdef MADV_HUGEPAGE
-    // Optional. Linux may ignore this.
-    // Good for large maps because it can reduce TLB misses.
-    ::madvise(keys_, keys_bytes_, MADV_HUGEPAGE);
-    ::madvise(indices_, indices_bytes_, MADV_HUGEPAGE);
-#endif
-  }
-
-  ~OrderIdMap() {
-    if (keys_) {
-      ::munmap(keys_, keys_bytes_);
-    }
-
-    if (indices_) {
-      ::munmap(indices_, indices_bytes_);
-    }
-  }
+      : entries_(checkedCapacity(capacity_pow2)), capacity_(capacity_pow2),
+        mask_(capacity_pow2 - 1) {}
 
   OrderIdMap(const OrderIdMap &) = delete;
   OrderIdMap &operator=(const OrderIdMap &) = delete;
@@ -96,110 +33,95 @@ public:
 
   OrderIdMap &operator=(OrderIdMap &&other) noexcept {
     if (this != &other) {
-      this->~OrderIdMap();
-      moveFrom(other);
+      entries_ = std::move(other.entries_);
+      capacity_ = other.capacity_;
+      mask_ = other.mask_;
+      size_ = other.size_;
+
+      other.capacity_ = 0;
+      other.mask_ = 0;
+      other.size_ = 0;
     }
 
     return *this;
   }
 
-  uint32_t find(uint64_t order_id) const noexcept {
-    assert(order_id != kEmptyKey);
-
-    uint64_t h = hash(order_id) & mask_;
-
-    while (true) {
-      const uint64_t k = keys_[h];
-
-      if (k == order_id) {
-        return indices_[h];
-      }
-
-      if (k == kEmptyKey) {
-        return kInvalidIdx;
-      }
-
-      h = (h + 1) & mask_;
-    }
-  }
-
-  bool contains(uint64_t order_id) const noexcept {
-    return find(order_id) != kInvalidIdx;
-  }
-
-  enum class InsertResult : uint8_t { Inserted, Updated, Full };
-
-  bool insert(uint64_t order_id, uint32_t pool_index) noexcept {
-    const InsertResult result = tryInsert(order_id, pool_index);
-
-    assert(result != InsertResult::Full &&
-           "OrderIdMap full; increase capacity");
-
-    return result == InsertResult::Inserted;
-  }
-
-  InsertResult tryInsert(uint64_t order_id, uint32_t pool_index) noexcept {
-    assert(order_id != kEmptyKey);
-    assert(pool_index != kInvalidIdx);
-
-    if (size_ >= capacity_) {
-      return InsertResult::Full;
+  bool insert(uint64_t itch_order_ref, uint32_t pool_index) noexcept {
+    if (pool_index == kInvalidIdx || size_ >= capacity_) {
+      return false;
     }
 
-    uint64_t h = hash(order_id) & mask_;
+    uint32_t slot = indexFor(itch_order_ref);
+    for (uint32_t probes = 0; probes < capacity_; ++probes) {
+      Entry &entry = entries_[slot];
 
-    while (true) {
-      const uint64_t k = keys_[h];
-
-      if (k == order_id) {
-        indices_[h] = pool_index;
-        return InsertResult::Updated;
-      }
-
-      if (k == kEmptyKey) {
-        keys_[h] = order_id;
-        indices_[h] = pool_index;
+      if (entry.state == kEmpty) {
+        entry.order_ref = itch_order_ref;
+        entry.pool_index = pool_index;
+        entry.state = kOccupied;
         ++size_;
-        return InsertResult::Inserted;
+        return true;
       }
 
-      h = (h + 1) & mask_;
-    }
-  }
-
-  bool erase(uint64_t order_id) noexcept {
-    assert(order_id != kEmptyKey);
-
-    uint64_t h = hash(order_id) & mask_;
-
-    while (true) {
-      const uint64_t k = keys_[h];
-
-      if (k == kEmptyKey) {
+      if (entry.order_ref == itch_order_ref) {
         return false;
       }
 
-      if (k == order_id) {
-        break;
-      }
-
-      h = (h + 1) & mask_;
+      slot = nextSlot(slot);
     }
 
-    eraseAt(h);
-    --size_;
-    return true;
+    return false;
   }
 
-  // This is lazy-friendly because MADV_DONTNEED releases physical pages
-  // and returns them to zero-fill-on-demand state.
-  void clear() noexcept {
-    if (keys_) {
-      ::madvise(keys_, keys_bytes_, MADV_DONTNEED);
+  uint32_t find(uint64_t itch_order_ref) const noexcept {
+    uint32_t slot = indexFor(itch_order_ref);
+    for (uint32_t probes = 0; probes < capacity_; ++probes) {
+      const Entry &entry = entries_[slot];
+
+      if (entry.state == kEmpty) {
+        return kInvalidIdx;
+      }
+
+      if (entry.order_ref == itch_order_ref) {
+        return entry.pool_index;
+      }
+
+      slot = nextSlot(slot);
     }
 
-    if (indices_) {
-      ::madvise(indices_, indices_bytes_, MADV_DONTNEED);
+    return kInvalidIdx;
+  }
+
+  bool erase(uint64_t itch_order_ref) noexcept {
+    uint32_t slot = indexFor(itch_order_ref);
+    for (uint32_t probes = 0; probes < capacity_; ++probes) {
+      const Entry &entry = entries_[slot];
+
+      if (entry.state == kEmpty) {
+        return false;
+      }
+
+      if (entry.order_ref == itch_order_ref) {
+        eraseAt(slot);
+        --size_;
+        return true;
+      }
+
+      slot = nextSlot(slot);
+    }
+
+    return false;
+  }
+
+  bool contains(uint64_t itch_order_ref) const noexcept {
+    return find(itch_order_ref) != kInvalidIdx;
+  }
+
+  void clear() noexcept {
+    for (Entry &entry : entries_) {
+      entry.order_ref = 0;
+      entry.pool_index = kInvalidIdx;
+      entry.state = kEmpty;
     }
 
     size_ = 0;
@@ -212,91 +134,117 @@ public:
   bool empty() const noexcept { return size_ == 0; }
 
   double loadFactor() const noexcept {
+    if (capacity_ == 0) {
+      return 0.0;
+    }
+
     return static_cast<double>(size_) / static_cast<double>(capacity_);
   }
 
+  uint32_t maxProbeLength() const noexcept {
+    uint32_t max_probe_length = 0;
+
+    for (uint32_t slot = 0; slot < capacity_; ++slot) {
+      const Entry &entry = entries_[slot];
+      if (entry.state != kOccupied) {
+        continue;
+      }
+
+      const uint32_t probe_length =
+          probeDistance(indexFor(entry.order_ref), slot) + 1;
+      if (probe_length > max_probe_length) {
+        max_probe_length = probe_length;
+      }
+    }
+
+    return max_probe_length;
+  }
+
+  double averageProbeLength() const noexcept {
+    if (size_ == 0) {
+      return 0.0;
+    }
+
+    uint64_t total_probe_length = 0;
+    for (uint32_t slot = 0; slot < capacity_; ++slot) {
+      const Entry &entry = entries_[slot];
+      if (entry.state != kOccupied) {
+        continue;
+      }
+
+      total_probe_length += probeDistance(indexFor(entry.order_ref), slot) + 1;
+    }
+
+    return static_cast<double>(total_probe_length) / static_cast<double>(size_);
+  }
+
 private:
-  static size_t pageSize() noexcept {
-    static const size_t page_size =
-        static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  static uint32_t checkedCapacity(uint32_t capacity_pow2) noexcept {
+    if (capacity_pow2 < 2 || (capacity_pow2 & (capacity_pow2 - 1)) != 0) {
+      assert(false && "OrderIndex capacity must be a power of two >= 2");
+      std::abort();
+    }
 
-    return page_size;
+    return capacity_pow2;
   }
 
-  static size_t roundUpToPageSize(size_t n) noexcept {
-    const size_t page = pageSize();
-    return (n + page - 1) & ~(page - 1);
+  static uint64_t hash(uint64_t value) noexcept {
+    value ^= value >> 33;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33;
+    value *= 0xc4ceb9fe1a85ec53ULL;
+    value ^= value >> 33;
+    return value;
   }
 
-  // MurmurHash3 64-bit finalizer.
-  static uint64_t hash(uint64_t k) noexcept {
-    k ^= k >> 33;
-    k *= 0xff51afd7ed558ccdULL;
-    k ^= k >> 33;
-    k *= 0xc4ceb9fe1a85ec53ULL;
-    k ^= k >> 33;
-    return k;
+  uint32_t indexFor(uint64_t itch_order_ref) const noexcept {
+    return static_cast<uint32_t>(hash(itch_order_ref) & mask_);
   }
 
-  void eraseAt(uint64_t erase_pos) noexcept {
-    uint64_t gap = erase_pos;
-    uint64_t next = (gap + 1) & mask_;
+  uint32_t nextSlot(uint32_t slot) const noexcept { return (slot + 1) & mask_; }
 
-    while (true) {
-      const uint64_t next_key = keys_[next];
+  uint32_t probeDistance(uint32_t natural_slot, uint32_t slot) const noexcept {
+    return (slot - natural_slot) & mask_;
+  }
 
-      if (next_key == kEmptyKey) {
+  void eraseAt(uint32_t erase_slot) noexcept {
+    uint32_t gap = erase_slot;
+    uint32_t slot = nextSlot(gap);
+
+    for (uint32_t scanned = 0; scanned + 1 < capacity_; ++scanned) {
+      Entry &entry = entries_[slot];
+      if (entry.state == kEmpty) {
         break;
       }
 
-      const uint64_t natural = hash(next_key) & mask_;
-
-      const uint64_t dist_next_from_natural = (next - natural) & mask_;
-      const uint64_t dist_gap_from_natural = (gap - natural) & mask_;
-
-      if (dist_gap_from_natural <= dist_next_from_natural) {
-        keys_[gap] = keys_[next];
-        indices_[gap] = indices_[next];
-        gap = next;
+      const uint32_t natural_slot = indexFor(entry.order_ref);
+      if (probeDistance(natural_slot, gap) <
+          probeDistance(natural_slot, slot)) {
+        entries_[gap] = entry;
+        gap = slot;
       }
 
-      next = (next + 1) & mask_;
+      slot = nextSlot(slot);
     }
 
-    keys_[gap] = kEmptyKey;
-    indices_[gap] = kInvalidIdx;
+    entries_[gap].order_ref = 0;
+    entries_[gap].pool_index = kInvalidIdx;
+    entries_[gap].state = kEmpty;
   }
 
   void moveFrom(OrderIdMap &other) noexcept {
+    entries_ = std::move(other.entries_);
     capacity_ = other.capacity_;
     mask_ = other.mask_;
     size_ = other.size_;
 
-    keys_ = other.keys_;
-    indices_ = other.indices_;
-
-    keys_bytes_ = other.keys_bytes_;
-    indices_bytes_ = other.indices_bytes_;
-
     other.capacity_ = 0;
     other.mask_ = 0;
     other.size_ = 0;
-
-    other.keys_ = nullptr;
-    other.indices_ = nullptr;
-
-    other.keys_bytes_ = 0;
-    other.indices_bytes_ = 0;
   }
 
-private:
+  std::vector<Entry> entries_;
   uint32_t capacity_{0};
-  uint64_t mask_{0};
+  uint32_t mask_{0};
   uint32_t size_{0};
-
-  uint64_t *keys_{nullptr};
-  uint32_t *indices_{nullptr};
-
-  size_t keys_bytes_{0};
-  size_t indices_bytes_{0};
 };

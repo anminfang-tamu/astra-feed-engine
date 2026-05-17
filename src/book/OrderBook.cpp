@@ -8,9 +8,32 @@ namespace {
 
 constexpr uint32_t kPriceCenter =
     static_cast<uint32_t>(OrderBook::kMaxPriceLevels / 2);
-constexpr uint32_t kOrderIdMapCapacity =
-    static_cast<uint32_t>(OrderBook::kOrderPoolSize * 2);
 constexpr uint64_t kInvalidOrderId = 0;
+
+constexpr uint64_t nextPowerOfTwo(uint64_t value) noexcept {
+  if (value <= 2) {
+    return 2;
+  }
+
+  --value;
+  value |= value >> 1;
+  value |= value >> 2;
+  value |= value >> 4;
+  value |= value >> 8;
+  value |= value >> 16;
+  value |= value >> 32;
+  ++value;
+
+  return value;
+}
+
+constexpr uint64_t kOrderIndexCapacity64 =
+    nextPowerOfTwo(OrderBook::kOrderPoolSize * 4);
+static_assert(kOrderIndexCapacity64 <=
+                  std::numeric_limits<uint32_t>::max(),
+              "OrderIndex capacity must fit in uint32_t");
+constexpr uint32_t kOrderIndexCapacity =
+    static_cast<uint32_t>(kOrderIndexCapacity64);
 
 bool isValidSide(OrderSide side) noexcept {
   return side == OrderSide::Buy || side == OrderSide::Sell;
@@ -84,7 +107,7 @@ void unlinkOrder(std::vector<Order> &orders, PriceLevel &level,
 
 OrderBook::OrderBook(uint32_t symbol_id)
     : symbol_id_(symbol_id), reference_price_(0), tick_size_(1),
-      order_id_map_(kOrderIdMapCapacity) {
+      order_index_(kOrderIndexCapacity) {
 }
 
 bool OrderBook::ensureLevelStorage() noexcept {
@@ -172,7 +195,7 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != kInvalidOrderId) {
-    order_id_map_.erase(order.order_id);
+    order_index_.erase(order.order_id);
   }
   resetOrder(order);
   try {
@@ -184,7 +207,7 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
 void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   if (msg.qty() == 0 || !isValidSide(msg.side()) ||
       msg.orderId() == kInvalidOrderId ||
-      order_id_map_.contains(msg.orderId())) {
+      order_index_.find(msg.orderId()) != kInvalidIdx) {
     return;
   }
 
@@ -221,14 +244,7 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   order.order_id = msg.orderId();
   order.side = msg.side();
 
-  bool inserted = false;
-  try {
-    inserted = order_id_map_.emplace(order.order_id, order_idx).second;
-  } catch (...) {
-    inserted = false;
-  }
-
-  if (!inserted) {
+  if (!order_index_.insert(order.order_id, order_idx)) {
     order.order_id = kInvalidOrderId;
     freeOrder(order_idx);
     return;
@@ -243,12 +259,10 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
 }
 
 void OrderBook::modifyOrder(const MarketDataMessageView &msg) noexcept {
-  const auto order_it = order_id_map_.find(msg.orderId());
-  if (order_it == order_id_map_.end() ||
-      order_it->second >= order_pool_.size()) {
+  const uint32_t order_idx = order_index_.find(msg.orderId());
+  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
     return;
   }
-  const uint32_t order_idx = order_it->second;
 
   if (msg.qty() == 0) {
     deleteOrder(msg);
@@ -310,12 +324,10 @@ void OrderBook::modifyOrder(const MarketDataMessageView &msg) noexcept {
 }
 
 void OrderBook::deleteOrder(const MarketDataMessageView &msg) noexcept {
-  const auto order_it = order_id_map_.find(msg.orderId());
-  if (order_it == order_id_map_.end() ||
-      order_it->second >= order_pool_.size()) {
+  const uint32_t order_idx = order_index_.find(msg.orderId());
+  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
     return;
   }
-  const uint32_t order_idx = order_it->second;
 
   Order &order = order_pool_[order_idx];
   std::vector<PriceLevel> &levels =
@@ -344,12 +356,10 @@ void OrderBook::trade(const MarketDataMessageView &msg) noexcept {
     return;
   }
 
-  const auto order_it = order_id_map_.find(msg.orderId());
-  if (order_it == order_id_map_.end() ||
-      order_it->second >= order_pool_.size()) {
+  const uint32_t order_idx = order_index_.find(msg.orderId());
+  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
     return;
   }
-  const uint32_t order_idx = order_it->second;
 
   Order &order = order_pool_[order_idx];
   if (msg.qty() > order.qty) {

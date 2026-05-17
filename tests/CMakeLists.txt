@@ -24,6 +24,7 @@ add_executable(astra_tests
     source/UdpReceiverTest.cpp
     utils/BitmapTest.cpp
     utils/CpuAffinityTest.cpp
+    utils/OrderIdMapTest.cpp
     simulator/MarketSimulatorTest.cpp
 )
 
