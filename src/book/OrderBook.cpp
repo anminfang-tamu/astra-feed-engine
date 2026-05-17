@@ -10,6 +10,7 @@ constexpr uint32_t kPriceCenter =
     static_cast<uint32_t>(OrderBook::kMaxPriceLevels / 2);
 constexpr uint32_t kOrderIdMapCapacity =
     static_cast<uint32_t>(OrderBook::kOrderPoolSize * 2);
+constexpr uint64_t kInvalidOrderId = 0;
 
 bool isValidSide(OrderSide side) noexcept {
   return side == OrderSide::Buy || side == OrderSide::Sell;
@@ -28,7 +29,7 @@ void resetOrder(Order &order) noexcept {
   order.qty = 0;
   order.level_idx = OrderBook::kInvalidIdx;
   order.price = 0;
-  order.order_id = OrderIdMap::kEmptyKey;
+  order.order_id = kInvalidOrderId;
   order.side = OrderSide::Buy;
 }
 
@@ -170,7 +171,9 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
   }
 
   Order &order = order_pool_[order_idx];
-  order_id_map_.erase(order.order_id);
+  if (order.order_id != kInvalidOrderId) {
+    order_id_map_.erase(order.order_id);
+  }
   resetOrder(order);
   try {
     free_list_.push_back(order_idx);
@@ -180,8 +183,8 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
 
 void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   if (msg.qty() == 0 || !isValidSide(msg.side()) ||
-      msg.orderId() == OrderIdMap::kEmptyKey ||
-      order_id_map_.find(msg.orderId()) != OrderIdMap::kInvalidIdx) {
+      msg.orderId() == kInvalidOrderId ||
+      order_id_map_.contains(msg.orderId())) {
     return;
   }
 
@@ -218,8 +221,15 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   order.order_id = msg.orderId();
   order.side = msg.side();
 
-  if (order_id_map_.tryInsert(order.order_id, order_idx) !=
-      OrderIdMap::InsertResult::Inserted) {
+  bool inserted = false;
+  try {
+    inserted = order_id_map_.emplace(order.order_id, order_idx).second;
+  } catch (...) {
+    inserted = false;
+  }
+
+  if (!inserted) {
+    order.order_id = kInvalidOrderId;
     freeOrder(order_idx);
     return;
   }
@@ -230,14 +240,15 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
   if (was_empty) {
     bitmap.set(level_idx);
   }
-
 }
 
 void OrderBook::modifyOrder(const MarketDataMessageView &msg) noexcept {
-  const uint32_t order_idx = order_id_map_.find(msg.orderId());
-  if (order_idx == OrderIdMap::kInvalidIdx || order_idx >= order_pool_.size()) {
+  const auto order_it = order_id_map_.find(msg.orderId());
+  if (order_it == order_id_map_.end() ||
+      order_it->second >= order_pool_.size()) {
     return;
   }
+  const uint32_t order_idx = order_it->second;
 
   if (msg.qty() == 0) {
     deleteOrder(msg);
@@ -299,10 +310,12 @@ void OrderBook::modifyOrder(const MarketDataMessageView &msg) noexcept {
 }
 
 void OrderBook::deleteOrder(const MarketDataMessageView &msg) noexcept {
-  const uint32_t order_idx = order_id_map_.find(msg.orderId());
-  if (order_idx == OrderIdMap::kInvalidIdx || order_idx >= order_pool_.size()) {
+  const auto order_it = order_id_map_.find(msg.orderId());
+  if (order_it == order_id_map_.end() ||
+      order_it->second >= order_pool_.size()) {
     return;
   }
+  const uint32_t order_idx = order_it->second;
 
   Order &order = order_pool_[order_idx];
   std::vector<PriceLevel> &levels =
@@ -331,10 +344,12 @@ void OrderBook::trade(const MarketDataMessageView &msg) noexcept {
     return;
   }
 
-  const uint32_t order_idx = order_id_map_.find(msg.orderId());
-  if (order_idx == OrderIdMap::kInvalidIdx || order_idx >= order_pool_.size()) {
+  const auto order_it = order_id_map_.find(msg.orderId());
+  if (order_it == order_id_map_.end() ||
+      order_it->second >= order_pool_.size()) {
     return;
   }
+  const uint32_t order_idx = order_it->second;
 
   Order &order = order_pool_[order_idx];
   if (msg.qty() > order.qty) {

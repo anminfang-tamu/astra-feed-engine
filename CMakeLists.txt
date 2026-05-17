@@ -13,6 +13,7 @@ option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
 
 find_library(ZLIB_LIBRARY z REQUIRED)
+find_package(absl CONFIG REQUIRED)
 
 add_library(astra_feed_engine STATIC
     src/book/BookManager.cpp
@@ -55,6 +56,8 @@ target_include_directories(astra_feed_engine
 )
 
 target_link_libraries(astra_feed_engine
+    PUBLIC
+        absl::flat_hash_map
     PRIVATE
         ${ZLIB_LIBRARY}
 )

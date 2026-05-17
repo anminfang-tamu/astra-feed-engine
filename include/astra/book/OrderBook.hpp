@@ -5,9 +5,10 @@
 #include "astra/book/Order.hpp"
 #include "astra/book/PriceLevel.hpp"
 #include "astra/protocol/MarketDataMessageView.hpp"
-#include "astra/utils/OrderIdMap.hpp"
+// #include "astra/utils/OrderIdMap.hpp"
 #include "astra/utils/PriceBitmap.hpp"
 
+#include <absl/container/flat_hash_map.h>
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
@@ -51,5 +52,7 @@ private:
   PriceBitmap bid_bitmap_;
   PriceBitmap ask_bitmap_;
 
-  OrderIdMap order_id_map_; // maps order_id to order_idx in order_pool_
+  // OrderIdMap order_id_map_; // maps order_id to order_idx in order_pool_
+  absl::flat_hash_map<uint64_t, uint32_t>
+      order_id_map_; // maps order_id to order_idx in order_pool_
 };
