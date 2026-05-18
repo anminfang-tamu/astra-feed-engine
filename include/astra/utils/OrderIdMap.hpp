@@ -1,11 +1,11 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
-#include <utility>
-#include <vector>
+#include <sys/mman.h>
 
 class OrderIdMap {
 public:
@@ -16,15 +16,20 @@ private:
   static constexpr uint8_t kOccupied = 1;
 
   struct Entry {
-    uint64_t order_ref{0};
-    uint32_t pool_index{kInvalidIdx};
-    uint8_t state{kEmpty};
+    uint64_t order_ref;
+    uint32_t pool_index;
+    uint8_t state;
+    uint8_t padding[3];
   };
+  static_assert(sizeof(Entry) == 16);
 
 public:
   explicit OrderIdMap(uint32_t capacity_pow2)
-      : entries_(checkedCapacity(capacity_pow2)), capacity_(capacity_pow2),
-        mask_(capacity_pow2 - 1) {}
+      : capacity_(checkedCapacity(capacity_pow2)), mask_(capacity_ - 1),
+        bytes_(entryBytes(capacity_)),
+        entries_(mapEntries(bytes_)) {}
+
+  ~OrderIdMap() { unmapEntries(); }
 
   OrderIdMap(const OrderIdMap &) = delete;
   OrderIdMap &operator=(const OrderIdMap &) = delete;
@@ -33,14 +38,18 @@ public:
 
   OrderIdMap &operator=(OrderIdMap &&other) noexcept {
     if (this != &other) {
-      entries_ = std::move(other.entries_);
+      unmapEntries();
       capacity_ = other.capacity_;
       mask_ = other.mask_;
       size_ = other.size_;
+      bytes_ = other.bytes_;
+      entries_ = other.entries_;
 
       other.capacity_ = 0;
       other.mask_ = 0;
       other.size_ = 0;
+      other.bytes_ = 0;
+      other.entries_ = nullptr;
     }
 
     return *this;
@@ -118,10 +127,10 @@ public:
   }
 
   void clear() noexcept {
-    for (Entry &entry : entries_) {
-      entry.order_ref = 0;
-      entry.pool_index = kInvalidIdx;
-      entry.state = kEmpty;
+    if (entries_ != nullptr && bytes_ != 0) {
+      Entry *new_entries = mapEntries(bytes_);
+      unmapEntries();
+      entries_ = new_entries;
     }
 
     size_ = 0;
@@ -179,6 +188,14 @@ public:
   }
 
 private:
+#if defined(MAP_ANONYMOUS)
+  static constexpr int kAnonymousMapFlag = MAP_ANONYMOUS;
+#elif defined(MAP_ANON)
+  static constexpr int kAnonymousMapFlag = MAP_ANON;
+#else
+#error "OrderIdMap requires MAP_ANONYMOUS or MAP_ANON"
+#endif
+
   static uint32_t checkedCapacity(uint32_t capacity_pow2) noexcept {
     if (capacity_pow2 < 2 || (capacity_pow2 & (capacity_pow2 - 1)) != 0) {
       assert(false && "OrderIndex capacity must be a power of two >= 2");
@@ -186,6 +203,21 @@ private:
     }
 
     return capacity_pow2;
+  }
+
+  static size_t entryBytes(uint32_t capacity) noexcept {
+    return static_cast<size_t>(capacity) * sizeof(Entry);
+  }
+
+  static Entry *mapEntries(size_t bytes) noexcept {
+    void *mapping =
+        ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | kAnonymousMapFlag, -1, 0);
+    if (mapping == MAP_FAILED) {
+      std::abort();
+    }
+
+    return static_cast<Entry *>(mapping);
   }
 
   static uint64_t hash(uint64_t value) noexcept {
@@ -228,23 +260,34 @@ private:
     }
 
     entries_[gap].order_ref = 0;
-    entries_[gap].pool_index = kInvalidIdx;
+    entries_[gap].pool_index = 0;
     entries_[gap].state = kEmpty;
   }
 
+  void unmapEntries() noexcept {
+    if (entries_ != nullptr) {
+      ::munmap(entries_, bytes_);
+      entries_ = nullptr;
+    }
+  }
+
   void moveFrom(OrderIdMap &other) noexcept {
-    entries_ = std::move(other.entries_);
     capacity_ = other.capacity_;
     mask_ = other.mask_;
     size_ = other.size_;
+    bytes_ = other.bytes_;
+    entries_ = other.entries_;
 
     other.capacity_ = 0;
     other.mask_ = 0;
     other.size_ = 0;
+    other.bytes_ = 0;
+    other.entries_ = nullptr;
   }
 
-  std::vector<Entry> entries_;
   uint32_t capacity_{0};
   uint32_t mask_{0};
   uint32_t size_{0};
+  size_t bytes_{0};
+  Entry *entries_{nullptr};
 };
