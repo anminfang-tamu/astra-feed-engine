@@ -26,8 +26,7 @@ private:
 public:
   explicit OrderIdMap(uint32_t capacity_pow2)
       : capacity_(checkedCapacity(capacity_pow2)), mask_(capacity_ - 1),
-        bytes_(entryBytes(capacity_)),
-        entries_(mapEntries(bytes_)) {}
+        bytes_(entryBytes(capacity_)), entries_(mapEntries(bytes_)) {}
 
   ~OrderIdMap() { unmapEntries(); }
 
@@ -210,12 +209,37 @@ private:
   }
 
   static Entry *mapEntries(size_t bytes) noexcept {
-    void *mapping =
-        ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | kAnonymousMapFlag, -1, 0);
+    // Round up to 2 MB boundary for huge page compatibility
+    constexpr size_t kHugePageSize = 2 * 1024 * 1024;
+    const size_t aligned_bytes =
+        (bytes + kHugePageSize - 1) & ~(kHugePageSize - 1);
+
+    // Determine MAP_POPULATE availability at compile time
+    constexpr int kPopulate =
+#ifdef MAP_POPULATE
+        MAP_POPULATE;
+#else
+        0;
+#endif
+
+    // Try explicit huge pages first (best case)
+    void *mapping = ::mmap(
+        nullptr, aligned_bytes, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | kAnonymousMapFlag | MAP_HUGETLB | kPopulate, -1, 0);
+
     if (mapping == MAP_FAILED) {
-      std::abort();
+      // Fall back to regular pages with transparent huge page hint
+      mapping = ::mmap(nullptr, aligned_bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | kAnonymousMapFlag | kPopulate, -1, 0);
+      if (mapping == MAP_FAILED) {
+        std::abort();
+      }
+      // Hint kernel to use transparent huge pages where possible
+      ::madvise(mapping, aligned_bytes, MADV_HUGEPAGE);
     }
+
+    // Pin memory in RAM — best-effort, ignore failure in dev environments
+    ::mlock(mapping, aligned_bytes);
 
     return static_cast<Entry *>(mapping);
   }
