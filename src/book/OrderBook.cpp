@@ -107,32 +107,23 @@ void unlinkOrder(std::vector<Order> &orders, PriceLevel &level,
 
 OrderBook::OrderBook(uint32_t symbol_id)
     : symbol_id_(symbol_id), reference_price_(0), tick_size_(1),
-      order_index_(kOrderIndexCapacity) {
-}
-
-bool OrderBook::ensureLevelStorage() noexcept {
-  if (bid_levels_.size() == kMaxPriceLevels &&
-      ask_levels_.size() == kMaxPriceLevels) {
-    return true;
+      order_pool_(kOrderPoolSize), free_list_(kOrderPoolSize),
+      free_list_size_(kOrderPoolSize), bid_levels_(kMaxPriceLevels),
+      ask_levels_(kMaxPriceLevels), order_index_(kOrderIndexCapacity) {
+  for (PriceLevel &level : bid_levels_) {
+    resetLevel(level);
+  }
+  for (PriceLevel &level : ask_levels_) {
+    resetLevel(level);
   }
 
-  try {
-    bid_levels_.resize(kMaxPriceLevels);
-    ask_levels_.resize(kMaxPriceLevels);
-
-    for (PriceLevel &level : bid_levels_) {
-      resetLevel(level);
-    }
-    for (PriceLevel &level : ask_levels_) {
-      resetLevel(level);
-    }
-  } catch (...) {
-    std::vector<PriceLevel>().swap(bid_levels_);
-    std::vector<PriceLevel>().swap(ask_levels_);
-    return false;
+  for (Order &order : order_pool_) {
+    resetOrder(order);
   }
 
-  return true;
+  for (size_t i = 0; i < free_list_.size(); ++i) {
+    free_list_[i] = static_cast<uint32_t>(free_list_.size() - 1 - i);
+  }
 }
 
 uint32_t OrderBook::priceToIndex(uint64_t price) const noexcept {
@@ -167,24 +158,16 @@ uint32_t OrderBook::priceToIndex(uint64_t price) const noexcept {
 }
 
 uint32_t OrderBook::allocateOrder() noexcept {
-  if (!free_list_.empty()) {
-    const uint32_t order_idx = free_list_.back();
-    free_list_.pop_back();
-    resetOrder(order_pool_[order_idx]);
-    return order_idx;
-  }
-
-  if (order_pool_.size() >= kOrderPoolSize) {
+  if (free_list_size_ == 0) {
     return kInvalidIdx;
   }
 
-  const uint32_t order_idx = static_cast<uint32_t>(order_pool_.size());
-  try {
-    order_pool_.push_back(Order{});
-  } catch (...) {
+  const uint32_t order_idx = free_list_[--free_list_size_];
+  if (order_idx >= order_pool_.size()) {
     return kInvalidIdx;
   }
-  resetOrder(order_pool_.back());
+
+  resetOrder(order_pool_[order_idx]);
   return order_idx;
 }
 
@@ -198,9 +181,8 @@ void OrderBook::freeOrder(uint32_t order_idx) noexcept {
     order_index_.erase(order.order_id);
   }
   resetOrder(order);
-  try {
-    free_list_.push_back(order_idx);
-  } catch (...) {
+  if (free_list_size_ < free_list_.size()) {
+    free_list_[free_list_size_++] = order_idx;
   }
 }
 
@@ -217,10 +199,6 @@ void OrderBook::addOrder(const MarketDataMessageView &msg) noexcept {
 
   const uint32_t level_idx = priceToIndex(msg.price());
   if (level_idx == kInvalidIdx) {
-    return;
-  }
-
-  if (!ensureLevelStorage()) {
     return;
   }
 

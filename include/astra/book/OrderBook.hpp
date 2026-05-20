@@ -34,7 +34,6 @@ private:
   uint32_t priceToIndex(uint64_t price) const noexcept;
   uint32_t allocateOrder() noexcept;
   void freeOrder(uint32_t order_idx) noexcept;
-  bool ensureLevelStorage() noexcept;
 
   uint32_t symbol_id_;
   uint64_t reference_price_;
@@ -43,6 +42,7 @@ private:
   // Order Arena
   alignas(64) std::vector<Order> order_pool_;
   std::vector<uint32_t> free_list_; // stack of free order indices
+  size_t free_list_size_;
 
   // Price levels - dense arrays
   std::vector<PriceLevel> bid_levels_;
