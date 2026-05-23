@@ -8,9 +8,12 @@ enum class DecodeStatus {
   InvalidMessageType,
   InvalidSize,
   UnSupportedVersion,
-  InvalidOrderSide
+  InvalidOrderSide,
+  Heartbeat,
+  EndOfStream,
 };
 
 struct DecodeResult {
-  DecodeStatus status;
+  DecodeStatus status{DecodeStatus::Ok};
+  bool         had_gap{false};
 };

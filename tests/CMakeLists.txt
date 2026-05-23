@@ -18,14 +18,14 @@ endif()
 add_executable(astra_tests
     book/BookManagerTest.cpp
     book/OrderBookTest.cpp
+    codec/MoldUdpDecoderTest.cpp
     metrics/LatencyRecorderTest.cpp
     replay/itch/ItchParserTest.cpp
-    replay/taq/NyseTaqParserTest.cpp
+    sequencing/SequenceTrackerTest.cpp
     source/UdpReceiverTest.cpp
     utils/BitmapTest.cpp
     utils/CpuAffinityTest.cpp
     utils/OrderIdMapTest.cpp
-    simulator/MarketSimulatorTest.cpp
 )
 
 target_link_libraries(astra_tests

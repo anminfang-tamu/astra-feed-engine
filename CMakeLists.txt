@@ -7,10 +7,10 @@ project(astra_feed_engine
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(ASTRA_BUILD_APPS "Build application binaries" ON)
-option(ASTRA_BUILD_TESTS "Build tests" ON)
-option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
-option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
+option(ASTRA_BUILD_APPS       "Build application binaries" ON)
+option(ASTRA_BUILD_TESTS      "Build tests"                ON)
+option(ASTRA_BUILD_BENCHMARKS "Build benchmarks"           OFF)
+option(ASTRA_ENABLE_DPDK      "Build DPDK receiver support" OFF)
 
 find_library(ZLIB_LIBRARY z REQUIRED)
 
@@ -18,8 +18,7 @@ add_library(astra_feed_engine STATIC
     src/book/BookManager.cpp
     src/book/OrderBook.cpp
     src/book/PriceLevel.cpp
-    src/codec/BinaryDecoder.cpp
-    src/codec/BinaryEncoder.cpp
+    src/codec/MoldUdpDecoder.cpp
     src/core/Config.cpp
     src/core/Time.cpp
     src/engine/MarketDataEngine.cpp
@@ -29,13 +28,9 @@ add_library(astra_feed_engine STATIC
     src/publish/ConsolePublisher.cpp
     src/publish/NullPublisher.cpp
     src/replay/GzipLineReader.cpp
+    src/replay/itch/ItchMoldUdpSource.cpp
     src/replay/itch/ItchParser.cpp
-    src/replay/itch/ItchReplaySource.cpp
-    src/replay/SymbolTable.cpp
-    src/replay/taq/NyseTaqParser.cpp
-    src/replay/taq/NyseTaqReplaySource.cpp
     src/sequencing/SequenceTracker.cpp
-    src/source/ReplayReceiver.cpp
     src/source/UdpReceiver.cpp
     src/source/UdpSender.cpp
     src/strategy/SimpleStrategy.cpp
@@ -72,29 +67,11 @@ if(ASTRA_ENABLE_DPDK)
 endif()
 
 if(ASTRA_BUILD_APPS)
-    add_executable(md_engine apps/md_engine_main.cpp)
-    target_link_libraries(md_engine PRIVATE astra::feed_engine)
+    add_executable(md_engine            apps/md_engine_main.cpp)
+    target_link_libraries(md_engine     PRIVATE astra::feed_engine)
 
-    add_executable(replay_player apps/replay_player_main.cpp)
-    target_link_libraries(replay_player PRIVATE astra::feed_engine)
-
-    add_executable(itch_replay_player apps/itch_replay_player_main.cpp)
-    target_link_libraries(itch_replay_player PRIVATE astra::feed_engine)
-
-    add_executable(itch_replay_sender apps/itch_replay_sender_main.cpp)
-    target_link_libraries(itch_replay_sender PRIVATE astra::feed_engine)
-
-    add_executable(taq_replay_sender apps/taq_replay_sender_main.cpp)
-    target_link_libraries(taq_replay_sender PRIVATE astra::feed_engine)
-
-    add_executable(udp_book_validator apps/udp_book_validator_main.cpp)
-    target_link_libraries(udp_book_validator PRIVATE astra::feed_engine)
-
-    add_executable(replay_writer apps/replay_writer_main.cpp)
-    target_link_libraries(replay_writer PRIVATE astra::feed_engine)
-
-    add_executable(exchange_simulator apps/exchange_simulator_main.cpp)
-    target_link_libraries(exchange_simulator PRIVATE astra::feed_engine)
+    add_executable(itch_moldudp_sender  apps/itch_moldudp_sender_main.cpp)
+    target_link_libraries(itch_moldudp_sender PRIVATE astra::feed_engine)
 endif()
 
 if(ASTRA_BUILD_TESTS)

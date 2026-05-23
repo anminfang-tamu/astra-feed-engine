@@ -1,0 +1,44 @@
+#pragma once
+
+#include "astra/channel/ChannelHealth.hpp"
+#include "astra/sequencing/GapBuffer.hpp"
+
+#include <array>
+#include <cstdint>
+#include <cstring>
+
+struct ChannelState {
+  static constexpr uint16_t kMaxStockLocates = 16384;
+  static constexpr std::size_t kSessionBytes = 10;
+
+  uint16_t channel_id{0};
+  char session[kSessionBytes + 1]{};
+
+  uint64_t next_expected_seq = 1;
+  ChannelHealth status = ChannelHealth::Good;
+
+  // out-of-order packets waiting for missing seqs
+  GapBuffer gap_buffer;
+
+  std::array<uint16_t, kMaxStockLocates> stock_locates{};
+  uint16_t stock_locate_count{0};
+
+  void setSession(const char *session_bytes) noexcept {
+    if (session_bytes == nullptr) {
+      session[0] = '\0';
+      return;
+    }
+    std::memcpy(session, session_bytes, kSessionBytes);
+    session[kSessionBytes] = '\0';
+  }
+
+  bool registerStockLocate(uint16_t locate) noexcept {
+    if (locate == 0) return false;
+    for (uint16_t i = 0; i < stock_locate_count; ++i) {
+      if (stock_locates[i] == locate) return true;
+    }
+    if (stock_locate_count >= stock_locates.size()) return false;
+    stock_locates[stock_locate_count++] = locate;
+    return true;
+  }
+};
