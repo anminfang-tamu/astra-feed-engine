@@ -32,6 +32,12 @@ private:
   std::uint64_t messages_{0};
   std::uint64_t book_messages_{0};
   std::uint64_t skipped_messages_{0};
+  std::uint64_t sequenced_packets_{0};
+  std::uint64_t gap_packets_{0};
+  std::uint64_t gap_buffered_packets_{0};
+  std::uint64_t gap_buffer_insert_failed_packets_{0};
+  std::uint64_t stale_gap_dropped_packets_{0};
+  std::uint64_t old_packets_{0};
   std::uint64_t itch_parse_state_total_ns_{0};
   std::uint64_t book_total_ns_{0};
 };

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -29,6 +30,18 @@ uint16_t parsePort(const char *value) {
 uint16_t parseMsgsPerPacket(const char *value) {
     return static_cast<uint16_t>(
         parseU64(value, ItchMoldUdpSource::kDefaultMsgsPerPacket));
+}
+
+uint16_t readU16BE(const std::byte *p) {
+    return (static_cast<uint16_t>(std::to_integer<uint8_t>(p[0])) << 8) |
+           static_cast<uint16_t>(std::to_integer<uint8_t>(p[1]));
+}
+
+uint64_t readU64BE(const std::byte *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i)
+        v = (v << 8) | std::to_integer<uint8_t>(p[i]);
+    return v;
 }
 
 } // namespace
@@ -83,16 +96,27 @@ int main(int argc, char *argv[]) {
         auto next_send = std::chrono::steady_clock::now();
 
         uint64_t  pkts_sent     = 0;
+        uint64_t  msgs_sent     = 0;
         uint64_t  send_failures = 0;
+        uint64_t  first_seq_sent = 0;
+        uint64_t  next_seq_sent  = 0;
         PacketView packet;
 
         while (g_running.load(std::memory_order_relaxed)) {
             if (!source.next(packet)) break;
 
-            if (sender.send(packet.data, packet.size))
+            const uint64_t first_seq = readU64BE(packet.data + 10);
+            const uint16_t msg_count = readU16BE(packet.data + 18);
+
+            if (sender.send(packet.data, packet.size)) {
                 ++pkts_sent;
-            else
+                msgs_sent += msg_count;
+                if (first_seq_sent == 0)
+                    first_seq_sent = first_seq;
+                next_seq_sent = first_seq + msg_count;
+            } else {
                 ++send_failures;
+            }
 
             if (interval.count() > 0) {
                 next_send += interval;
@@ -101,6 +125,9 @@ int main(int argc, char *argv[]) {
         }
 
         std::cout << "pkts_sent=" << pkts_sent
+                  << " msgs_sent=" << msgs_sent
+                  << " first_seq=" << first_seq_sent
+                  << " next_seq=" << next_seq_sent
                   << " send_failures=" << send_failures << "\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &e) {

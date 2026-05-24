@@ -76,13 +76,28 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
               static_cast<int>(channel_.status));
 
   if (first_seq > expected) {
+    const bool already_stale = channel_.status == ChannelHealth::Stale;
     channel_.status = ChannelHealth::GapDetected;
+    if (stage_timing_enabled_)
+      ++last_timing_.gap_packets;
     ASTRA_TRACE("decoder gap detected first=%llu expected=%llu count=%u",
                 static_cast<unsigned long long>(first_seq),
                 static_cast<unsigned long long>(expected), msg_count);
-    if (!channel_.gap_buffer.insert(packet.data,
-                                    static_cast<uint16_t>(packet.size),
-                                    first_seq, msg_count)) {
+    if (already_stale) {
+      channel_.status = ChannelHealth::Stale;
+      if (stage_timing_enabled_)
+        ++last_timing_.stale_gap_dropped_packets;
+      recordMoldParseSince(mold_start_ns);
+      return {DecodeStatus::Ok, true};
+    }
+    if (channel_.gap_buffer.insert(packet.data,
+                                   static_cast<uint16_t>(packet.size),
+                                   first_seq, msg_count)) {
+      if (stage_timing_enabled_)
+        ++last_timing_.gap_buffered_packets;
+    } else {
+      if (stage_timing_enabled_)
+        ++last_timing_.gap_buffer_insert_failed_packets;
       channel_.status = ChannelHealth::Stale;
       ASTRA_TRACE("decoder gap buffer insert failed first=%llu",
                   static_cast<unsigned long long>(first_seq));
@@ -92,6 +107,8 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   }
 
   if (packet_end <= expected) {
+    if (stage_timing_enabled_)
+      ++last_timing_.old_packets;
     ASTRA_TRACE("decoder duplicate/old first=%llu end=%llu expected=%llu",
                 static_cast<unsigned long long>(first_seq),
                 static_cast<unsigned long long>(packet_end),
@@ -101,6 +118,8 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   }
 
   const uint64_t start_seq = expected > first_seq ? expected : first_seq;
+  if (stage_timing_enabled_)
+    ++last_timing_.sequenced_packets;
   recordMoldParseSince(mold_start_ns);
   DecodeResult result =
       processSequencedPacket(packet.data, packet.size, first_seq, msg_count,

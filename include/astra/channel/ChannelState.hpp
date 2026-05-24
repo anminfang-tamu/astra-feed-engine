@@ -21,6 +21,7 @@ struct ChannelState {
   GapBuffer gap_buffer;
 
   std::array<uint16_t, kMaxStockLocates> stock_locates{};
+  std::array<bool, kMaxStockLocates> stock_locate_seen{};
   uint16_t stock_locate_count{0};
 
   void setSession(const char *session_bytes) noexcept {
@@ -33,11 +34,10 @@ struct ChannelState {
   }
 
   bool registerStockLocate(uint16_t locate) noexcept {
-    if (locate == 0) return false;
-    for (uint16_t i = 0; i < stock_locate_count; ++i) {
-      if (stock_locates[i] == locate) return true;
-    }
+    if (locate == 0 || locate >= stock_locate_seen.size()) return false;
+    if (stock_locate_seen[locate]) return true;
     if (stock_locate_count >= stock_locates.size()) return false;
+    stock_locate_seen[locate] = true;
     stock_locates[stock_locate_count++] = locate;
     return true;
   }

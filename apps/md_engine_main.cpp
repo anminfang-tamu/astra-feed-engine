@@ -5,11 +5,13 @@
 #include "astra/metrics/LatencyRecorder.hpp"
 #include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
+#include "astra/source/DualUdpReceiver.hpp"
 #include "astra/source/UdpReceiver.hpp"
 
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 
 static MarketDataEngine *g_engine = nullptr;
 
@@ -19,38 +21,60 @@ static void onSignal(int) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 3 || argc > 4) {
+  if (argc != 3 && argc != 4 && argc != 5 && argc != 6) {
     std::cerr
-        << "Usage: " << argv[0] << " <ip> <port> [channel_id]\n"
+        << "Usage:\n"
+        << "  " << argv[0] << " <ip> <port> [channel_id]\n"
+        << "  " << argv[0]
+        << " <ip_a> <port_a> <ip_b> <port_b> [channel_id]\n"
         << "  Receives MoldUDP64/ITCH 5.0 and builds a live order book.\n";
     return EXIT_FAILURE;
   }
 
+  const bool dual_feed = argc == 5 || argc == 6;
   const char *ip = argv[1];
   const uint16_t port = static_cast<uint16_t>(std::atoi(argv[2]));
   const uint8_t channel_id =
-      argc == 4 ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 10)) : 0;
+      (!dual_feed && argc == 4)
+          ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 10))
+          : (dual_feed && argc == 6)
+                ? static_cast<uint8_t>(std::strtoul(argv[5], nullptr, 10))
+                : 0;
 
   try {
     SymbolTable symbols;
     BookManager book_manager;
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
-    UdpReceiver source(ip, port);
+    std::unique_ptr<IMarketDataSource> source;
+    if (dual_feed) {
+      source = std::make_unique<DualUdpReceiver>(
+          argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+          static_cast<uint16_t>(std::atoi(argv[4])));
+    } else {
+      source = std::make_unique<UdpReceiver>(ip, port);
+    }
     LatencyRecorder latency_recorder;
     StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
     decoder.setStageTimingEnabled(config.enable_latency_metrics);
 
-    MarketDataEngine engine(source, decoder, latency_recorder,
+    MarketDataEngine engine(*source, decoder, latency_recorder,
                             &stage_latency_recorder, config);
 
     g_engine = &engine;
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    std::cout << "Engine started  addr=" << ip << ":" << port
-              << "  channel=" << static_cast<int>(channel_id)
-              << " — press Ctrl+C to stop\n";
+    if (dual_feed) {
+      std::cout << "Engine started  line_a=" << argv[1] << ":" << argv[2]
+                << "  line_b=" << argv[3] << ":" << argv[4]
+                << "  channel=" << static_cast<int>(channel_id)
+                << " — press Ctrl+C to stop\n";
+    } else {
+      std::cout << "Engine started  addr=" << ip << ":" << port
+                << "  channel=" << static_cast<int>(channel_id)
+                << " — press Ctrl+C to stop\n";
+    }
 
     engine.run();
 

@@ -11,6 +11,13 @@ void StageLatencyRecorder::record(std::uint64_t recv_done_ns,
   messages_ += timing.messages;
   book_messages_ += timing.book_messages;
   skipped_messages_ += timing.skipped_messages;
+  sequenced_packets_ += timing.sequenced_packets;
+  gap_packets_ += timing.gap_packets;
+  gap_buffered_packets_ += timing.gap_buffered_packets;
+  gap_buffer_insert_failed_packets_ +=
+      timing.gap_buffer_insert_failed_packets;
+  stale_gap_dropped_packets_ += timing.stale_gap_dropped_packets;
+  old_packets_ += timing.old_packets;
 
   const std::uint64_t total_ns =
       done_ns >= recv_done_ns ? done_ns - recv_done_ns : 0;
@@ -47,6 +54,12 @@ void StageLatencyRecorder::reset() {
   messages_ = 0;
   book_messages_ = 0;
   skipped_messages_ = 0;
+  sequenced_packets_ = 0;
+  gap_packets_ = 0;
+  gap_buffered_packets_ = 0;
+  gap_buffer_insert_failed_packets_ = 0;
+  stale_gap_dropped_packets_ = 0;
+  old_packets_ = 0;
   itch_parse_state_total_ns_ = 0;
   book_total_ns_ = 0;
 }
@@ -64,6 +77,13 @@ void StageLatencyRecorder::report(std::ostream &out) const {
         << static_cast<double>(msgs_per_packet) << std::defaultfloat;
   }
   out << '\n';
+  out << "stage_sequence sequenced_packets=" << sequenced_packets_
+      << " gap_packets=" << gap_packets_
+      << " gap_buffered_packets=" << gap_buffered_packets_
+      << " gap_buffer_insert_failed_packets="
+      << gap_buffer_insert_failed_packets_
+      << " stale_gap_dropped_packets=" << stale_gap_dropped_packets_
+      << " old_packets=" << old_packets_ << '\n';
   if (messages_ != 0 || book_messages_ != 0) {
     out << "stage_per_message";
     if (messages_ != 0) {

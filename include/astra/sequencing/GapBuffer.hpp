@@ -1,14 +1,21 @@
 #pragma once
 
 #include "astra/protocol/SequencedPacket.hpp"
+#include "astra/utils/FixedMmapArray.hpp"
 
-#include <array>
 #include <cstdint>
 #include <cstring>
 
 class GapBuffer {
 public:
-  static constexpr uint32_t kCapacity = 1024;
+  static constexpr uint32_t kCapacity = 65536;
+
+  GapBuffer() noexcept : slots_(kCapacity) { clear(); }
+
+  GapBuffer(const GapBuffer &) = delete;
+  GapBuffer &operator=(const GapBuffer &) = delete;
+  GapBuffer(GapBuffer &&) = delete;
+  GapBuffer &operator=(GapBuffer &&) = delete;
 
   bool insert(const std::byte *data, uint16_t len, uint64_t seq,
               uint16_t msg_count) noexcept {
@@ -58,7 +65,8 @@ public:
   }
 
   void clear() noexcept {
-    slots_ = {};
+    for (uint32_t i = 0; i < kCapacity; ++i)
+      slots_[i] = Slot{};
     size_ = 0;
   }
   bool empty() const noexcept { return size_ == 0; }
@@ -112,6 +120,6 @@ private:
     --size_;
   }
 
-  std::array<Slot, kCapacity> slots_{};
+  FixedMmapArray<Slot> slots_;
   uint32_t size_{0};
 };
