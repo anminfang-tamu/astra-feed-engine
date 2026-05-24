@@ -3,6 +3,7 @@
 #include "astra/engine/EngineConfig.hpp"
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/metrics/LatencyRecorder.hpp"
+#include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/UdpReceiver.hpp"
 
@@ -36,9 +37,12 @@ int main(int argc, char *argv[]) {
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
     UdpReceiver source(ip, port);
     LatencyRecorder latency_recorder;
+    StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
+    decoder.setStageTimingEnabled(config.enable_latency_metrics);
 
-    MarketDataEngine engine(source, decoder, latency_recorder, config);
+    MarketDataEngine engine(source, decoder, latency_recorder,
+                            &stage_latency_recorder, config);
 
     g_engine = &engine;
     std::signal(SIGINT, onSignal);
@@ -51,8 +55,10 @@ int main(int argc, char *argv[]) {
     engine.run();
 
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
-    if (config.enable_latency_metrics)
+    if (config.enable_latency_metrics) {
       latency_recorder.report();
+      stage_latency_recorder.report();
+    }
 
   } catch (const std::exception &e) {
     std::cerr << "Fatal: " << e.what() << "\n";

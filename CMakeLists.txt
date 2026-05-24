@@ -25,6 +25,7 @@ add_library(astra_feed_engine STATIC
     src/metrics/Histogram.cpp
     src/metrics/LatencyRecorder.cpp
     src/metrics/MetricsReporter.cpp
+    src/metrics/StageLatencyRecorder.cpp
     src/publish/ConsolePublisher.cpp
     src/publish/NullPublisher.cpp
     src/replay/GzipLineReader.cpp

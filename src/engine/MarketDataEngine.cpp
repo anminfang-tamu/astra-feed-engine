@@ -10,6 +10,14 @@ MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
     : source_(source), processor_(processor),
       latency_recorder_(latency_recorder), config_(config) {}
 
+MarketDataEngine::MarketDataEngine(
+    IMarketDataSource &source, IPacketProcessor &processor,
+    LatencyRecorder &latency_recorder,
+    StageLatencyRecorder *stage_latency_recorder, EngineConfig &config)
+    : source_(source), processor_(processor),
+      latency_recorder_(latency_recorder),
+      stage_latency_recorder_(stage_latency_recorder), config_(config) {}
+
 bool MarketDataEngine::stop() {
   return running_.exchange(false);
 }
@@ -22,7 +30,9 @@ void MarketDataEngine::run() {
                 static_cast<const void *>(packet.data), packet.size,
                 static_cast<unsigned long long>(packet.receive_ts_ns));
 
+    const uint64_t decode_start_ns = config_.enable_latency_metrics ? nowNs() : 0;
     const DecodeResult result = processor_.processPacket(packet);
+    const uint64_t decode_done_ns = config_.enable_latency_metrics ? nowNs() : 0;
     ASTRA_TRACE("engine decoded status=%d had_gap=%d",
                 static_cast<int>(result.status), result.had_gap ? 1 : 0);
 
@@ -39,7 +49,15 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    if (config_.enable_latency_metrics)
-      latency_recorder_.record(packet.receive_ts_ns, nowNs());
+    if (config_.enable_latency_metrics) {
+      latency_recorder_.record(packet.receive_ts_ns, decode_done_ns);
+      if (stage_latency_recorder_ != nullptr) {
+        if (const DecodeStageTiming *timing = processor_.lastStageTiming()) {
+          stage_latency_recorder_->record(packet.receive_ts_ns,
+                                          decode_start_ns, decode_done_ns,
+                                          *timing);
+        }
+      }
+    }
   }
 }

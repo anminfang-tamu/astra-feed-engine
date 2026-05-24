@@ -1,6 +1,7 @@
 #pragma once
 
 #include "astra/book/BookManager.hpp"
+#include "astra/metrics/DecodeStageTiming.hpp"
 #include "astra/protocol/SymbolTable.hpp"
 #include "astra/utils/FixedHashMap.hpp"
 
@@ -25,6 +26,7 @@ public:
 
   void    reset();
   void    setChannelId(uint8_t channel_id);
+  void    setStageTiming(DecodeStageTiming *timing) noexcept;
   uint8_t channelId() const;
   bool    lastMessageSkipped() const;
   const std::string &lastError() const;
@@ -58,6 +60,8 @@ private:
 
   bool skip();
   bool fail(std::string error);
+  uint64_t timingStart() const noexcept;
+  void recordBookTiming(uint64_t start_ns) noexcept;
 
   static uint16_t readU16BE(std::span<const std::byte> msg, std::size_t off);
   static uint32_t readU32BE(std::span<const std::byte> msg, std::size_t off);
@@ -68,6 +72,7 @@ private:
   uint8_t       channel_id_{0};
   bool          last_message_skipped_{false};
   std::string   last_error_;
+  DecodeStageTiming *timing_{nullptr};
 
   FixedHashMap<OrderState> orders_;              // for MatchEntry recording
   FixedHashMap<MatchEntry> executions_by_match_; // BrokenTrade

@@ -1,4 +1,5 @@
 #include "replay/itch/ItchParser.hpp"
+#include "astra/core/Time.hpp"
 #include "astra/utils/DebugTrace.hpp"
 
 #include <cstring>
@@ -123,7 +124,9 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate, bool
                          {side == OrderSide::Buy ? 'B' : 'S', price, qty});
   ASTRA_TRACE("itch add route book locate=%u order=%llu",
               locate, static_cast<unsigned long long>(order_id));
+  const uint64_t book_start_ns = timingStart();
   books_.addOrder(locate, order_id, price, qty, side, channel_id_);
+  recordBookTiming(book_start_ns);
   ASTRA_TRACE("itch add done locate=%u order=%llu",
               locate, static_cast<unsigned long long>(order_id));
 }
@@ -165,7 +168,9 @@ void ItchParser::handleExecution(std::span<const std::byte> msg, uint16_t locate
   executions_by_match_.insertOrAssign(
       match_number, {order_id, executed_qty, exec_price, exec_side});
 
+  const uint64_t book_start_ns = timingStart();
   books_.trade(locate, order_id, executed_qty);
+  recordBookTiming(book_start_ns);
   ASTRA_TRACE("itch execution book trade done locate=%u order=%llu",
               locate, static_cast<unsigned long long>(order_id));
 
@@ -192,7 +197,9 @@ void ItchParser::handleCancel(std::span<const std::byte> msg, uint16_t locate) {
   ASTRA_TRACE("itch cancel locate=%u order=%llu qty=%u", locate,
               static_cast<unsigned long long>(order_id), canceled_qty);
 
+  const uint64_t book_start_ns = timingStart();
   books_.cancelShares(locate, order_id, canceled_qty);
+  recordBookTiming(book_start_ns);
   ASTRA_TRACE("itch cancel book done locate=%u order=%llu", locate,
               static_cast<unsigned long long>(order_id));
 
@@ -217,7 +224,9 @@ void ItchParser::handleDelete(std::span<const std::byte> msg, uint16_t locate) {
   ASTRA_TRACE("itch delete locate=%u order=%llu", locate,
               static_cast<unsigned long long>(order_id));
   orders_.erase(order_id);
+  const uint64_t book_start_ns = timingStart();
   books_.deleteOrder(locate, order_id);
+  recordBookTiming(book_start_ns);
   ASTRA_TRACE("itch delete book done locate=%u order=%llu", locate,
               static_cast<unsigned long long>(order_id));
 }
@@ -250,7 +259,9 @@ void ItchParser::handleReplace(std::span<const std::byte> msg, uint16_t locate) 
     orders_.erase(old_id);
   }
 
+  const uint64_t book_start_ns = timingStart();
   books_.replaceOrder(locate, old_id, new_id, new_price, new_qty);
+  recordBookTiming(book_start_ns);
   ASTRA_TRACE("itch replace book done locate=%u old=%llu new=%llu", locate,
               static_cast<unsigned long long>(old_id),
               static_cast<unsigned long long>(new_id));
@@ -275,7 +286,9 @@ void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t loca
   }
 
   const MatchEntry &m = *entry;
+  const uint64_t book_start_ns = timingStart();
   books_.reverseExecution(locate, m.order_id, m.price, m.executed_qty, m.side);
+  recordBookTiming(book_start_ns);
 
   // Restore order-state cache if fully executed order came back
   if (orders_.find(m.order_id) == nullptr) {
@@ -331,9 +344,26 @@ void ItchParser::reset() {
 }
 
 void    ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
+void    ItchParser::setStageTiming(DecodeStageTiming *timing) noexcept {
+  timing_ = timing;
+}
 uint8_t ItchParser::channelId()        const  { return channel_id_; }
 bool    ItchParser::lastMessageSkipped() const { return last_message_skipped_; }
 const std::string &ItchParser::lastError() const { return last_error_; }
 
 bool ItchParser::skip() { last_message_skipped_ = true; return false; }
 bool ItchParser::fail(std::string error) { last_error_ = std::move(error); return false; }
+
+uint64_t ItchParser::timingStart() const noexcept {
+  return timing_ != nullptr ? nowNs() : 0;
+}
+
+void ItchParser::recordBookTiming(uint64_t start_ns) noexcept {
+  if (timing_ == nullptr)
+    return;
+
+  const uint64_t end_ns = nowNs();
+  if (end_ns >= start_ns)
+    timing_->book_ns += end_ns - start_ns;
+  ++timing_->book_messages;
+}

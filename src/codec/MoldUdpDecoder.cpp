@@ -1,4 +1,5 @@
 #include "astra/codec/MoldUdpDecoder.hpp"
+#include "astra/core/Time.hpp"
 #include "astra/utils/DebugTrace.hpp"
 
 #include <cstdint>
@@ -23,11 +24,20 @@ uint64_t MoldUdpDecoder::readU64BE(const std::byte *p) noexcept {
 }
 
 DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
+  if (stage_timing_enabled_) {
+    last_timing_.clear();
+    parser_.setStageTiming(&last_timing_);
+  } else {
+    parser_.setStageTiming(nullptr);
+  }
+
+  const uint64_t mold_start_ns = stage_timing_enabled_ ? nowNs() : 0;
   ASTRA_TRACE("decoder processPacket enter data=%p size=%zu",
               static_cast<const void *>(packet.data), packet.size);
   if (packet.data == nullptr ||
       packet.size < MoldUdpPacketHeader::kHeaderSize) {
     ASTRA_TRACE("decoder packet too small size=%zu", packet.size);
+    recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::PacketTooSmall};
   }
 
@@ -36,6 +46,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
     ASTRA_TRACE("decoder end of stream");
+    recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::EndOfStream};
   }
 
@@ -52,6 +63,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (msg_count == 0) {
     ASTRA_TRACE("decoder heartbeat first_seq=%llu",
                 static_cast<unsigned long long>(first_seq));
+    recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
@@ -75,6 +87,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       ASTRA_TRACE("decoder gap buffer insert failed first=%llu",
                   static_cast<unsigned long long>(first_seq));
     }
+    recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok, true};
   }
 
@@ -83,10 +96,12 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
                 static_cast<unsigned long long>(first_seq),
                 static_cast<unsigned long long>(packet_end),
                 static_cast<unsigned long long>(expected));
+    recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
   const uint64_t start_seq = expected > first_seq ? expected : first_seq;
+  recordMoldParseSince(mold_start_ns);
   DecodeResult result =
       processSequencedPacket(packet.data, packet.size, first_seq, msg_count,
                              start_seq);
@@ -106,6 +121,25 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   return result;
 }
 
+const DecodeStageTiming *MoldUdpDecoder::lastStageTiming() const noexcept {
+  return stage_timing_enabled_ ? &last_timing_ : nullptr;
+}
+
+void MoldUdpDecoder::setStageTimingEnabled(bool enabled) noexcept {
+  stage_timing_enabled_ = enabled;
+  if (!enabled)
+    parser_.setStageTiming(nullptr);
+}
+
+void MoldUdpDecoder::recordMoldParseSince(uint64_t start_ns) noexcept {
+  if (!stage_timing_enabled_)
+    return;
+
+  const uint64_t end_ns = nowNs();
+  if (end_ns >= start_ns)
+    last_timing_.mold_parse_ns += end_ns - start_ns;
+}
+
 DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
                                                     std::size_t size,
                                                     uint64_t first_seq,
@@ -115,10 +149,12 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
               static_cast<unsigned long long>(first_seq), msg_count,
               static_cast<unsigned long long>(start_seq), size);
   std::size_t offset = MoldUdpPacketHeader::kHeaderSize;
+  uint64_t mold_start_ns = stage_timing_enabled_ ? nowNs() : 0;
   for (uint16_t i = 0; i < msg_count; ++i) {
     if (offset + 2 > size) {
       ASTRA_TRACE("decoder invalid size before len i=%u offset=%zu size=%zu",
                   i, offset, size);
+      recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
     const uint16_t msg_len = readU16BE(data + offset);
@@ -126,14 +162,17 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
     if (msg_len == 0 || offset + msg_len > size) {
       ASTRA_TRACE("decoder invalid msg len i=%u len=%u offset=%zu size=%zu",
                   i, msg_len, offset, size);
+      recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
     offset += msg_len;
   }
+  recordMoldParseSince(mold_start_ns);
 
   offset = MoldUdpPacketHeader::kHeaderSize;
   uint64_t message_seq = first_seq;
   for (uint16_t i = 0; i < msg_count; ++i, ++message_seq) {
+    mold_start_ns = stage_timing_enabled_ ? nowNs() : 0;
     const uint16_t msg_len = readU16BE(data + offset);
     offset += 2;
 
@@ -146,12 +185,25 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
         locate = readU16BE(data + offset + 1);
         channel_.registerStockLocate(locate);
       }
+      recordMoldParseSince(mold_start_ns);
       ASTRA_TRACE("decoder dispatch seq=%llu idx=%u type=%c locate=%u len=%u offset=%zu",
                   static_cast<unsigned long long>(message_seq), i, type,
                   locate, msg_len, offset);
+      if (stage_timing_enabled_)
+        ++last_timing_.messages;
+      const uint64_t itch_start_ns = stage_timing_enabled_ ? nowNs() : 0;
       parser_.handleMessage(std::span<const std::byte>(data + offset, msg_len));
+      if (stage_timing_enabled_) {
+        const uint64_t itch_end_ns = nowNs();
+        if (itch_end_ns >= itch_start_ns)
+          last_timing_.itch_total_ns += itch_end_ns - itch_start_ns;
+        if (parser_.lastMessageSkipped())
+          ++last_timing_.skipped_messages;
+      }
       ASTRA_TRACE("decoder dispatched seq=%llu type=%c locate=%u",
                   static_cast<unsigned long long>(message_seq), type, locate);
+    } else {
+      recordMoldParseSince(mold_start_ns);
     }
 
     offset += msg_len;

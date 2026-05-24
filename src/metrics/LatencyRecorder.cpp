@@ -11,12 +11,15 @@ void LatencyRecorder::record(std::uint64_t start_ns, std::uint64_t end_ns) {
     return;
   }
 
-  const std::uint64_t latency_ns = end_ns - start_ns;
-  ++buckets_[bucketIndex(latency_ns)];
+  recordDuration(end_ns - start_ns);
+}
+
+void LatencyRecorder::recordDuration(std::uint64_t duration_ns) {
+  ++buckets_[bucketIndex(duration_ns)];
   ++count_;
-  total_ns_ += latency_ns;
-  min_ns_ = std::min(min_ns_, latency_ns);
-  max_ns_ = std::max(max_ns_, latency_ns);
+  total_ns_ += duration_ns;
+  min_ns_ = std::min(min_ns_, duration_ns);
+  max_ns_ = std::max(max_ns_, duration_ns);
 }
 
 void LatencyRecorder::reset() {
