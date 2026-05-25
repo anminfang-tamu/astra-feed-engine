@@ -32,9 +32,9 @@ add_library(astra_feed_engine STATIC
     src/replay/itch/ItchMoldUdpSource.cpp
     src/replay/itch/ItchParser.cpp
     src/sequencing/SequenceTracker.cpp
-    src/source/DualUdpBachReceiver.cpp
+    src/source/DualUdpBatchReceiver.cpp
     src/source/DualUdpReceiver.cpp
-    src/source/UdpBachReceiver.cpp
+    src/source/UdpBatchReceiver.cpp
     src/source/UdpReceiver.cpp
     src/source/UdpSender.cpp
     src/strategy/SimpleStrategy.cpp
