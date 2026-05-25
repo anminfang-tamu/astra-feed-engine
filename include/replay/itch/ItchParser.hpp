@@ -27,6 +27,8 @@ public:
   void    reset();
   void    setChannelId(uint8_t channel_id);
   void    setStageTiming(DecodeStageTiming *timing) noexcept;
+  void    setStockDirectoryWarmup(bool prepare_books,
+                                  bool touch_pages) noexcept;
   uint8_t channelId() const;
   bool    lastMessageSkipped() const;
   const std::string &lastError() const;
@@ -71,6 +73,8 @@ private:
   BookManager  &books_;
   uint8_t       channel_id_{0};
   bool          last_message_skipped_{false};
+  bool          prepare_books_on_directory_{true};
+  bool          touch_book_pages_on_directory_{false};
   std::string   last_error_;
   DecodeStageTiming *timing_{nullptr};
 

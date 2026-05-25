@@ -344,6 +344,9 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   symbols_.set(locate, info);
   books_.setSymbolTier(locate, astra::capacity::tierForTicker(sym));
   books_.registerStockLocate(locate, channel_id_);
+  if (prepare_books_on_directory_) {
+    books_.prepareBook(locate, channel_id_, touch_book_pages_on_directory_);
+  }
 }
 
 void ItchParser::reset() {
@@ -356,6 +359,11 @@ void ItchParser::reset() {
 void    ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
 void    ItchParser::setStageTiming(DecodeStageTiming *timing) noexcept {
   timing_ = timing;
+}
+void ItchParser::setStockDirectoryWarmup(bool prepare_books,
+                                         bool touch_pages) noexcept {
+  prepare_books_on_directory_ = prepare_books;
+  touch_book_pages_on_directory_ = prepare_books && touch_pages;
 }
 uint8_t ItchParser::channelId()        const  { return channel_id_; }
 bool    ItchParser::lastMessageSkipped() const { return last_message_skipped_; }

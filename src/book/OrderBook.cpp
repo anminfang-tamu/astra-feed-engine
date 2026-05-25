@@ -2,6 +2,7 @@
 #include "astra/protocol/OrderSide.hpp"
 #include "astra/utils/DebugTrace.hpp"
 
+#include <cstddef>
 #include <limits>
 
 namespace {
@@ -25,6 +26,19 @@ uint32_t orderIndexCapacity(size_t order_capacity) noexcept {
 
 bool isValidSide(OrderSide side) noexcept {
   return side == OrderSide::Buy || side == OrderSide::Sell;
+}
+
+void touchPages(void *data, size_t bytes) noexcept {
+  if (data == nullptr || bytes == 0) {
+    return;
+  }
+
+  static constexpr size_t kPageSize = 4096;
+  volatile char *p = static_cast<volatile char *>(data);
+  for (size_t offset = 0; offset < bytes; offset += kPageSize) {
+    p[offset] = p[offset];
+  }
+  p[bytes - 1] = p[bytes - 1];
 }
 
 void resetLevel(PriceLevel &level) noexcept {
@@ -157,6 +171,14 @@ OrderBook::OrderBook(uint32_t symbol_id, uint16_t channel_id,
   ASTRA_TRACE("book ctor this=%p symbol=%u channel=%u order_capacity=%zu",
               static_cast<void *>(this), symbol_id, channel_id,
               order_capacity);
+}
+
+void OrderBook::warmStorage() noexcept {
+  touchPages(order_pool_.data(), order_pool_.size() * sizeof(Order));
+  touchPages(free_list_.data(), free_list_.size() * sizeof(uint32_t));
+  touchPages(bid_levels_.data(), bid_levels_.size() * sizeof(PriceLevel));
+  touchPages(ask_levels_.data(), ask_levels_.size() * sizeof(PriceLevel));
+  order_index_.warmPages();
 }
 
 uint32_t OrderBook::priceToIndex(uint64_t price) const noexcept {

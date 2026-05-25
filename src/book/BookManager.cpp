@@ -82,6 +82,14 @@ void BookManager::setSymbolOrderCapacity(uint16_t stock_locate,
     order_capacity_by_locate_[stock_locate] = order_capacity;
 }
 
+void BookManager::prepareBook(uint16_t stock_locate, uint16_t channel_id,
+                              bool touch_pages) noexcept {
+  OrderBook *book = getOrCreate(stock_locate, channel_id);
+  if (book != nullptr && touch_pages) {
+    book->warmStorage();
+  }
+}
+
 void BookManager::addOrder(uint16_t stock_locate, uint64_t order_id,
                            uint64_t price, uint32_t qty, OrderSide side,
                            uint16_t channel_id) noexcept {

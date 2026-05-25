@@ -36,6 +36,32 @@ static bool envBool(const char *value, bool fallback) noexcept {
   return fallback;
 }
 
+static void parseBookWarmupEnv(bool &prepare_books, bool &touch_pages,
+                               const char *&mode_name) noexcept {
+  prepare_books = true;
+  touch_pages = false;
+  mode_name = "prepare";
+
+  const char *value = std::getenv("ASTRA_R_BOOK_WARMUP");
+  if (value == nullptr) {
+    return;
+  }
+
+  if (std::strcmp(value, "0") == 0 || std::strcmp(value, "false") == 0 ||
+      std::strcmp(value, "off") == 0 || std::strcmp(value, "no") == 0 ||
+      std::strcmp(value, "none") == 0) {
+    prepare_books = false;
+    mode_name = "off";
+    return;
+  }
+
+  if (std::strcmp(value, "touch") == 0 || std::strcmp(value, "warm") == 0 ||
+      std::strcmp(value, "pages") == 0) {
+    touch_pages = true;
+    mode_name = "touch";
+  }
+}
+
 int main(int argc, char *argv[]) {
   if (argc != 3 && argc != 4 && argc != 5 && argc != 6) {
     std::cerr
@@ -83,6 +109,13 @@ int main(int argc, char *argv[]) {
     SymbolTable symbols;
     BookManager book_manager;
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
+    bool prepare_books_on_r = true;
+    bool touch_book_pages_on_r = false;
+    const char *r_warmup_mode = "prepare";
+    parseBookWarmupEnv(prepare_books_on_r, touch_book_pages_on_r,
+                       r_warmup_mode);
+    decoder.setStockDirectoryWarmup(prepare_books_on_r,
+                                    touch_book_pages_on_r);
     std::unique_ptr<IMarketDataSource> source;
     DualUdpReceiver *dual_receiver = nullptr;
     DualUdpBatchReceiver *dual_batch_receiver = nullptr;
@@ -131,6 +164,7 @@ int main(int argc, char *argv[]) {
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
+                << "  r_warmup=" << r_warmup_mode
                 << " — press Ctrl+C to stop\n";
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
@@ -139,6 +173,7 @@ int main(int argc, char *argv[]) {
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
+                << "  r_warmup=" << r_warmup_mode
                 << " — press Ctrl+C to stop\n";
     }
 

@@ -22,6 +22,7 @@ public:
   DecodeResult processPacket(const PacketView &packet) override;
   const DecodeStageTiming *lastStageTiming() const noexcept override;
   void setStageTimingEnabled(bool enabled) noexcept;
+  void setStockDirectoryWarmup(bool prepare_books, bool touch_pages) noexcept;
   const ChannelState &channelState() const noexcept { return channel_; }
   ChannelState &channelState() noexcept { return channel_; }
 

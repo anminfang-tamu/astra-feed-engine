@@ -33,6 +33,7 @@ public:
                     uint32_t new_qty) noexcept;
   void reverseExecution(uint64_t order_id, uint64_t price, uint32_t qty,
                         OrderSide side) noexcept;
+  void warmStorage() noexcept;
 
   TopOfBook getTopOfBook() const noexcept;
   BookUpdate getBookUpdate() const noexcept;

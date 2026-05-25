@@ -98,6 +98,19 @@ TEST(BookManagerTest, AppliesConfiguredSymbolCapacityBeforeBookCreation) {
   EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
 }
 
+TEST(BookManagerTest, PrepareBookCreatesEmptyBookWithConfiguredCapacity) {
+  BookManager manager;
+  manager.setSymbolTier(7, astra::capacity::SymbolTier::Active);
+
+  manager.prepareBook(7, /*channel_id=*/2);
+
+  const OrderBook *book = manager.getOrderBook(7);
+  ASSERT_NE(book, nullptr);
+  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
+  EXPECT_EQ(book->channelId(), 2u);
+  EXPECT_EQ(book->liveOrderCount(), 0u);
+}
+
 TEST(BookManagerTest, UsesDefaultCapacityForUntieredSymbols) {
   BookManager manager;
 

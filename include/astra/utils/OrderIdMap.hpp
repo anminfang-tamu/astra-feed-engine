@@ -141,6 +141,19 @@ public:
 
   bool empty() const noexcept { return size_ == 0; }
 
+  void warmPages() noexcept {
+    if (entries_ == nullptr || bytes_ == 0) {
+      return;
+    }
+
+    static constexpr size_t kPageSize = 4096;
+    volatile char *bytes = reinterpret_cast<volatile char *>(entries_);
+    for (size_t offset = 0; offset < bytes_; offset += kPageSize) {
+      bytes[offset] = bytes[offset];
+    }
+    bytes[bytes_ - 1] = bytes[bytes_ - 1];
+  }
+
   double loadFactor() const noexcept {
     if (capacity_ == 0) {
       return 0.0;

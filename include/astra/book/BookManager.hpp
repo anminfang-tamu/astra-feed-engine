@@ -25,6 +25,8 @@ public:
                      astra::capacity::SymbolTier tier) noexcept;
   void setSymbolOrderCapacity(uint16_t stock_locate,
                               size_t order_capacity) noexcept;
+  void prepareBook(uint16_t stock_locate, uint16_t channel_id = 0,
+                   bool touch_pages = false) noexcept;
   void addOrder(uint16_t stock_locate, uint64_t order_id, uint64_t price,
                 uint32_t qty, OrderSide side,
                 uint16_t channel_id = 0) noexcept;

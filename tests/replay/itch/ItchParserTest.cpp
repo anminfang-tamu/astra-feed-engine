@@ -91,6 +91,22 @@ Bytes msgBrokenTrade(uint64_t match = 9001, uint16_t locate = 1) {
   return b;
 }
 
+Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1) {
+  Bytes b = commonMsg('R', locate);
+  appendStock(b, sym);
+  appendU8(b, 'Q'); // market category
+  appendU8(b, 'N'); // financial status
+  appendU32(b, 100);
+  appendU8(b, 'N'); // round lots only
+  appendU8(b, 'C'); // issue classification
+  appendU8(b, ' ');
+  appendU8(b, ' ');
+  appendU8(b, 'P'); // authenticity
+  while (b.size() < 39)
+    appendU8(b, ' ');
+  return b;
+}
+
 auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
@@ -224,6 +240,18 @@ TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   EXPECT_EQ(f.top(2).ask_price, 400u);
   EXPECT_EQ(f.top(1).ask_price, 0u);
   EXPECT_EQ(f.top(2).bid_price, 0u);
+}
+
+TEST(ItchParserTest, StockDirectoryPreparesBookBeforeFirstAdd) {
+  Fixture f;
+  f.send(msgStockDirectory("AAPL", /*locate=*/7));
+
+  const OrderBook *book = f.books.getOrderBook(7);
+  ASSERT_NE(book, nullptr);
+  EXPECT_EQ(book->liveOrderCount(), 0u);
+  EXPECT_EQ(book->channelId(), 2u);
+  EXPECT_TRUE(f.symbols.isRegistered(7));
+  EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
 }
 
 TEST(ItchParserTest, ResetClearsState) {

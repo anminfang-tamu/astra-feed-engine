@@ -150,6 +150,11 @@ void MoldUdpDecoder::setStageTimingEnabled(bool enabled) noexcept {
     parser_.setStageTiming(nullptr);
 }
 
+void MoldUdpDecoder::setStockDirectoryWarmup(bool prepare_books,
+                                             bool touch_pages) noexcept {
+  parser_.setStockDirectoryWarmup(prepare_books, touch_pages);
+}
+
 void MoldUdpDecoder::recordMoldParseSince(uint64_t start_ns) noexcept {
   if (!stage_timing_enabled_)
     return;
