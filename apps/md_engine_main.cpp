@@ -24,6 +24,18 @@ static void onSignal(int) {
     g_engine->stop();
 }
 
+static bool envBool(const char *value, bool fallback) noexcept {
+  if (value == nullptr)
+    return fallback;
+  if (std::strcmp(value, "0") == 0 || std::strcmp(value, "false") == 0 ||
+      std::strcmp(value, "off") == 0 || std::strcmp(value, "no") == 0)
+    return false;
+  if (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+      std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0)
+    return true;
+  return fallback;
+}
+
 int main(int argc, char *argv[]) {
   if (argc != 3 && argc != 4 && argc != 5 && argc != 6) {
     std::cerr
@@ -99,6 +111,9 @@ int main(int argc, char *argv[]) {
     LatencyRecorder latency_recorder;
     StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
+    config.enable_latency_metrics =
+        envBool(std::getenv("ASTRA_LATENCY_METRICS"),
+                config.enable_latency_metrics);
     decoder.setStageTimingEnabled(config.enable_latency_metrics);
 
     MarketDataEngine engine(*source, decoder, latency_recorder,
@@ -114,12 +129,16 @@ int main(int argc, char *argv[]) {
                 << "  channel=" << static_cast<int>(channel_id)
                 << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
+                << "  metrics="
+                << (config.enable_latency_metrics ? "on" : "off")
                 << " — press Ctrl+C to stop\n";
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
                 << "  channel=" << static_cast<int>(channel_id)
                 << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
+                << "  metrics="
+                << (config.enable_latency_metrics ? "on" : "off")
                 << " — press Ctrl+C to stop\n";
     }
 

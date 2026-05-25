@@ -113,15 +113,19 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate, bool
               side == OrderSide::Buy ? 'B' : 'S', qty,
               static_cast<unsigned long long>(price));
 
-  // Register ticker as a fallback if Stock Directory hasn't arrived for this locate.
-  const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
-  if (!t.empty()) {
-    symbols_.setTicker(locate, t);
-    books_.setSymbolTier(locate, astra::capacity::tierForTicker(t));
+  if (!symbols_.isRegistered(locate)) {
+    const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
+    if (!t.empty()) {
+      symbols_.setTicker(locate, t);
+      books_.setSymbolTier(locate, astra::capacity::tierForTicker(t));
+    }
   }
 
-  orders_.insertOrAssign(order_id,
-                         {side == OrderSide::Buy ? 'B' : 'S', price, qty});
+  if (!orders_.insert(order_id,
+                      {side == OrderSide::Buy ? 'B' : 'S', price, qty})) {
+    orders_.insertOrAssign(order_id,
+                           {side == OrderSide::Buy ? 'B' : 'S', price, qty});
+  }
   ASTRA_TRACE("itch add route book locate=%u order=%llu",
               locate, static_cast<unsigned long long>(order_id));
   const uint64_t book_start_ns = timingStart();
@@ -153,7 +157,7 @@ void ItchParser::handleExecution(std::span<const std::byte> msg, uint16_t locate
               static_cast<unsigned long long>(match_number),
               with_price ? 1 : 0);
 
-  const OrderState *order = orders_.find(order_id);
+  OrderState *order = orders_.find(order_id);
   if (order == nullptr) {
     ASTRA_TRACE("itch execution unknown order locate=%u order=%llu", locate,
                 static_cast<unsigned long long>(order_id));
@@ -165,8 +169,11 @@ void ItchParser::handleExecution(std::span<const std::byte> msg, uint16_t locate
       ? static_cast<uint64_t>(readU32BE(msg, 32))
       : order->price;
   const OrderSide exec_side = order->side == 'B' ? OrderSide::Buy : OrderSide::Sell;
-  executions_by_match_.insertOrAssign(
-      match_number, {order_id, executed_qty, exec_price, exec_side});
+  if (!executions_by_match_.insert(
+          match_number, {order_id, executed_qty, exec_price, exec_side})) {
+    executions_by_match_.insertOrAssign(
+        match_number, {order_id, executed_qty, exec_price, exec_side});
+  }
 
   const uint64_t book_start_ns = timingStart();
   books_.trade(locate, order_id, executed_qty);
@@ -174,13 +181,10 @@ void ItchParser::handleExecution(std::span<const std::byte> msg, uint16_t locate
   ASTRA_TRACE("itch execution book trade done locate=%u order=%llu",
               locate, static_cast<unsigned long long>(order_id));
 
-  OrderState *mutable_order = orders_.find(order_id);
-  if (mutable_order != nullptr) {
-    if (executed_qty >= mutable_order->qty)
-      orders_.erase(order_id);
-    else
-      mutable_order->qty -= executed_qty;
-  }
+  if (executed_qty >= order->qty)
+    orders_.erase(order_id);
+  else
+    order->qty -= executed_qty;
 }
 
 // 'X' (23 bytes)
@@ -253,10 +257,12 @@ void ItchParser::handleReplace(std::span<const std::byte> msg, uint16_t locate) 
               static_cast<unsigned long long>(new_price));
 
   // Update our order-state cache: old entry → new entry (same side)
-  const OrderState *old_state = orders_.find(old_id);
+  OrderState *old_state = orders_.find(old_id);
   if (old_state != nullptr) {
-    orders_.insertOrAssign(new_id, {old_state->side, new_price, new_qty});
+    const char side = old_state->side;
     orders_.erase(old_id);
+    if (!orders_.insert(new_id, {side, new_price, new_qty}))
+      orders_.insertOrAssign(new_id, {side, new_price, new_qty});
   }
 
   const uint64_t book_start_ns = timingStart();
@@ -291,13 +297,17 @@ void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t loca
   recordBookTiming(book_start_ns);
 
   // Restore order-state cache if fully executed order came back
-  if (orders_.find(m.order_id) == nullptr) {
-    orders_.insertOrAssign(
-        m.order_id, {m.side == OrderSide::Buy ? 'B' : 'S', m.price,
-                     m.executed_qty});
+  OrderState *order = orders_.find(m.order_id);
+  if (order == nullptr) {
+    if (!orders_.insert(m.order_id,
+                        {m.side == OrderSide::Buy ? 'B' : 'S', m.price,
+                         m.executed_qty})) {
+      orders_.insertOrAssign(m.order_id,
+                             {m.side == OrderSide::Buy ? 'B' : 'S', m.price,
+                              m.executed_qty});
+    }
   } else {
-    OrderState *order = orders_.find(m.order_id);
-    if (order != nullptr) order->qty += m.executed_qty;
+    order->qty += m.executed_qty;
   }
 
   executions_by_match_.erase(match_number);

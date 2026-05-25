@@ -190,7 +190,7 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
 }
 
 #ifdef __linux__
-void UdpBachReceiver::recordKernelDrops(const struct msghdr &msg) noexcept {
+void UdpBatchReceiver::recordKernelDrops(const struct msghdr &msg) noexcept {
 #ifdef SO_RXQ_OVFL
   for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr;
        cmsg = CMSG_NXTHDR(const_cast<struct msghdr *>(&msg), cmsg)) {
