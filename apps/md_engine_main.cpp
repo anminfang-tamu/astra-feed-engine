@@ -6,9 +6,11 @@
 #include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
+#include "astra/source/UdpBachReceiver.hpp"
 #include "astra/source/UdpReceiver.hpp"
 
 #include <csignal>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -42,6 +44,19 @@ int main(int argc, char *argv[]) {
                 : 0;
 
   try {
+    const char *rx_mode = std::getenv("ASTRA_UDP_RX");
+    const bool use_recvmmsg =
+        !dual_feed && rx_mode != nullptr &&
+        (std::strcmp(rx_mode, "recvmmsg") == 0 ||
+         std::strcmp(rx_mode, "batch") == 0 ||
+         std::strcmp(rx_mode, "bach") == 0);
+    std::size_t batch_size = UdpBachReceiver::kDefaultBatchSize;
+    if (const char *batch_env = std::getenv("ASTRA_UDP_BATCH_SIZE")) {
+      const auto parsed = std::strtoul(batch_env, nullptr, 10);
+      if (parsed > 0)
+        batch_size = static_cast<std::size_t>(parsed);
+    }
+
     SymbolTable symbols;
     BookManager book_manager;
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
@@ -50,6 +65,8 @@ int main(int argc, char *argv[]) {
       source = std::make_unique<DualUdpReceiver>(
           argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
           static_cast<uint16_t>(std::atoi(argv[4])));
+    } else if (use_recvmmsg) {
+      source = std::make_unique<UdpBachReceiver>(ip, port, batch_size);
     } else {
       source = std::make_unique<UdpReceiver>(ip, port);
     }
@@ -73,6 +90,8 @@ int main(int argc, char *argv[]) {
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
                 << "  channel=" << static_cast<int>(channel_id)
+                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
+                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << " — press Ctrl+C to stop\n";
     }
 

@@ -1,0 +1,64 @@
+#pragma once
+
+#include "IMarketDataSource.hpp"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+#ifdef __linux__
+#include <sys/socket.h>
+#include <sys/uio.h>
+#endif
+
+class UdpBachReceiver : public IMarketDataSource {
+public:
+  static constexpr std::size_t kMaxPacketSize = 2048;
+  static constexpr std::size_t kMaxBatchSize = 32;
+  static constexpr std::size_t kDefaultBatchSize = 8;
+
+  UdpBachReceiver(const char *ip, uint16_t port,
+                  std::size_t batch_size = kDefaultBatchSize);
+  ~UdpBachReceiver();
+
+  UdpBachReceiver(const UdpBachReceiver &) = delete;
+  UdpBachReceiver &operator=(const UdpBachReceiver &) = delete;
+  UdpBachReceiver(UdpBachReceiver &&) = delete;
+  UdpBachReceiver &operator=(UdpBachReceiver &&) = delete;
+
+  // Compatibility path for the current engine: refill with recvmmsg(), then
+  // return one packet per call.
+  bool next(PacketView &packet) noexcept override;
+
+  // Batch path for experiments or a future engine loop that can process
+  // several UDP datagrams before returning to the socket.
+  std::size_t nextBatch(PacketView *packets,
+                        std::size_t max_packets) noexcept;
+
+  uint64_t errors() const noexcept { return error_count_; }
+  uint64_t truncated() const noexcept { return truncated_count_; }
+  uint64_t syscalls() const noexcept { return syscall_count_; }
+
+  int fd() const noexcept { return fd_; }
+
+private:
+  std::size_t receiveBatch() noexcept;
+
+  int fd_{-1};
+  std::size_t batch_size_{kDefaultBatchSize};
+
+  std::array<PacketView, kMaxBatchSize> pending_{};
+  std::size_t pending_index_{0};
+  std::size_t pending_count_{0};
+
+#ifdef __linux__
+  alignas(64) std::array<std::array<std::byte, kMaxPacketSize>, kMaxBatchSize>
+      buffers_{};
+  std::array<struct mmsghdr, kMaxBatchSize> msgs_{};
+  std::array<struct iovec, kMaxBatchSize> iovecs_{};
+#endif
+
+  uint64_t error_count_{0};
+  uint64_t truncated_count_{0};
+  uint64_t syscall_count_{0};
+};

@@ -33,6 +33,7 @@ add_library(astra_feed_engine STATIC
     src/replay/itch/ItchParser.cpp
     src/sequencing/SequenceTracker.cpp
     src/source/DualUdpReceiver.cpp
+    src/source/UdpBachReceiver.cpp
     src/source/UdpReceiver.cpp
     src/source/UdpSender.cpp
     src/strategy/SimpleStrategy.cpp
@@ -45,6 +46,10 @@ add_library(astra_feed_engine STATIC
 add_library(astra::feed_engine ALIAS astra_feed_engine)
 
 target_compile_features(astra_feed_engine PUBLIC cxx_std_20)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(astra_feed_engine PUBLIC _GNU_SOURCE)
+endif()
 
 target_include_directories(astra_feed_engine
     PUBLIC
