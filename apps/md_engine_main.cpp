@@ -5,9 +5,9 @@
 #include "astra/metrics/LatencyRecorder.hpp"
 #include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
-#include "astra/source/DualUdpBachReceiver.hpp"
+#include "astra/source/DualUdpBatchReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
-#include "astra/source/UdpBachReceiver.hpp"
+#include "astra/source/UdpBatchReceiver.hpp"
 #include "astra/source/UdpReceiver.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 
@@ -60,9 +60,8 @@ int main(int argc, char *argv[]) {
     const char *rx_mode = std::getenv("ASTRA_UDP_RX");
     const bool use_recvmmsg =
         rx_mode != nullptr && (std::strcmp(rx_mode, "recvmmsg") == 0 ||
-                               std::strcmp(rx_mode, "batch") == 0 ||
-                               std::strcmp(rx_mode, "bach") == 0);
-    std::size_t batch_size = UdpBachReceiver::kDefaultBatchSize;
+                               std::strcmp(rx_mode, "batch") == 0);
+    std::size_t batch_size = UdpBatchReceiver::kDefaultBatchSize;
     if (const char *batch_env = std::getenv("ASTRA_UDP_BATCH_SIZE")) {
       const auto parsed = std::strtoul(batch_env, nullptr, 10);
       if (parsed > 0)
@@ -74,11 +73,11 @@ int main(int argc, char *argv[]) {
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
     std::unique_ptr<IMarketDataSource> source;
     DualUdpReceiver *dual_receiver = nullptr;
-    DualUdpBachReceiver *dual_batch_receiver = nullptr;
-    UdpBachReceiver *batch_receiver = nullptr;
+    DualUdpBatchReceiver *dual_batch_receiver = nullptr;
+    UdpBatchReceiver *batch_receiver = nullptr;
     if (dual_feed) {
       if (use_recvmmsg) {
-        auto receiver = std::make_unique<DualUdpBachReceiver>(
+        auto receiver = std::make_unique<DualUdpBatchReceiver>(
             argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
             static_cast<uint16_t>(std::atoi(argv[4])), batch_size);
         dual_batch_receiver = receiver.get();
@@ -91,7 +90,7 @@ int main(int argc, char *argv[]) {
         source = std::move(receiver);
       }
     } else if (use_recvmmsg) {
-      auto receiver = std::make_unique<UdpBachReceiver>(ip, port, batch_size);
+      auto receiver = std::make_unique<UdpBatchReceiver>(ip, port, batch_size);
       batch_receiver = receiver.get();
       source = std::move(receiver);
     } else {
@@ -149,8 +148,7 @@ int main(int argc, char *argv[]) {
                 << " line_a_kernel_drops="
                 << dual_batch_receiver->kernelDropsA()
                 << " line_b_kernel_drops="
-                << dual_batch_receiver->kernelDropsB()
-                << "\n";
+                << dual_batch_receiver->kernelDropsB() << "\n";
     }
     if (config.enable_latency_metrics) {
       latency_recorder.report();

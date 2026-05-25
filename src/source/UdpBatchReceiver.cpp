@@ -1,4 +1,4 @@
-#include "astra/source/UdpBachReceiver.hpp"
+#include "astra/source/UdpBatchReceiver.hpp"
 
 #include "astra/core/Time.hpp"
 
@@ -29,13 +29,13 @@ inline bool is_multicast(const struct in_addr &addr) noexcept {
 
 } // namespace
 
-UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
-                                 std::size_t batch_size)
+UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
+                                   std::size_t batch_size)
     : batch_size_(std::clamp(batch_size, std::size_t{1}, kMaxBatchSize)) {
 #ifndef __linux__
   (void)ip;
   (void)port;
-  throw std::runtime_error("UdpBachReceiver requires Linux recvmmsg()");
+  throw std::runtime_error("UdpBatchReceiver requires Linux recvmmsg()");
 #else
   fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
   if (fd_ < 0)
@@ -74,7 +74,7 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
   ::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
 #endif
 
-  struct sockaddr_in local {};
+  struct sockaddr_in local{};
   local.sin_family = AF_INET;
   local.sin_port = htons(port);
   local.sin_addr.s_addr = INADDR_ANY;
@@ -82,7 +82,7 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
       0)
     throw_errno("bind");
 
-  struct in_addr group {};
+  struct in_addr group{};
   if (::inet_pton(AF_INET, ip, &group) != 1) {
     ::close(fd_);
     fd_ = -1;
@@ -90,11 +90,11 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
   }
 
   if (is_multicast(group)) {
-    struct ip_mreq mreq {};
+    struct ip_mreq mreq{};
     mreq.imr_multiaddr = group;
     mreq.imr_interface.s_addr = INADDR_ANY;
-    if (::setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
-                     sizeof(mreq)) < 0)
+    if (::setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) <
+        0)
       throw_errno("IP_ADD_MEMBERSHIP");
   }
 
@@ -109,12 +109,12 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
 #endif
 }
 
-UdpBachReceiver::~UdpBachReceiver() {
+UdpBatchReceiver::~UdpBatchReceiver() {
   if (fd_ >= 0)
     ::close(fd_);
 }
 
-bool UdpBachReceiver::next(PacketView &packet) noexcept {
+bool UdpBatchReceiver::next(PacketView &packet) noexcept {
   if (pending_index_ >= pending_count_) {
     if (receiveBatch() == 0)
       return false;
@@ -124,8 +124,8 @@ bool UdpBachReceiver::next(PacketView &packet) noexcept {
   return true;
 }
 
-std::size_t UdpBachReceiver::nextBatch(PacketView *packets,
-                                       std::size_t max_packets) noexcept {
+std::size_t UdpBatchReceiver::nextBatch(PacketView *packets,
+                                        std::size_t max_packets) noexcept {
   if (packets == nullptr || max_packets == 0)
     return 0;
 
@@ -143,7 +143,7 @@ std::size_t UdpBachReceiver::nextBatch(PacketView *packets,
   return copied;
 }
 
-std::size_t UdpBachReceiver::receiveBatch() noexcept {
+std::size_t UdpBatchReceiver::receiveBatch() noexcept {
   pending_index_ = 0;
   pending_count_ = 0;
 
@@ -198,8 +198,7 @@ void UdpBachReceiver::recordKernelDrops(const struct msghdr &msg) noexcept {
       continue;
 
     uint32_t kernel_drop_count = 0;
-    std::memcpy(&kernel_drop_count, CMSG_DATA(cmsg),
-                sizeof(kernel_drop_count));
+    std::memcpy(&kernel_drop_count, CMSG_DATA(cmsg), sizeof(kernel_drop_count));
     if (kernel_drop_count >= last_kernel_drop_count_) {
       kernel_drop_count_ += kernel_drop_count - last_kernel_drop_count_;
     } else {

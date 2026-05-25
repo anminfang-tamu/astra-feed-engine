@@ -1,20 +1,20 @@
 #pragma once
 
 #include "astra/source/IMarketDataSource.hpp"
-#include "astra/source/UdpBachReceiver.hpp"
+#include "astra/source/UdpBatchReceiver.hpp"
 
 #include <cstdint>
 
-class DualUdpBachReceiver : public IMarketDataSource {
+class DualUdpBatchReceiver : public IMarketDataSource {
 public:
-  DualUdpBachReceiver(
+  DualUdpBatchReceiver(
       const char *ip_a, uint16_t port_a, const char *ip_b, uint16_t port_b,
-      std::size_t batch_size = UdpBachReceiver::kDefaultBatchSize);
+      std::size_t batch_size = UdpBatchReceiver::kDefaultBatchSize);
 
-  DualUdpBachReceiver(const DualUdpBachReceiver &) = delete;
-  DualUdpBachReceiver &operator=(const DualUdpBachReceiver &) = delete;
-  DualUdpBachReceiver(DualUdpBachReceiver &&) = delete;
-  DualUdpBachReceiver &operator=(DualUdpBachReceiver &&) = delete;
+  DualUdpBatchReceiver(const DualUdpBatchReceiver &) = delete;
+  DualUdpBatchReceiver &operator=(const DualUdpBatchReceiver &) = delete;
+  DualUdpBatchReceiver(DualUdpBatchReceiver &&) = delete;
+  DualUdpBatchReceiver &operator=(DualUdpBatchReceiver &&) = delete;
 
   bool next(PacketView &packet) noexcept override;
 
@@ -30,8 +30,8 @@ public:
   uint64_t kernelDropsB() const noexcept { return receiver_b_.kernelDrops(); }
 
 private:
-  UdpBachReceiver receiver_a_;
-  UdpBachReceiver receiver_b_;
+  UdpBatchReceiver receiver_a_;
+  UdpBatchReceiver receiver_b_;
   bool next_a_first_{true};
   uint64_t packets_a_{0};
   uint64_t packets_b_{0};
