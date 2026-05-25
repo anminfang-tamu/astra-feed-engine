@@ -5,13 +5,15 @@
 #include "astra/metrics/LatencyRecorder.hpp"
 #include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
+#include "astra/source/DualUdpBachReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
 #include "astra/source/UdpBachReceiver.hpp"
 #include "astra/source/UdpReceiver.hpp"
+#include "astra/utils/CpuAffinity.hpp"
 
 #include <csignal>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
 
@@ -27,8 +29,7 @@ int main(int argc, char *argv[]) {
     std::cerr
         << "Usage:\n"
         << "  " << argv[0] << " <ip> <port> [channel_id]\n"
-        << "  " << argv[0]
-        << " <ip_a> <port_a> <ip_b> <port_b> [channel_id]\n"
+        << "  " << argv[0] << " <ip_a> <port_a> <ip_b> <port_b> [channel_id]\n"
         << "  Receives MoldUDP64/ITCH 5.0 and builds a live order book.\n";
     return EXIT_FAILURE;
   }
@@ -39,17 +40,28 @@ int main(int argc, char *argv[]) {
   const uint8_t channel_id =
       (!dual_feed && argc == 4)
           ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 10))
-          : (dual_feed && argc == 6)
-                ? static_cast<uint8_t>(std::strtoul(argv[5], nullptr, 10))
-                : 0;
+      : (dual_feed && argc == 6)
+          ? static_cast<uint8_t>(std::strtoul(argv[5], nullptr, 10))
+          : 0;
 
   try {
+    if (const char *cpu_env = std::getenv("ASTRA_CPU")) {
+      const int cpu_id = static_cast<int>(std::strtol(cpu_env, nullptr, 10));
+      const auto affinity = astra::utils::pinCurrentThreadToCpu(cpu_id);
+      std::cout << "cpu_affinity status="
+                << astra::utils::cpuAffinityStatusName(affinity.status)
+                << " cpu=" << affinity.cpu_id;
+      if (!affinity)
+        std::cout << " error=" << affinity.error_code << " message=\""
+                  << affinity.message << "\"";
+      std::cout << "\n";
+    }
+
     const char *rx_mode = std::getenv("ASTRA_UDP_RX");
     const bool use_recvmmsg =
-        !dual_feed && rx_mode != nullptr &&
-        (std::strcmp(rx_mode, "recvmmsg") == 0 ||
-         std::strcmp(rx_mode, "batch") == 0 ||
-         std::strcmp(rx_mode, "bach") == 0);
+        rx_mode != nullptr && (std::strcmp(rx_mode, "recvmmsg") == 0 ||
+                               std::strcmp(rx_mode, "batch") == 0 ||
+                               std::strcmp(rx_mode, "bach") == 0);
     std::size_t batch_size = UdpBachReceiver::kDefaultBatchSize;
     if (const char *batch_env = std::getenv("ASTRA_UDP_BATCH_SIZE")) {
       const auto parsed = std::strtoul(batch_env, nullptr, 10);
@@ -61,12 +73,27 @@ int main(int argc, char *argv[]) {
     BookManager book_manager;
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
     std::unique_ptr<IMarketDataSource> source;
+    DualUdpReceiver *dual_receiver = nullptr;
+    DualUdpBachReceiver *dual_batch_receiver = nullptr;
+    UdpBachReceiver *batch_receiver = nullptr;
     if (dual_feed) {
-      source = std::make_unique<DualUdpReceiver>(
-          argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-          static_cast<uint16_t>(std::atoi(argv[4])));
+      if (use_recvmmsg) {
+        auto receiver = std::make_unique<DualUdpBachReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])), batch_size);
+        dual_batch_receiver = receiver.get();
+        source = std::move(receiver);
+      } else {
+        auto receiver = std::make_unique<DualUdpReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])));
+        dual_receiver = receiver.get();
+        source = std::move(receiver);
+      }
     } else if (use_recvmmsg) {
-      source = std::make_unique<UdpBachReceiver>(ip, port, batch_size);
+      auto receiver = std::make_unique<UdpBachReceiver>(ip, port, batch_size);
+      batch_receiver = receiver.get();
+      source = std::move(receiver);
     } else {
       source = std::make_unique<UdpReceiver>(ip, port);
     }
@@ -86,6 +113,8 @@ int main(int argc, char *argv[]) {
       std::cout << "Engine started  line_a=" << argv[1] << ":" << argv[2]
                 << "  line_b=" << argv[3] << ":" << argv[4]
                 << "  channel=" << static_cast<int>(channel_id)
+                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
+                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << " — press Ctrl+C to stop\n";
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
@@ -98,6 +127,31 @@ int main(int argc, char *argv[]) {
     engine.run();
 
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
+    if (batch_receiver != nullptr) {
+      std::cout << "rx_stats syscalls=" << batch_receiver->syscalls()
+                << " errors=" << batch_receiver->errors()
+                << " truncated=" << batch_receiver->truncated()
+                << " kernel_drops=" << batch_receiver->kernelDrops() << "\n";
+    }
+    if (dual_receiver != nullptr) {
+      std::cout << "rx_stats line_a_packets=" << dual_receiver->packetsA()
+                << " line_b_packets=" << dual_receiver->packetsB() << "\n";
+    }
+    if (dual_batch_receiver != nullptr) {
+      std::cout << "rx_stats line_a_packets=" << dual_batch_receiver->packetsA()
+                << " line_b_packets=" << dual_batch_receiver->packetsB()
+                << " line_a_syscalls=" << dual_batch_receiver->syscallsA()
+                << " line_b_syscalls=" << dual_batch_receiver->syscallsB()
+                << " line_a_errors=" << dual_batch_receiver->errorsA()
+                << " line_b_errors=" << dual_batch_receiver->errorsB()
+                << " line_a_truncated=" << dual_batch_receiver->truncatedA()
+                << " line_b_truncated=" << dual_batch_receiver->truncatedB()
+                << " line_a_kernel_drops="
+                << dual_batch_receiver->kernelDropsA()
+                << " line_b_kernel_drops="
+                << dual_batch_receiver->kernelDropsB()
+                << "\n";
+    }
     if (config.enable_latency_metrics) {
       latency_recorder.report();
       stage_latency_recorder.report();

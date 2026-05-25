@@ -1,4 +1,5 @@
 #include "astra/source/UdpSender.hpp"
+#include "astra/utils/CpuAffinity.hpp"
 #include "replay/itch/ItchMoldUdpSource.hpp"
 
 #include <atomic>
@@ -69,6 +70,19 @@ int main(int argc, char *argv[]) {
     const uint64_t    pkts_per_second = argc >= 7 ? parseU64(argv[6], 0) : 0;
 
     try {
+        if (const char *cpu_env = std::getenv("ASTRA_CPU")) {
+            const int cpu_id =
+                static_cast<int>(std::strtol(cpu_env, nullptr, 10));
+            const auto affinity = astra::utils::pinCurrentThreadToCpu(cpu_id);
+            std::cout << "cpu_affinity status="
+                      << astra::utils::cpuAffinityStatusName(affinity.status)
+                      << " cpu=" << affinity.cpu_id;
+            if (!affinity)
+                std::cout << " error=" << affinity.error_code
+                          << " message=\"" << affinity.message << "\"";
+            std::cout << "\n";
+        }
+
         ItchMoldUdpSource source(path, session, msgs_per_packet);
         if (!source.isOpen()) {
             std::cerr << source.lastError() << "\n";

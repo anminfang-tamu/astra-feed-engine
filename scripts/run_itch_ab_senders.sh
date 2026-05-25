@@ -13,6 +13,8 @@ PORT_B="${4:-9001}"
 MSGS_PER_PACKET="${5:-20}"
 SESSION="${6:-ASTRA     }"
 PKTS_PER_SECOND="${7:-10000}"
+CPU_A="${ASTRA_CPU_A:-}"
+CPU_B="${ASTRA_CPU_B:-}"
 
 if [[ ! -x "${BINARY}" ]]; then
   echo "itch_moldudp_sender not found; configuring and building..."
@@ -48,12 +50,23 @@ echo "  file=${ITCH_FILE}"
 echo "  line_a=${DEST_IP}:${PORT_A}"
 echo "  line_b=${DEST_IP}:${PORT_B}"
 echo "  msgs_per_packet=${MSGS_PER_PACKET} session='${SESSION}' rate=${PKTS_PER_SECOND} pkt/s per line"
+if [[ -n "${CPU_A}" || -n "${CPU_B}" ]]; then
+  echo "  cpu_a=${CPU_A:-unset} cpu_b=${CPU_B:-unset}"
+fi
 echo "  press Ctrl+C to stop both"
 
-"${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+if [[ -n "${CPU_A}" ]]; then
+  ASTRA_CPU="${CPU_A}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+else
+  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+fi
 pids+=("$!")
 
-"${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+if [[ -n "${CPU_B}" ]]; then
+  ASTRA_CPU="${CPU_B}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+else
+  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+fi
 pids+=("$!")
 
 wait -n "${pids[@]}"

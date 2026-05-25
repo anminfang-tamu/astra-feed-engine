@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <climits>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -68,6 +69,11 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
     ::setsockopt(fd_, SOL_SOCKET, SO_INCOMING_CPU, &cpu, sizeof(cpu));
 #endif
 
+#ifdef SO_RXQ_OVFL
+  int overflow = 1;
+  ::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
+#endif
+
   struct sockaddr_in local {};
   local.sin_family = AF_INET;
   local.sin_port = htons(port);
@@ -97,6 +103,8 @@ UdpBachReceiver::UdpBachReceiver(const char *ip, uint16_t port,
     iovecs_[i].iov_len = buffers_[i].size();
     msgs_[i].msg_hdr.msg_iov = &iovecs_[i];
     msgs_[i].msg_hdr.msg_iovlen = 1;
+    msgs_[i].msg_hdr.msg_control = controls_[i].data();
+    msgs_[i].msg_hdr.msg_controllen = controls_[i].size();
   }
 #endif
 }
@@ -146,6 +154,7 @@ std::size_t UdpBachReceiver::receiveBatch() noexcept {
   for (std::size_t i = 0; i < batch_size_; ++i) {
     msgs_[i].msg_len = 0;
     msgs_[i].msg_hdr.msg_flags = 0;
+    msgs_[i].msg_hdr.msg_controllen = controls_[i].size();
   }
 
   const int n =
@@ -164,6 +173,8 @@ std::size_t UdpBachReceiver::receiveBatch() noexcept {
   const std::size_t count = static_cast<std::size_t>(n);
 
   for (std::size_t i = 0; i < count; ++i) {
+    recordKernelDrops(msgs_[i].msg_hdr);
+
     std::size_t size = msgs_[i].msg_len;
     if (size > kMaxPacketSize) [[unlikely]] {
       ++truncated_count_;
@@ -177,3 +188,30 @@ std::size_t UdpBachReceiver::receiveBatch() noexcept {
   return count;
 #endif
 }
+
+#ifdef __linux__
+void UdpBachReceiver::recordKernelDrops(const struct msghdr &msg) noexcept {
+#ifdef SO_RXQ_OVFL
+  for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr;
+       cmsg = CMSG_NXTHDR(const_cast<struct msghdr *>(&msg), cmsg)) {
+    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SO_RXQ_OVFL)
+      continue;
+
+    uint32_t kernel_drop_count = 0;
+    std::memcpy(&kernel_drop_count, CMSG_DATA(cmsg),
+                sizeof(kernel_drop_count));
+    if (kernel_drop_count >= last_kernel_drop_count_) {
+      kernel_drop_count_ += kernel_drop_count - last_kernel_drop_count_;
+    } else {
+      kernel_drop_count_ +=
+          static_cast<uint64_t>(UINT_MAX - last_kernel_drop_count_) +
+          kernel_drop_count + 1u;
+    }
+    last_kernel_drop_count_ = kernel_drop_count;
+    return;
+  }
+#else
+  (void)msg;
+#endif
+}
+#endif
