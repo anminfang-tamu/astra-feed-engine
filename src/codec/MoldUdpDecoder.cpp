@@ -161,7 +161,7 @@ void MoldUdpDecoder::recordMoldParseSince(uint64_t start_ns) noexcept {
 
   const uint64_t end_ns = nowNs();
   if (end_ns >= start_ns)
-    last_timing_.mold_parse_ns += end_ns - start_ns;
+    last_timing_.mold_parse_ns += elapsedNs(start_ns, end_ns);
 }
 
 DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
@@ -212,7 +212,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
       if (stage_timing_enabled_) {
         const uint64_t itch_end_ns = nowNs();
         if (itch_end_ns >= itch_start_ns)
-          last_timing_.itch_total_ns += itch_end_ns - itch_start_ns;
+          last_timing_.itch_total_ns += elapsedNs(itch_start_ns, itch_end_ns);
         if (parser_.lastMessageSkipped())
           ++last_timing_.skipped_messages;
       }

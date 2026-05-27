@@ -382,6 +382,6 @@ void ItchParser::recordBookTiming(uint64_t start_ticks) noexcept {
 
   const uint64_t end_ticks = rdtsc();
   if (end_ticks >= start_ticks)
-    timing_->book_ns += end_ticks - start_ticks;
+    timing_->book_ns += elapsedRdtscNs(start_ticks, end_ticks);
   ++timing_->book_messages;
 }

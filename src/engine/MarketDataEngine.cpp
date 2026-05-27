@@ -53,7 +53,11 @@ void MarketDataEngine::run() {
     }
 
     if (config_.enable_latency_metrics) {
-      latency_recorder_.record(packet.receive_ts_ns, decode_done_ns);
+      if (decode_done_ns >= packet.receive_ts_ns)
+        latency_recorder_.recordDuration(
+            elapsedNs(packet.receive_ts_ns, decode_done_ns));
+      else
+        latency_recorder_.record(packet.receive_ts_ns, decode_done_ns);
       if (stage_latency_recorder_ != nullptr) {
         if (const DecodeStageTiming *timing = processor_.lastStageTiming()) {
           stage_latency_recorder_->record(packet.receive_ts_ns, decode_start_ns,

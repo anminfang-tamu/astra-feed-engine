@@ -1,4 +1,5 @@
 #include "astra/metrics/StageLatencyRecorder.hpp"
+#include "astra/core/Time.hpp"
 
 #include <iomanip>
 #include <iostream>
@@ -20,9 +21,11 @@ void StageLatencyRecorder::record(std::uint64_t recv_done_ns,
   old_packets_ += timing.old_packets;
 
   const std::uint64_t total_ns =
-      done_ns >= recv_done_ns ? done_ns - recv_done_ns : 0;
+      done_ns >= recv_done_ns ? elapsedNs(recv_done_ns, done_ns) : 0;
   const std::uint64_t recv_to_decode_ns =
-      decode_start_ns >= recv_done_ns ? decode_start_ns - recv_done_ns : 0;
+      decode_start_ns >= recv_done_ns
+          ? elapsedNs(recv_done_ns, decode_start_ns)
+          : 0;
   const std::uint64_t itch_parse_state_ns =
       timing.itch_total_ns >= timing.book_ns
           ? timing.itch_total_ns - timing.book_ns
@@ -67,6 +70,12 @@ void StageLatencyRecorder::reset() {
 void StageLatencyRecorder::report() const { report(std::cout); }
 
 void StageLatencyRecorder::report(std::ostream &out) const {
+  const TimeCalibration &calibration = timeCalibration();
+  out << "time_calibration now_ns_overhead_ns="
+      << calibration.now_ns_overhead_ns
+      << " rdtsc_overhead_ticks=" << calibration.rdtsc_overhead_ticks
+      << " rdtsc_ticks_per_second="
+      << calibration.rdtsc_ticks_per_second << '\n';
   out << "stage_latency packets=" << packets_ << " messages=" << messages_
       << " book_messages=" << book_messages_
       << " skipped_messages=" << skipped_messages_;
