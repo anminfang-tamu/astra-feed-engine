@@ -373,15 +373,15 @@ bool ItchParser::skip() { last_message_skipped_ = true; return false; }
 bool ItchParser::fail(std::string error) { last_error_ = std::move(error); return false; }
 
 uint64_t ItchParser::timingStart() const noexcept {
-  return timing_ != nullptr ? nowNs() : 0;
+  return timing_ != nullptr ? rdtsc() : 0;
 }
 
-void ItchParser::recordBookTiming(uint64_t start_ns) noexcept {
+void ItchParser::recordBookTiming(uint64_t start_ticks) noexcept {
   if (timing_ == nullptr)
     return;
 
-  const uint64_t end_ns = nowNs();
-  if (end_ns >= start_ns)
-    timing_->book_ns += end_ns - start_ns;
+  const uint64_t end_ticks = rdtsc();
+  if (end_ticks >= start_ticks)
+    timing_->book_ns += end_ticks - start_ticks;
   ++timing_->book_messages;
 }

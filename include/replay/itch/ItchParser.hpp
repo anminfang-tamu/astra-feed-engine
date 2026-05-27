@@ -63,7 +63,7 @@ private:
   bool skip();
   bool fail(std::string error);
   uint64_t timingStart() const noexcept;
-  void recordBookTiming(uint64_t start_ns) noexcept;
+  void recordBookTiming(uint64_t start_ticks) noexcept;
 
   static uint16_t readU16BE(std::span<const std::byte> msg, std::size_t off);
   static uint32_t readU32BE(std::span<const std::byte> msg, std::size_t off);
