@@ -14,6 +14,10 @@ ASTRA_R_BOOK_WARMUP=prepare ASTRA_CPU=2 ASTRA_UDP_RX=recvmmsg ASTRA_UDP_BATCH_SI
  ./build/md_engine 127.0.0.1 9000 127.0.0.1 9001
 ```
 
+For packet-level latency only, leave `ASTRA_LATENCY_METRICS=on` and set
+`ASTRA_STAGE_LATENCY_METRICS=off`. That records receive timestamp to completed
+packet processing/order-book update without collecting the per-stage breakdown.
+
 ```bash
 ASTRA_CPU_A=3 ASTRA_CPU_B=4 ./scripts/run_itch_ab_senders.sh
 ```

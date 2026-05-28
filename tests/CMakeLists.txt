@@ -19,6 +19,7 @@ add_executable(astra_tests
     book/BookManagerTest.cpp
     book/OrderBookTest.cpp
     codec/MoldUdpDecoderTest.cpp
+    engine/MarketDataEngineTest.cpp
     metrics/LatencyRecorderTest.cpp
     replay/itch/ItchParserTest.cpp
     sequencing/SequenceTrackerTest.cpp

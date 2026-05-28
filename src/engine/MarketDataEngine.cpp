@@ -30,11 +30,13 @@ void MarketDataEngine::run() {
     //             static_cast<const void *>(packet.data), packet.size,
     //             static_cast<unsigned long long>(packet.receive_ts_ns));
 
-    const uint64_t decode_start_ns =
-        config_.enable_latency_metrics ? nowNs() : 0;
+    const bool latency_enabled = config_.enable_latency_metrics;
+    const bool stage_latency_enabled =
+        latency_enabled && config_.enable_stage_latency_metrics &&
+        stage_latency_recorder_ != nullptr;
+    const uint64_t decode_start_ns = stage_latency_enabled ? nowNs() : 0;
     const DecodeResult result = processor_.processPacket(packet);
-    const uint64_t decode_done_ns =
-        config_.enable_latency_metrics ? nowNs() : 0;
+    const uint64_t decode_done_ns = latency_enabled ? nowNs() : 0;
     // ASTRA_TRACE("engine decoded status=%d had_gap=%d",
     //             static_cast<int>(result.status), result.had_gap ? 1 : 0);
 
@@ -52,13 +54,13 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    if (config_.enable_latency_metrics) {
+    if (latency_enabled) {
       if (decode_done_ns >= packet.receive_ts_ns)
         latency_recorder_.recordDuration(
             elapsedNs(packet.receive_ts_ns, decode_done_ns));
       else
         latency_recorder_.record(packet.receive_ts_ns, decode_done_ns);
-      if (stage_latency_recorder_ != nullptr) {
+      if (stage_latency_enabled) {
         if (const DecodeStageTiming *timing = processor_.lastStageTiming()) {
           stage_latency_recorder_->record(packet.receive_ts_ns, decode_start_ns,
                                           decode_done_ns, *timing);
