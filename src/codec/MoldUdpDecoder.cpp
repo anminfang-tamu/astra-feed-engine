@@ -37,7 +37,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (packet.data == nullptr ||
       packet.size < MoldUdpPacketHeader::kHeaderSize) {
     // ASTRA_TRACE("decoder packet too small size=%zu", packet.size);
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::PacketTooSmall};
   }
 
@@ -46,7 +46,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
     // ASTRA_TRACE("decoder end of stream");
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::EndOfStream};
   }
 
@@ -63,7 +63,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (msg_count == 0) {
     // ASTRA_TRACE("decoder heartbeat first_seq=%llu",
     //             static_cast<unsigned long long>(first_seq));
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
@@ -88,7 +88,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       channel_.status = ChannelHealth::Stale;
       if (stage_timing_enabled_)
         ++last_timing_.stale_gap_dropped_packets;
-      recordMoldParseSince(mold_start_ns);
+      // recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::Ok, true};
     }
     if (channel_.gap_buffer.insert(packet.data,
@@ -103,7 +103,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       // ASTRA_TRACE("decoder gap buffer insert failed first=%llu",
       //             static_cast<unsigned long long>(first_seq));
     }
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok, true};
   }
 
@@ -114,14 +114,14 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     //               static_cast<unsigned long long>(first_seq),
     //               static_cast<unsigned long long>(packet_end),
     //               static_cast<unsigned long long>(expected));
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
   const uint64_t start_seq = expected > first_seq ? expected : first_seq;
   if (stage_timing_enabled_)
     ++last_timing_.sequenced_packets;
-  recordMoldParseSince(mold_start_ns);
+  // recordMoldParseSince(mold_start_ns);
   DecodeResult result = processSequencedPacket(packet.data, packet.size,
                                                first_seq, msg_count, start_seq);
   // ASTRA_TRACE("decoder processSequencedPacket result status=%d",
@@ -181,7 +181,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
       // ASTRA_TRACE("decoder invalid size before len i=%u offset=%zu size=%zu",
       // i,
       //             offset, size);
-      recordMoldParseSince(mold_start_ns);
+      // recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
 
@@ -191,7 +191,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
       // ASTRA_TRACE("decoder invalid msg len i=%u len=%u offset=%zu size=%zu",
       // i,
       //             msg_len, offset, size);
-      recordMoldParseSince(mold_start_ns);
+      // recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
 
@@ -201,7 +201,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
         locate = readU16BE(data + offset + 1);
         channel_.registerStockLocate(locate);
       }
-      recordMoldParseSince(mold_start_ns);
+      // recordMoldParseSince(mold_start_ns);
       // ASTRA_TRACE("decoder dispatch seq=%llu idx=%u type=%c locate=%u len=%u
       // "
       //             "offset=%zu",
@@ -222,9 +222,9 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
       //             static_cast<unsigned long long>(message_seq), type,
       //             locate);
     }
-    else {
-      recordMoldParseSince(mold_start_ns);
-    }
+    // else {
+    // recordMoldParseSince(mold_start_ns);
+    // }
 
     offset += msg_len;
   }
