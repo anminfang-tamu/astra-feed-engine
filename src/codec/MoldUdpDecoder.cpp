@@ -32,21 +32,21 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   }
 
   const uint64_t mold_start_ns = stage_timing_enabled_ ? nowNs() : 0;
-  ASTRA_TRACE("decoder processPacket enter data=%p size=%zu",
-              static_cast<const void *>(packet.data), packet.size);
+  // ASTRA_TRACE("decoder processPacket enter data=%p size=%zu",
+  //             static_cast<const void *>(packet.data), packet.size);
   if (packet.data == nullptr ||
       packet.size < MoldUdpPacketHeader::kHeaderSize) {
-    ASTRA_TRACE("decoder packet too small size=%zu", packet.size);
-    recordMoldParseSince(mold_start_ns);
+    // ASTRA_TRACE("decoder packet too small size=%zu", packet.size);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::PacketTooSmall};
   }
 
   const uint16_t msg_count = readU16BE(packet.data + 18);
-  ASTRA_TRACE("decoder header msg_count=%u", msg_count);
+  // ASTRA_TRACE("decoder header msg_count=%u", msg_count);
 
   if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
-    ASTRA_TRACE("decoder end of stream");
-    recordMoldParseSince(mold_start_ns);
+    // ASTRA_TRACE("decoder end of stream");
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::EndOfStream};
   }
 
@@ -55,39 +55,40 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     first_packet_seen_ = true;
     channel_.setSession(reinterpret_cast<const char *>(packet.data));
     channel_.next_expected_seq = first_seq;
-    ASTRA_TRACE("decoder first packet channel=%u first_seq=%llu",
-                channel_.channel_id,
-                static_cast<unsigned long long>(first_seq));
+    // ASTRA_TRACE("decoder first packet channel=%u first_seq=%llu",
+    // channel_.channel_id,
+    // static_cast<unsigned long long>(first_seq));
   }
 
   if (msg_count == 0) {
-    ASTRA_TRACE("decoder heartbeat first_seq=%llu",
-                static_cast<unsigned long long>(first_seq));
-    recordMoldParseSince(mold_start_ns);
+    // ASTRA_TRACE("decoder heartbeat first_seq=%llu",
+    //             static_cast<unsigned long long>(first_seq));
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
   const uint64_t expected = channel_.next_expected_seq;
   const uint64_t packet_end = first_seq + msg_count;
-  ASTRA_TRACE("decoder seq first=%llu expected=%llu end=%llu count=%u status=%d",
-              static_cast<unsigned long long>(first_seq),
-              static_cast<unsigned long long>(expected),
-              static_cast<unsigned long long>(packet_end), msg_count,
-              static_cast<int>(channel_.status));
+  // ASTRA_TRACE("decoder seq first=%llu expected=%llu end=%llu count=%u
+  // status=%d",
+  //             static_cast<unsigned long long>(first_seq),
+  //             static_cast<unsigned long long>(expected),
+  //             static_cast<unsigned long long>(packet_end), msg_count,
+  //             static_cast<int>(channel_.status));
 
   if (first_seq > expected) {
     const bool already_stale = channel_.status == ChannelHealth::Stale;
     channel_.status = ChannelHealth::GapDetected;
     if (stage_timing_enabled_)
       ++last_timing_.gap_packets;
-    ASTRA_TRACE("decoder gap detected first=%llu expected=%llu count=%u",
-                static_cast<unsigned long long>(first_seq),
-                static_cast<unsigned long long>(expected), msg_count);
+    // ASTRA_TRACE("decoder gap detected first=%llu expected=%llu count=%u",
+    //             static_cast<unsigned long long>(first_seq),
+    //             static_cast<unsigned long long>(expected), msg_count);
     if (already_stale) {
       channel_.status = ChannelHealth::Stale;
       if (stage_timing_enabled_)
         ++last_timing_.stale_gap_dropped_packets;
-      recordMoldParseSince(mold_start_ns);
+      // recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::Ok, true};
     }
     if (channel_.gap_buffer.insert(packet.data,
@@ -99,34 +100,34 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       if (stage_timing_enabled_)
         ++last_timing_.gap_buffer_insert_failed_packets;
       channel_.status = ChannelHealth::Stale;
-      ASTRA_TRACE("decoder gap buffer insert failed first=%llu",
-                  static_cast<unsigned long long>(first_seq));
+      // ASTRA_TRACE("decoder gap buffer insert failed first=%llu",
+      //             static_cast<unsigned long long>(first_seq));
     }
-    recordMoldParseSince(mold_start_ns);
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok, true};
   }
 
   if (packet_end <= expected) {
     if (stage_timing_enabled_)
       ++last_timing_.old_packets;
-    ASTRA_TRACE("decoder duplicate/old first=%llu end=%llu expected=%llu",
-                static_cast<unsigned long long>(first_seq),
-                static_cast<unsigned long long>(packet_end),
-                static_cast<unsigned long long>(expected));
-    recordMoldParseSince(mold_start_ns);
+    // ASTRA_TRACE("decoder duplicate/old first=%llu end=%llu expected=%llu",
+    //               static_cast<unsigned long long>(first_seq),
+    //               static_cast<unsigned long long>(packet_end),
+    //               static_cast<unsigned long long>(expected));
+    // recordMoldParseSince(mold_start_ns);
     return {DecodeStatus::Ok};
   }
 
   const uint64_t start_seq = expected > first_seq ? expected : first_seq;
   if (stage_timing_enabled_)
     ++last_timing_.sequenced_packets;
-  recordMoldParseSince(mold_start_ns);
-  DecodeResult result =
-      processSequencedPacket(packet.data, packet.size, first_seq, msg_count,
-                             start_seq);
-  ASTRA_TRACE("decoder processSequencedPacket result status=%d",
-              static_cast<int>(result.status));
-  if (result.status != DecodeStatus::Ok) return result;
+  // recordMoldParseSince(mold_start_ns);
+  DecodeResult result = processSequencedPacket(packet.data, packet.size,
+                                               first_seq, msg_count, start_seq);
+  // ASTRA_TRACE("decoder processSequencedPacket result status=%d",
+  // static_cast<int>(result.status));
+  if (result.status != DecodeStatus::Ok)
+    return result;
 
   if (channel_.status == ChannelHealth::GapDetected)
     channel_.status = ChannelHealth::Recovering;
@@ -134,9 +135,8 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   drainGapBuffer();
   if (channel_.status != ChannelHealth::Invalid &&
       channel_.status != ChannelHealth::Stale)
-    channel_.status =
-        channel_.gap_buffer.empty() ? ChannelHealth::Good
-                                    : ChannelHealth::Recovering;
+    channel_.status = channel_.gap_buffer.empty() ? ChannelHealth::Good
+                                                  : ChannelHealth::Recovering;
   return result;
 }
 
@@ -169,16 +169,17 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
                                                     uint64_t first_seq,
                                                     uint16_t msg_count,
                                                     uint64_t start_seq) {
-  ASTRA_TRACE("decoder processSequenced enter first=%llu count=%u start=%llu size=%zu",
-              static_cast<unsigned long long>(first_seq), msg_count,
-              static_cast<unsigned long long>(start_seq), size);
+  ASTRA_TRACE(
+      "decoder processSequenced enter first=%llu count=%u start=%llu size=%zu",
+      static_cast<unsigned long long>(first_seq), msg_count,
+      static_cast<unsigned long long>(start_seq), size);
   std::size_t offset = MoldUdpPacketHeader::kHeaderSize;
   uint64_t message_seq = first_seq;
   for (uint16_t i = 0; i < msg_count; ++i, ++message_seq) {
     const uint64_t mold_start_ns = stage_timing_enabled_ ? nowNs() : 0;
     if (offset + 2 > size) {
-      ASTRA_TRACE("decoder invalid size before len i=%u offset=%zu size=%zu",
-                  i, offset, size);
+      ASTRA_TRACE("decoder invalid size before len i=%u offset=%zu size=%zu", i,
+                  offset, size);
       recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
@@ -186,25 +187,27 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
     const uint16_t msg_len = readU16BE(data + offset);
     offset += 2;
     if (msg_len == 0 || offset + msg_len > size) {
-      ASTRA_TRACE("decoder invalid msg len i=%u len=%u offset=%zu size=%zu",
-                  i, msg_len, offset, size);
+      ASTRA_TRACE("decoder invalid msg len i=%u len=%u offset=%zu size=%zu", i,
+                  msg_len, offset, size);
       recordMoldParseSince(mold_start_ns);
       return {DecodeStatus::InvalidSize};
     }
 
     if (message_seq >= start_seq) {
       const char type =
-          msg_len > 0 ? static_cast<char>(std::to_integer<uint8_t>(data[offset]))
-                      : '?';
+          msg_len > 0
+              ? static_cast<char>(std::to_integer<uint8_t>(data[offset]))
+              : '?';
       uint16_t locate = 0;
       if (msg_len >= 3) {
         locate = readU16BE(data + offset + 1);
         channel_.registerStockLocate(locate);
       }
       recordMoldParseSince(mold_start_ns);
-      ASTRA_TRACE("decoder dispatch seq=%llu idx=%u type=%c locate=%u len=%u offset=%zu",
-                  static_cast<unsigned long long>(message_seq), i, type,
-                  locate, msg_len, offset);
+      ASTRA_TRACE("decoder dispatch seq=%llu idx=%u type=%c locate=%u len=%u "
+                  "offset=%zu",
+                  static_cast<unsigned long long>(message_seq), i, type, locate,
+                  msg_len, offset);
       if (stage_timing_enabled_)
         ++last_timing_.messages;
       const uint64_t itch_start_ns = stage_timing_enabled_ ? nowNs() : 0;
