@@ -49,7 +49,7 @@ UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
   if (::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0)
     throw_errno("SO_REUSEADDR");
 
-  int rcvbuf = 8 * 1024 * 1024;
+  int rcvbuf = 64 * 1024 * 1024; // 64 MiB
   if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0)
     throw_errno("SO_RCVBUF");
 

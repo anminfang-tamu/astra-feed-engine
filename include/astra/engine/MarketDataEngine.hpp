@@ -30,7 +30,7 @@ private:
   IMarketDataSource &source_;
   IPacketProcessor  &processor_;
   LatencyRecorder   &latency_recorder_;
-  StageLatencyRecorder *stage_latency_recorder_{nullptr};
+  // StageLatencyRecorder *stage_latency_recorder_{nullptr};
   EngineConfig      &config_;
 
   std::atomic<bool> running_{true};

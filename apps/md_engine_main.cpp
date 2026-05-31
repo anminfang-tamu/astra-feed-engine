@@ -3,7 +3,7 @@
 #include "astra/engine/EngineConfig.hpp"
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/metrics/LatencyRecorder.hpp"
-#include "astra/metrics/StageLatencyRecorder.hpp"
+// #include "astra/metrics/StageLatencyRecorder.hpp"
 #include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/DualUdpBatchReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
@@ -142,20 +142,19 @@ int main(int argc, char *argv[]) {
       source = std::make_unique<UdpReceiver>(ip, port);
     }
     LatencyRecorder latency_recorder;
-    StageLatencyRecorder stage_latency_recorder;
+    // StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
     config.enable_latency_metrics =
         envBool(std::getenv("ASTRA_LATENCY_METRICS"),
                 config.enable_latency_metrics);
-    config.enable_stage_latency_metrics =
-        config.enable_latency_metrics &&
-        envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
-                config.enable_stage_latency_metrics);
-    decoder.setStageTimingEnabled(config.enable_latency_metrics &&
-                                  config.enable_stage_latency_metrics);
+    // config.enable_stage_latency_metrics =
+    //     config.enable_latency_metrics &&
+    //     envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
+    //             config.enable_stage_latency_metrics);
+    // decoder.setStageTimingEnabled(config.enable_latency_metrics &&
+    //                               config.enable_stage_latency_metrics);
 
-    MarketDataEngine engine(*source, decoder, latency_recorder,
-                            &stage_latency_recorder, config);
+    MarketDataEngine engine(*source, decoder, latency_recorder, config);
 
     g_engine = &engine;
     std::signal(SIGINT, onSignal);
@@ -169,8 +168,8 @@ int main(int argc, char *argv[]) {
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
-                << "  stage_metrics="
-                << (config.enable_stage_latency_metrics ? "on" : "off")
+                // << "  stage_metrics="
+                // << (config.enable_stage_latency_metrics ? "on" : "off")
                 << "  r_warmup=" << r_warmup_mode
                 << " — press Ctrl+C to stop\n";
     } else {
@@ -180,8 +179,8 @@ int main(int argc, char *argv[]) {
                 << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
                 << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
-                << "  stage_metrics="
-                << (config.enable_stage_latency_metrics ? "on" : "off")
+                // << "  stage_metrics="
+                // << (config.enable_stage_latency_metrics ? "on" : "off")
                 << "  r_warmup=" << r_warmup_mode
                 << " — press Ctrl+C to stop\n";
     }
@@ -215,8 +214,8 @@ int main(int argc, char *argv[]) {
     }
     if (config.enable_latency_metrics) {
       latency_recorder.report();
-      if (config.enable_stage_latency_metrics)
-        stage_latency_recorder.report();
+      // if (config.enable_stage_latency_metrics)
+      //   stage_latency_recorder.report();
     }
 
   } catch (const std::exception &e) {

@@ -26,7 +26,7 @@ public:
 
   void    reset();
   void    setChannelId(uint8_t channel_id);
-  void    setStageTiming(DecodeStageTiming *timing) noexcept;
+  // void    setStageTiming(DecodeStageTiming *timing) noexcept;
   void    setStockDirectoryWarmup(bool prepare_books,
                                   bool touch_pages) noexcept;
   uint8_t channelId() const;
@@ -62,8 +62,8 @@ private:
 
   bool skip();
   bool fail(std::string error);
-  uint64_t timingStart() const noexcept;
-  void recordBookTiming(uint64_t start_ticks) noexcept;
+  // uint64_t timingStart() const noexcept;
+  // void recordBookTiming(uint64_t start_ticks) noexcept;
 
   static uint16_t readU16BE(std::span<const std::byte> msg, std::size_t off);
   static uint32_t readU32BE(std::span<const std::byte> msg, std::size_t off);
@@ -76,7 +76,7 @@ private:
   bool          prepare_books_on_directory_{true};
   bool          touch_book_pages_on_directory_{false};
   std::string   last_error_;
-  DecodeStageTiming *timing_{nullptr};
+  // DecodeStageTiming *timing_{nullptr};
 
   FixedHashMap<OrderState> orders_;              // for MatchEntry recording
   FixedHashMap<MatchEntry> executions_by_match_; // BrokenTrade

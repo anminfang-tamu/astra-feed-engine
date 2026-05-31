@@ -37,8 +37,8 @@ private:
   void drainGapBuffer();
 
   bool first_packet_seen_{false};
-  bool stage_timing_enabled_{false};
-  DecodeStageTiming last_timing_;
+  // bool stage_timing_enabled_{false};
+  // DecodeStageTiming last_timing_;
   ChannelState channel_;
   ItchParser parser_;
 };

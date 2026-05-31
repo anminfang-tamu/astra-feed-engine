@@ -60,4 +60,8 @@ inline void log(const char *file, int line, const char *fmt, ...) noexcept {
 
 } // namespace astra::trace
 
+#ifdef ASTRA_ENABLE_TRACE
 #define ASTRA_TRACE(...) ::astra::trace::log(__FILE__, __LINE__, __VA_ARGS__)
+#else
+#define ASTRA_TRACE(...) do { } while (false)
+#endif

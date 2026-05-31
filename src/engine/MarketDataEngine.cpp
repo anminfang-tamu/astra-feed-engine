@@ -16,8 +16,9 @@ MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    StageLatencyRecorder *stage_latency_recorder,
                                    EngineConfig &config)
     : source_(source), processor_(processor),
-      latency_recorder_(latency_recorder),
-      stage_latency_recorder_(stage_latency_recorder), config_(config) {}
+      latency_recorder_(latency_recorder), config_(config) {
+  (void)stage_latency_recorder;
+}
 
 bool MarketDataEngine::stop() { return running_.exchange(false); }
 
@@ -31,10 +32,10 @@ void MarketDataEngine::run() {
     //             static_cast<unsigned long long>(packet.receive_ts_ns));
 
     const bool latency_enabled = config_.enable_latency_metrics;
-    const bool stage_latency_enabled =
-        latency_enabled && config_.enable_stage_latency_metrics &&
-        stage_latency_recorder_ != nullptr;
-    const uint64_t decode_start_ns = stage_latency_enabled ? nowNs() : 0;
+    // const bool stage_latency_enabled =
+    //     latency_enabled && config_.enable_stage_latency_metrics &&
+    //     stage_latency_recorder_ != nullptr;
+    // const uint64_t decode_start_ns = stage_latency_enabled ? nowNs() : 0;
     const DecodeResult result = processor_.processPacket(packet);
     const uint64_t decode_done_ns = latency_enabled ? nowNs() : 0;
     // ASTRA_TRACE("engine decoded status=%d had_gap=%d",
@@ -60,12 +61,12 @@ void MarketDataEngine::run() {
             elapsedNs(packet.receive_ts_ns, decode_done_ns));
       else
         latency_recorder_.record(packet.receive_ts_ns, decode_done_ns);
-      if (stage_latency_enabled) {
-        if (const DecodeStageTiming *timing = processor_.lastStageTiming()) {
-          stage_latency_recorder_->record(packet.receive_ts_ns, decode_start_ns,
-                                          decode_done_ns, *timing);
-        }
-      }
+      // if (stage_latency_enabled) {
+      //   if (const DecodeStageTiming *timing = processor_.lastStageTiming()) {
+      //     stage_latency_recorder_->record(packet.receive_ts_ns, decode_start_ns,
+      //                                     decode_done_ns, *timing);
+      //   }
+      // }
     }
   }
 }

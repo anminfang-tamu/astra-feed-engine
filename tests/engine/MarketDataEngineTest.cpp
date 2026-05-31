@@ -73,7 +73,7 @@ TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
 }
 
-TEST(MarketDataEngineTest, StageLatencyModeReadsStageTiming) {
+TEST(MarketDataEngineTest, StageLatencyModeDoesNotReadStageTiming) {
   ScriptedSource source;
   ScriptedProcessor processor;
   LatencyRecorder latency_recorder;
@@ -88,5 +88,5 @@ TEST(MarketDataEngineTest, StageLatencyModeReadsStageTiming) {
 
   EXPECT_EQ(processor.processCalls(), 2);
   EXPECT_EQ(latency_recorder.count(), 1u);
-  EXPECT_EQ(processor.lastStageTimingCalls(), 1);
+  EXPECT_EQ(processor.lastStageTimingCalls(), 0);
 }
