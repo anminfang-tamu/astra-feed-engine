@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <sys/mman.h>
 
@@ -26,7 +27,7 @@ private:
 public:
   explicit OrderIdMap(uint32_t capacity_pow2)
       : capacity_(checkedCapacity(capacity_pow2)), mask_(capacity_ - 1),
-        bytes_(entryBytes(capacity_)), entries_(mapEntries(bytes_)) {}
+        bytes_(mappingBytes(capacity_)), entries_(mapEntries(bytes_)) {}
 
   ~OrderIdMap() { unmapEntries(); }
 
@@ -127,11 +128,9 @@ public:
 
   void clear() noexcept {
     if (entries_ != nullptr && bytes_ != 0) {
-      Entry *new_entries = mapEntries(bytes_);
-      unmapEntries();
-      entries_ = new_entries;
+      std::memset(entries_, 0,
+                  bytes_); // kEmpty == 0; keeps the same pages, stays warm
     }
-
     size_ = 0;
   }
 
@@ -208,6 +207,14 @@ private:
 #error "OrderIdMap requires MAP_ANONYMOUS or MAP_ANON"
 #endif
 
+#if defined(MAP_HUGETLB)
+  static constexpr int kHugePageMapFlag = MAP_HUGETLB;
+  static constexpr size_t kHugePageSize = 2UL * 1024 * 1024;
+#else
+  static constexpr int kHugePageMapFlag = 0;
+  static constexpr size_t kHugePageSize = 0;
+#endif
+
   static uint32_t checkedCapacity(uint32_t capacity_pow2) noexcept {
     if (capacity_pow2 < 2 || (capacity_pow2 & (capacity_pow2 - 1)) != 0) {
       assert(false && "OrderIndex capacity must be a power of two >= 2");
@@ -221,11 +228,33 @@ private:
     return static_cast<size_t>(capacity) * sizeof(Entry);
   }
 
+  static size_t mappingBytes(uint32_t capacity) noexcept {
+    const size_t bytes = entryBytes(capacity);
+    if (kHugePageSize == 0) {
+      return bytes;
+    }
+    return (bytes + kHugePageSize - 1) & ~(kHugePageSize - 1);
+  }
+
   static Entry *mapEntries(size_t bytes) noexcept {
-    void *mapping = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                           MAP_PRIVATE | kAnonymousMapFlag, -1, 0);
+    void *mapping = MAP_FAILED;
+
+    if (kHugePageMapFlag != 0) {
+      mapping =
+          ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | kAnonymousMapFlag | kHugePageMapFlag, -1, 0);
+    }
+
     if (mapping == MAP_FAILED) {
-      std::abort();
+      mapping = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | kAnonymousMapFlag, -1, 0);
+      if (mapping == MAP_FAILED) {
+        std::abort();
+      }
+#if defined(MADV_HUGEPAGE)
+      ::madvise(mapping, bytes,
+                MADV_HUGEPAGE); // best-effort THP if no reserved pool
+#endif
     }
 
     return static_cast<Entry *>(mapping);

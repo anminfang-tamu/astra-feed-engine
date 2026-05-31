@@ -136,8 +136,9 @@ bool UdpReceiver::next(PacketView &packet) noexcept {
   if (size > sizeof(buf_)) [[unlikely]] {
     // Packet was larger than our buffer; we got the truncated bytes.
     // Count it and clamp size to what we actually have.
-    ++truncated_count_;
-    size = sizeof(buf_);
+    // ++truncated_count_;
+    // size = sizeof(buf_);
+    return false;
   }
 
   packet.data = buf_;
