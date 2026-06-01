@@ -11,9 +11,10 @@ enum class DecodeStatus {
   InvalidOrderSide,
   Heartbeat,
   EndOfStream,
+  InvalidSequence,
 };
 
 struct DecodeResult {
   DecodeStatus status{DecodeStatus::Ok};
-  bool         had_gap{false};
+  bool had_gap{false};
 };
