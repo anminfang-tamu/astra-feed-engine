@@ -55,7 +55,7 @@ void MarketDataEngine::run() {
       continue;
     }
 
-    if (latency_enabled) {
+    if (latency_enabled && result.record_latency) {
       if (decode_done_ns >= packet.receive_ts_ns)
         latency_recorder_.recordDuration(
             elapsedNs(packet.receive_ts_ns, decode_done_ns));

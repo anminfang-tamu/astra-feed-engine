@@ -53,6 +53,41 @@ private:
   DecodeStageTiming timing_{};
 };
 
+class ThreePacketSource : public IMarketDataSource {
+public:
+  bool next(PacketView &packet) override {
+    if (index_ >= packets_.size())
+      return false;
+    packet = packets_[index_++];
+    return true;
+  }
+
+private:
+  std::array<PacketView, 3> packets_{
+      PacketView{nullptr, 0, 1},
+      PacketView{nullptr, 0, 1},
+      PacketView{nullptr, 0, 1},
+  };
+  std::size_t index_{0};
+};
+
+class LatencySkippingProcessor : public IPacketProcessor {
+public:
+  DecodeResult processPacket(const PacketView &) override {
+    ++process_calls_;
+    if (process_calls_ == 1)
+      return DecodeResult{DecodeStatus::Ok, false, false};
+    if (process_calls_ == 2)
+      return DecodeResult{DecodeStatus::Ok};
+    return DecodeResult{DecodeStatus::EndOfStream};
+  }
+
+  int processCalls() const noexcept { return process_calls_; }
+
+private:
+  int process_calls_{0};
+};
+
 } // namespace
 
 TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
@@ -71,6 +106,20 @@ TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
   EXPECT_EQ(processor.processCalls(), 2);
   EXPECT_EQ(latency_recorder.count(), 1u);
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
+}
+
+TEST(MarketDataEngineTest, PacketLatencySkipsProcessorNoOps) {
+  ThreePacketSource source;
+  LatencySkippingProcessor processor;
+  LatencyRecorder latency_recorder;
+  EngineConfig config;
+  config.enable_latency_metrics = true;
+
+  MarketDataEngine engine(source, processor, latency_recorder, config);
+  engine.run();
+
+  EXPECT_EQ(processor.processCalls(), 3);
+  EXPECT_EQ(latency_recorder.count(), 1u);
 }
 
 TEST(MarketDataEngineTest, StageLatencyModeDoesNotReadStageTiming) {

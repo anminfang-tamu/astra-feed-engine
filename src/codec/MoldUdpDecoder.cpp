@@ -44,7 +44,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   // heartbeat or empty packet, just update status and return
   if (msg_count == 0) {
-    return {DecodeStatus::Ok};
+    return {DecodeStatus::Ok, false, false};
   }
 
   const uint64_t expected = channel_.next_expected_seq;
@@ -52,7 +52,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   // duplicate or old packet, ignore
   if (packet_end <= expected) {
-    return {DecodeStatus::Ok};
+    return {DecodeStatus::Ok, false, false};
   }
 
   // gap detected
@@ -64,7 +64,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     // recover later
     if (already_stale) {
       channel_.status = ChannelHealth::Stale;
-      return {DecodeStatus::Ok, true};
+      return {DecodeStatus::Ok, true, false};
     }
     if (!channel_.gap_buffer.insert(packet.data,
                                     static_cast<uint16_t>(packet.size),
@@ -72,7 +72,7 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       channel_.status = ChannelHealth::Stale;
     }
 
-    return {DecodeStatus::Ok, true};
+    return {DecodeStatus::Ok, true, false};
   }
 
   const uint64_t start_seq = expected > first_seq ? expected : first_seq;

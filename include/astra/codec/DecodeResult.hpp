@@ -17,4 +17,5 @@ enum class DecodeStatus {
 struct DecodeResult {
   DecodeStatus status{DecodeStatus::Ok};
   bool had_gap{false};
+  bool record_latency{true};
 };

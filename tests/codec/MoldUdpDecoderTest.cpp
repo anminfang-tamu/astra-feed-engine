@@ -107,3 +107,20 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   EXPECT_EQ(books.getOrderBook(2)->getTopOfBook().ask_qty, 200u);
   EXPECT_EQ(books.getOrderBook(3)->getTopOfBook().bid_qty, 300u);
 }
+
+TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
+  SymbolTable symbols;
+  BookManager books;
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes pkt1 = moldPacket(1, std::span<const Bytes>(&msg1, 1));
+
+  const DecodeResult first_result = decoder.processPacket(view(pkt1));
+  EXPECT_EQ(first_result.status, DecodeStatus::Ok);
+  EXPECT_TRUE(first_result.record_latency);
+
+  const DecodeResult duplicate_result = decoder.processPacket(view(pkt1));
+  EXPECT_EQ(duplicate_result.status, DecodeStatus::Ok);
+  EXPECT_FALSE(duplicate_result.record_latency);
+}
