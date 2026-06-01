@@ -30,16 +30,16 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   }
 
   const uint16_t msg_count = readU16BE(packet.data + 18);
-
-  if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
-    return {DecodeStatus::EndOfStream};
-  }
-
   const uint64_t first_seq = readU64BE(packet.data + 10);
+
   if (!first_packet_seen_) {
     first_packet_seen_ = true;
     channel_.setSession(reinterpret_cast<const char *>(packet.data));
     channel_.next_expected_seq = first_seq;
+  }
+
+  if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
+    return {DecodeStatus::EndOfStream};
   }
 
   // heartbeat or empty packet, just update status and return
@@ -141,10 +141,17 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
         channel_.registerStockLocate(locate);
       }
 
-      parser_.handleMessage(std::span<const std::byte>(data + offset, msg_len));
+      if (!parser_.handleMessage(
+              std::span<const std::byte>(data + offset, msg_len))) {
+        return {DecodeStatus::InvalidMessageType};
+      }
     }
 
     offset += msg_len;
+  }
+
+  if (offset != size) {
+    return {DecodeStatus::InvalidSize};
   }
 
   return {DecodeStatus::Ok};
