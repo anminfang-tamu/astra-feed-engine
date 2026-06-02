@@ -5,28 +5,38 @@ project(astra_feed_engine
     LANGUAGES CXX
 )
 
-option(ASTRA_BUILD_APPS "Build application binaries" OFF)
-option(ASTRA_BUILD_TESTS "Build tests" ON)
-option(ASTRA_BUILD_BENCHMARKS "Build benchmarks" OFF)
-option(ASTRA_ENABLE_DPDK "Build DPDK receiver support" OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(ASTRA_BUILD_APPS       "Build application binaries" ON)
+option(ASTRA_BUILD_TESTS      "Build tests"                ON)
+option(ASTRA_BUILD_BENCHMARKS "Build benchmarks"           OFF)
+option(ASTRA_ENABLE_DPDK      "Build DPDK receiver support" OFF)
+
+find_library(ZLIB_LIBRARY z REQUIRED)
 
 add_library(astra_feed_engine STATIC
     src/book/BookManager.cpp
     src/book/OrderBook.cpp
     src/book/PriceLevel.cpp
-    src/codec/BinaryDecoder.cpp
-    src/codec/BinaryEncoder.cpp
+    src/codec/MoldUdpDecoder.cpp
     src/core/Config.cpp
     src/core/Time.cpp
     src/engine/MarketDataEngine.cpp
     src/metrics/Histogram.cpp
     src/metrics/LatencyRecorder.cpp
     src/metrics/MetricsReporter.cpp
+    src/metrics/StageLatencyRecorder.cpp
     src/publish/ConsolePublisher.cpp
     src/publish/NullPublisher.cpp
+    src/replay/GzipLineReader.cpp
+    src/replay/itch/ItchMoldUdpSource.cpp
+    src/replay/itch/ItchParser.cpp
     src/sequencing/SequenceTracker.cpp
-    src/source/ReplayReceiver.cpp
+    src/source/DualUdpBatchReceiver.cpp
+    src/source/DualUdpReceiver.cpp
+    src/source/UdpBatchReceiver.cpp
     src/source/UdpReceiver.cpp
+    src/source/UdpSender.cpp
     src/strategy/SimpleStrategy.cpp
     src/utils/CpuAffinity.cpp
     src/utils/Logger.cpp
@@ -38,9 +48,18 @@ add_library(astra::feed_engine ALIAS astra_feed_engine)
 
 target_compile_features(astra_feed_engine PUBLIC cxx_std_20)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(astra_feed_engine PUBLIC _GNU_SOURCE)
+endif()
+
 target_include_directories(astra_feed_engine
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(astra_feed_engine
+    PRIVATE
+        ${ZLIB_LIBRARY}
 )
 
 target_compile_options(astra_feed_engine
@@ -56,17 +75,11 @@ if(ASTRA_ENABLE_DPDK)
 endif()
 
 if(ASTRA_BUILD_APPS)
-    add_executable(md_engine apps/md_engine_main.cpp)
-    target_link_libraries(md_engine PRIVATE astra::feed_engine)
+    add_executable(md_engine            apps/md_engine_main.cpp)
+    target_link_libraries(md_engine     PRIVATE astra::feed_engine)
 
-    add_executable(replay_player apps/replay_player_main.cpp)
-    target_link_libraries(replay_player PRIVATE astra::feed_engine)
-
-    add_executable(replay_writer apps/replay_writer_main.cpp)
-    target_link_libraries(replay_writer PRIVATE astra::feed_engine)
-
-    add_executable(exchange_simulator apps/exchange_simulator_main.cpp)
-    target_link_libraries(exchange_simulator PRIVATE astra::feed_engine)
+    add_executable(itch_moldudp_sender  apps/itch_moldudp_sender_main.cpp)
+    target_link_libraries(itch_moldudp_sender PRIVATE astra::feed_engine)
 endif()
 
 if(ASTRA_BUILD_TESTS)

@@ -53,6 +53,7 @@ install_manifest.txt
 compile_commands.json
 
 # Temporary files
+.DS_Store
 *.tmp
 *.log
 *.bak
@@ -67,3 +68,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Licensed / large market data
+data/taq/raw/
+data/taq/processed/
+data/itch
