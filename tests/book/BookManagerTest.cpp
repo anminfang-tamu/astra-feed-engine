@@ -11,8 +11,8 @@ TEST(BookManagerTest, UnknownLocateReturnsNull) {
 
 TEST(BookManagerTest, RoutesOrdersByStockLocate) {
   BookManager manager;
-  manager.addOrder(7,  1, 100, 10, OrderSide::Buy);
-  manager.addOrder(9,  2, 200, 20, OrderSide::Sell);
+  manager.addOrder(7, 1, 100, 10, OrderSide::Buy);
+  manager.addOrder(9, 2, 200, 20, OrderSide::Sell);
 
   const OrderBook *book7 = manager.getOrderBook(7);
   const OrderBook *book9 = manager.getOrderBook(9);
@@ -21,18 +21,18 @@ TEST(BookManagerTest, RoutesOrdersByStockLocate) {
   ASSERT_NE(book9, nullptr);
 
   const TopOfBook top7 = book7->getTopOfBook();
-  EXPECT_EQ(top7.symbol_id,  7u);
+  EXPECT_EQ(top7.symbol_id, 7u);
   EXPECT_EQ(top7.bid_price, 100u);
-  EXPECT_EQ(top7.bid_qty,   10u);
-  EXPECT_EQ(top7.ask_price,  0u);
-  EXPECT_EQ(top7.ask_qty,    0u);
+  EXPECT_EQ(top7.bid_qty, 10u);
+  EXPECT_EQ(top7.ask_price, 0u);
+  EXPECT_EQ(top7.ask_qty, 0u);
 
   const TopOfBook top9 = book9->getTopOfBook();
-  EXPECT_EQ(top9.symbol_id,  9u);
-  EXPECT_EQ(top9.bid_price,   0u);
-  EXPECT_EQ(top9.bid_qty,     0u);
+  EXPECT_EQ(top9.symbol_id, 9u);
+  EXPECT_EQ(top9.bid_price, 0u);
+  EXPECT_EQ(top9.bid_qty, 0u);
   EXPECT_EQ(top9.ask_price, 200u);
-  EXPECT_EQ(top9.ask_qty,   20u);
+  EXPECT_EQ(top9.ask_qty, 20u);
 }
 
 TEST(BookManagerTest, DeleteForUnknownLocateIsIgnored) {
@@ -48,7 +48,7 @@ TEST(BookManagerTest, DeleteRemovesOrder) {
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 0u);
-  EXPECT_EQ(top.bid_qty,   0u);
+  EXPECT_EQ(top.bid_qty, 0u);
 }
 
 TEST(BookManagerTest, CancelSharesReducesQuantity) {
@@ -58,7 +58,7 @@ TEST(BookManagerTest, CancelSharesReducesQuantity) {
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 50u);
-  EXPECT_EQ(top.bid_qty,   40u);
+  EXPECT_EQ(top.bid_qty, 40u);
 }
 
 TEST(BookManagerTest, TradeReducesQuantity) {
@@ -68,7 +68,7 @@ TEST(BookManagerTest, TradeReducesQuantity) {
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 50u);
-  EXPECT_EQ(top.bid_qty,   70u);
+  EXPECT_EQ(top.bid_qty, 70u);
 }
 
 TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
@@ -78,7 +78,7 @@ TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 60u);
-  EXPECT_EQ(top.bid_qty,   75u);
+  EXPECT_EQ(top.bid_qty, 75u);
 }
 
 TEST(BookManagerTest, ZeroLocateIsIgnored) {
@@ -95,7 +95,7 @@ TEST(BookManagerTest, AppliesConfiguredSymbolCapacityBeforeBookCreation) {
 
   const OrderBook *book = manager.getOrderBook(7);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
+  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveLiveOrderCapacity);
 }
 
 TEST(BookManagerTest, PrepareBookCreatesEmptyBookWithConfiguredCapacity) {
@@ -106,7 +106,7 @@ TEST(BookManagerTest, PrepareBookCreatesEmptyBookWithConfiguredCapacity) {
 
   const OrderBook *book = manager.getOrderBook(7);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
+  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveLiveOrderCapacity);
   EXPECT_EQ(book->channelId(), 2u);
   EXPECT_EQ(book->liveOrderCount(), 0u);
 }
@@ -118,5 +118,5 @@ TEST(BookManagerTest, UsesDefaultCapacityForUntieredSymbols) {
 
   const OrderBook *book = manager.getOrderBook(8);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kDefaultOrderCapacity);
+  EXPECT_EQ(book->orderCapacity(), astra::capacity::kDefaultLiveOrderCapacity);
 }
