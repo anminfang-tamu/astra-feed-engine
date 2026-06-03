@@ -5,49 +5,36 @@
 
 namespace astra::capacity {
 
-enum class SymbolTier : unsigned char {
-  Default,
-  Active,
-  Hot,
-};
+enum class SymbolTier : unsigned char { Default, Active, Hot, UltraHot };
 
-static constexpr std::size_t kDefaultOrderCapacity = 32 * 1024;  // 32k
-static constexpr std::size_t kActiveOrderCapacity = 256 * 1024;  // 256k
-static constexpr std::size_t kHotOrderCapacity = 1024 * 1024;    // 1M
+static constexpr std::size_t kDefaultLiveOrderCapacity = 128 * 1024;   // 128k
+static constexpr std::size_t kActiveLiveOrderCapacity = 512 * 1024;    // 512k
+static constexpr std::size_t kHotLiveOrderCapacity = 1024 * 1024;      // 1M
+static constexpr std::size_t kUltraHotLiveOrderCapacity = 2048 * 1024; // 2M
 
 constexpr std::size_t orderCapacity(SymbolTier tier) noexcept {
   switch (tier) {
+  case SymbolTier::UltraHot:
+    return kUltraHotLiveOrderCapacity;
   case SymbolTier::Hot:
-    return kHotOrderCapacity;
+    return kHotLiveOrderCapacity;
   case SymbolTier::Active:
-    return kActiveOrderCapacity;
+    return kActiveLiveOrderCapacity;
   case SymbolTier::Default:
   default:
-    return kDefaultOrderCapacity;
+    return kDefaultLiveOrderCapacity;
   }
-}
-
-constexpr bool tickerEquals(std::string_view ticker,
-                            std::string_view configured) noexcept {
-  if (ticker.size() != configured.size())
-    return false;
-  for (std::size_t i = 0; i < ticker.size(); ++i) {
-    if (ticker[i] != configured[i])
-      return false;
-  }
-  return true;
 }
 
 constexpr SymbolTier tierForTicker(std::string_view ticker) noexcept {
-  if (tickerEquals(ticker, "NVDA") || tickerEquals(ticker, "TSLA") ||
-      tickerEquals(ticker, "QQQ") || tickerEquals(ticker, "SPY")) {
+  if (ticker == "NVDA" || ticker == "TSLA" || ticker == "QQQ" ||
+      ticker == "SPY") {
     return SymbolTier::Hot;
   }
 
-  if (tickerEquals(ticker, "AAPL") || tickerEquals(ticker, "MSFT") ||
-      tickerEquals(ticker, "AMD") || tickerEquals(ticker, "AMZN") ||
-      tickerEquals(ticker, "META") || tickerEquals(ticker, "GOOGL") ||
-      tickerEquals(ticker, "GOOG")) {
+  if (ticker == "AAPL" || ticker == "MSFT" || ticker == "AMD" ||
+      ticker == "AMZN" || ticker == "META" || ticker == "GOOGL" ||
+      ticker == "GOOG") {
     return SymbolTier::Active;
   }
 

@@ -19,7 +19,7 @@ public:
   static constexpr uint32_t kInvalidIdx = UINT32_MAX;
   static constexpr size_t kMaxPriceLevels = 1 << 16; // 65 536 levels per side
   static constexpr size_t kDefaultOrderPoolSize =
-      astra::capacity::kDefaultOrderCapacity;
+      astra::capacity::kDefaultLiveOrderCapacity;
 
   explicit OrderBook(uint32_t symbol_id, uint16_t channel_id = 0,
                      size_t order_capacity = kDefaultOrderPoolSize);
@@ -40,7 +40,9 @@ public:
 
   uint32_t symbolId() const noexcept { return symbol_id_; }
   size_t orderCapacity() const noexcept { return order_capacity_; }
-  size_t liveOrderCount() const noexcept { return next_order_idx_ - free_list_size_; }
+  size_t liveOrderCount() const noexcept {
+    return next_order_idx_ - free_list_size_;
+  }
   uint64_t allocationFailures() const noexcept { return allocation_failures_; }
   uint16_t stockLocate() const noexcept { return stock_locate_; }
   uint16_t channelId() const noexcept { return channel_id_; }
