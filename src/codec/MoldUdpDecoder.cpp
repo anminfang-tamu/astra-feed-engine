@@ -142,7 +142,8 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(const std::byte *data,
       }
 
       if (!parser_.handleMessage(
-              std::span<const std::byte>(data + offset, msg_len))) {
+              std::span<const std::byte>(data + offset, msg_len)) &&
+          !parser_.lastError().empty()) {
         return {DecodeStatus::InvalidMessageType};
       }
     }

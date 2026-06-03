@@ -55,6 +55,26 @@ Bytes addMessage(uint16_t locate, uint64_t order_id, char side, uint32_t qty,
   return b;
 }
 
+Bytes stockDirectoryMessage(uint16_t locate, std::string_view sym) {
+  Bytes b;
+  appendU8(b, 'R');
+  appendU16(b, locate);
+  appendU16(b, 7);
+  appendU48(b, 34200123456789ULL);
+  appendStock(b, sym);
+  appendU8(b, 'Q');
+  appendU8(b, 'N');
+  appendU32(b, 100);
+  appendU8(b, 'N');
+  appendU8(b, 'C');
+  appendU8(b, ' ');
+  appendU8(b, ' ');
+  appendU8(b, 'P');
+  while (b.size() < 39)
+    appendU8(b, ' ');
+  return b;
+}
+
 Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages) {
   Bytes b;
   constexpr char kSession[10] = {'A', 'S', 'T', 'R', 'A',
@@ -123,4 +143,21 @@ TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
   const DecodeResult duplicate_result = decoder.processPacket(view(pkt1));
   EXPECT_EQ(duplicate_result.status, DecodeStatus::Ok);
   EXPECT_FALSE(duplicate_result.record_latency);
+}
+
+TEST(MoldUdpDecoderTest, StockDirectoryMessageAdvancesSequence) {
+  SymbolTable symbols;
+  BookManager books;
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = stockDirectoryMessage(7, "AAPL");
+  const Bytes pkt1 = moldPacket(1, std::span<const Bytes>(&msg1, 1));
+
+  const DecodeResult result = decoder.processPacket(view(pkt1));
+  EXPECT_EQ(result.status, DecodeStatus::Ok);
+  EXPECT_TRUE(result.record_latency);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 2u);
+  EXPECT_TRUE(symbols.isRegistered(7));
+  EXPECT_STREQ(symbols.ticker(7), "AAPL");
+  ASSERT_NE(books.getOrderBook(7), nullptr);
 }
