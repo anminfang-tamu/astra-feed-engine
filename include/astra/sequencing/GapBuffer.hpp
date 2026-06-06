@@ -5,10 +5,18 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 class GapBuffer {
 public:
   static constexpr uint32_t kCapacity = 1024 * 1024;
+
+  struct Stats {
+    uint32_t size{0};
+    uint64_t min_seq{0};
+    uint64_t max_seq{0};
+    uint64_t next_seq_at_or_after{0};
+  };
 
   GapBuffer() noexcept : slots_(kCapacity) { clear(); }
 
@@ -71,6 +79,38 @@ public:
     size_ = 0;
   }
   bool empty() const noexcept { return size_ == 0; }
+  uint32_t size() const noexcept { return size_; }
+
+  Stats stats(uint64_t expected_seq) const noexcept {
+    Stats stats;
+    stats.size = size_;
+    if (size_ == 0)
+      return stats;
+
+    uint64_t min_seq = std::numeric_limits<uint64_t>::max();
+    uint64_t max_seq = 0;
+    uint64_t next_seq = std::numeric_limits<uint64_t>::max();
+
+    for (uint32_t i = 0; i < kCapacity; ++i) {
+      const Slot &slot = slots_[i];
+      if (!slot.occupied)
+        continue;
+
+      const uint64_t seq = slot.packet.seq;
+      if (seq < min_seq)
+        min_seq = seq;
+      if (seq > max_seq)
+        max_seq = seq;
+      if (seq >= expected_seq && seq < next_seq)
+        next_seq = seq;
+    }
+
+    stats.min_seq = min_seq;
+    stats.max_seq = max_seq;
+    if (next_seq != std::numeric_limits<uint64_t>::max())
+      stats.next_seq_at_or_after = next_seq;
+    return stats;
+  }
 
 private:
   static constexpr uint32_t kMask = kCapacity - 1;

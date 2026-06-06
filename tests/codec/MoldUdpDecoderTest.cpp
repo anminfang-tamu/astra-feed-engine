@@ -100,6 +100,11 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   EXPECT_TRUE(gap_result.had_gap);
   EXPECT_EQ(gap_result.latency_sample_count, 0u);
   EXPECT_EQ(decoder.channelState().status, ChannelHealth::GapDetected);
+  const auto gap_stats = decoder.channelState().gap_buffer.stats(2);
+  EXPECT_EQ(gap_stats.size, 1u);
+  EXPECT_EQ(gap_stats.min_seq, 3u);
+  EXPECT_EQ(gap_stats.max_seq, 3u);
+  EXPECT_EQ(gap_stats.next_seq_at_or_after, 3u);
   EXPECT_EQ(books.getOrderBook(3), nullptr);
 
   const DecodeResult recovery_result = decoder.processPacket(view(pkt2));

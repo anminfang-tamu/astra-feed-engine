@@ -36,6 +36,22 @@ static bool envBool(const char *value, bool fallback) noexcept {
   return fallback;
 }
 
+static const char *channelHealthName(ChannelHealth status) noexcept {
+  switch (status) {
+  case ChannelHealth::Good:
+    return "Good";
+  case ChannelHealth::GapDetected:
+    return "GapDetected";
+  case ChannelHealth::Recovering:
+    return "Recovering";
+  case ChannelHealth::Stale:
+    return "Stale";
+  case ChannelHealth::Invalid:
+    return "Invalid";
+  }
+  return "Unknown";
+}
+
 static void parseBookWarmupEnv(bool &prepare_books, bool &touch_pages,
                                const char *&mode_name) noexcept {
   prepare_books = true;
@@ -189,7 +205,25 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
     std::cout << "engine_stats channel_next_seq=" << channel.next_expected_seq
-              << " channel_status=" << static_cast<int>(channel.status) << "\n";
+              << " channel_status=" << static_cast<int>(channel.status)
+              << " channel_status_name=" << channelHealthName(channel.status)
+              << "\n";
+
+    if (channel.status != ChannelHealth::Good || !channel.gap_buffer.empty()) {
+      const auto gap_stats = channel.gap_buffer.stats(channel.next_expected_seq);
+      std::cout << "gap_stats missing_seq=" << channel.next_expected_seq
+                << " buffered_packets=" << gap_stats.size
+                << " min_buffered_seq=" << gap_stats.min_seq
+                << " max_buffered_seq=" << gap_stats.max_seq
+                << " next_buffered_seq=" << gap_stats.next_seq_at_or_after;
+      if (gap_stats.next_seq_at_or_after >= channel.next_expected_seq &&
+          gap_stats.next_seq_at_or_after != 0) {
+        std::cout << " gap_messages_to_next="
+                  << (gap_stats.next_seq_at_or_after -
+                      channel.next_expected_seq);
+      }
+      std::cout << "\n";
+    }
 
     if (batch_receiver != nullptr) {
       std::cout << "rx_stats syscalls=" << batch_receiver->syscalls()
@@ -199,7 +233,16 @@ int main(int argc, char *argv[]) {
     }
     if (dual_receiver != nullptr) {
       std::cout << "rx_stats line_a_packets=" << dual_receiver->packetsA()
-                << " line_b_packets=" << dual_receiver->packetsB() << "\n";
+                << " line_b_packets=" << dual_receiver->packetsB()
+                << " line_a_errors=" << dual_receiver->errorsA()
+                << " line_b_errors=" << dual_receiver->errorsB()
+                << " line_a_truncated=" << dual_receiver->truncatedA()
+                << " line_b_truncated=" << dual_receiver->truncatedB()
+                << " drop_metrics="
+                << (dual_receiver->dropMetricsEnabled() ? "on" : "off")
+                << " line_a_kernel_drops=" << dual_receiver->kernelDropsA()
+                << " line_b_kernel_drops=" << dual_receiver->kernelDropsB()
+                << "\n";
     }
     if (dual_batch_receiver != nullptr) {
       std::cout << "rx_stats line_a_packets=" << dual_batch_receiver->packetsA()

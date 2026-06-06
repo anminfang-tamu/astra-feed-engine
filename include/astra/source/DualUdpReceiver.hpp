@@ -19,6 +19,15 @@ public:
 
   uint64_t packetsA() const noexcept { return packets_a_; }
   uint64_t packetsB() const noexcept { return packets_b_; }
+  uint64_t errorsA() const noexcept { return receiver_a_.errors(); }
+  uint64_t errorsB() const noexcept { return receiver_b_.errors(); }
+  uint64_t truncatedA() const noexcept { return receiver_a_.truncated(); }
+  uint64_t truncatedB() const noexcept { return receiver_b_.truncated(); }
+  uint64_t kernelDropsA() const noexcept { return receiver_a_.kernelDrops(); }
+  uint64_t kernelDropsB() const noexcept { return receiver_b_.kernelDrops(); }
+  bool dropMetricsEnabled() const noexcept {
+    return receiver_a_.dropMetricsEnabled() || receiver_b_.dropMetricsEnabled();
+  }
 
 private:
   UdpReceiver receiver_a_;
