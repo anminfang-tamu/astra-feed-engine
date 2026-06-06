@@ -8,7 +8,7 @@
 
 class GapBuffer {
 public:
-  static constexpr uint32_t kCapacity = 65536;
+  static constexpr uint32_t kCapacity = 1024 * 1024;
 
   GapBuffer() noexcept : slots_(kCapacity) { clear(); }
 
