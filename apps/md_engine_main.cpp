@@ -114,8 +114,7 @@ int main(int argc, char *argv[]) {
     const char *r_warmup_mode = "prepare";
     parseBookWarmupEnv(prepare_books_on_r, touch_book_pages_on_r,
                        r_warmup_mode);
-    decoder.setStockDirectoryWarmup(prepare_books_on_r,
-                                    touch_book_pages_on_r);
+    decoder.setStockDirectoryWarmup(prepare_books_on_r, touch_book_pages_on_r);
     std::unique_ptr<IMarketDataSource> source;
     DualUdpReceiver *dual_receiver = nullptr;
     DualUdpBatchReceiver *dual_batch_receiver = nullptr;
@@ -144,9 +143,8 @@ int main(int argc, char *argv[]) {
     LatencyRecorder latency_recorder;
     // StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
-    config.enable_latency_metrics =
-        envBool(std::getenv("ASTRA_LATENCY_METRICS"),
-                config.enable_latency_metrics);
+    config.enable_latency_metrics = envBool(
+        std::getenv("ASTRA_LATENCY_METRICS"), config.enable_latency_metrics);
     // config.enable_stage_latency_metrics =
     //     config.enable_latency_metrics &&
     //     envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
@@ -187,7 +185,12 @@ int main(int argc, char *argv[]) {
 
     engine.run();
 
+    const auto &channel = decoder.channelState();
+
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
+    std::cout << "engine_stats channel_next_seq=" << channel.next_expected_seq
+              << " channel_status=" << static_cast<int>(channel.status) << "\n";
+
     if (batch_receiver != nullptr) {
       std::cout << "rx_stats syscalls=" << batch_receiver->syscalls()
                 << " errors=" << batch_receiver->errors()
