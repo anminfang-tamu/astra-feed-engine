@@ -23,6 +23,8 @@ public:
 
   void record(std::uint64_t start_ns, std::uint64_t end_ns);
   void recordDuration(std::uint64_t duration_ns);
+  void recordDuration(std::uint64_t duration_ns,
+                      std::uint64_t sample_count);
   void reset();
 
   [[nodiscard]] std::uint64_t count() const { return count_; }

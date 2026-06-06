@@ -1,6 +1,7 @@
 #include "astra/book/BookManager.hpp"
 #include "astra/channel/ChannelHealth.hpp"
 #include "astra/codec/MoldUdpDecoder.hpp"
+#include "astra/core/Time.hpp"
 #include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/PacketView.hpp"
 
@@ -70,7 +71,7 @@ Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages) {
 }
 
 PacketView view(const Bytes &b) {
-  return {b.data(), b.size(), 100};
+  return {b.data(), b.size(), rdtsc()};
 }
 
 } // namespace
@@ -88,17 +89,22 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   const Bytes pkt3 = moldPacket(3, std::span<const Bytes>(&msg3, 1));
   const Bytes pkt2 = moldPacket(2, std::span<const Bytes>(&msg2, 1));
 
-  EXPECT_EQ(decoder.processPacket(view(pkt1)).status, DecodeStatus::Ok);
+  const DecodeResult pkt1_result = decoder.processPacket(view(pkt1));
+  EXPECT_EQ(pkt1_result.status, DecodeStatus::Ok);
+  EXPECT_EQ(pkt1_result.latency_sample_count, 1u);
   ASSERT_NE(books.getOrderBook(1), nullptr);
   EXPECT_EQ(books.getOrderBook(1)->getTopOfBook().bid_qty, 100u);
 
   const DecodeResult gap_result = decoder.processPacket(view(pkt3));
   EXPECT_EQ(gap_result.status, DecodeStatus::Ok);
   EXPECT_TRUE(gap_result.had_gap);
+  EXPECT_EQ(gap_result.latency_sample_count, 0u);
   EXPECT_EQ(decoder.channelState().status, ChannelHealth::GapDetected);
   EXPECT_EQ(books.getOrderBook(3), nullptr);
 
-  EXPECT_EQ(decoder.processPacket(view(pkt2)).status, DecodeStatus::Ok);
+  const DecodeResult recovery_result = decoder.processPacket(view(pkt2));
+  EXPECT_EQ(recovery_result.status, DecodeStatus::Ok);
+  EXPECT_EQ(recovery_result.latency_sample_count, 2u);
   EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
   EXPECT_EQ(decoder.channelState().next_expected_seq, 4u);
 

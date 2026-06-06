@@ -4,9 +4,15 @@
 #include <ctime>
 #include <limits>
 
-#if defined(__x86_64__) || defined(__i386__)
-#include <x86intrin.h>
+#if !defined(__linux__)
+#error "Astra timing uses Linux rdtsc calibration only"
 #endif
+
+#if !defined(__x86_64__) && !defined(__i386__)
+#error "Astra timing requires x86/x86_64 rdtsc support"
+#endif
+
+#include <x86intrin.h>
 
 namespace {
 
@@ -85,16 +91,8 @@ uint64_t nowNs() {
 }
 
 uint64_t rdtsc() {
-#if defined(__x86_64__) || defined(__i386__)
   unsigned aux;
   return __rdtscp(&aux);
-#elif defined(__aarch64__)
-  uint64_t ticks;
-  asm volatile("mrs %0, cntvct_el0" : "=r"(ticks));
-  return ticks;
-#else
-  return nowNs();
-#endif
 }
 
 const TimeCalibration &timeCalibration() {

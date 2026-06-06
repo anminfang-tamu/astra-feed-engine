@@ -18,7 +18,7 @@ public:
   GapBuffer &operator=(GapBuffer &&) = delete;
 
   bool insert(const std::byte *data, uint16_t len, uint64_t seq,
-              uint16_t msg_count) noexcept {
+              uint16_t msg_count, uint64_t receive_start_ticks) noexcept {
     if (data == nullptr || len > SequencedPacket::kMaxPacketSize)
       return false;
 
@@ -30,6 +30,7 @@ public:
           ++size_;
         slot.occupied = true;
         slot.packet.seq = seq;
+        slot.packet.receive_start_ticks = receive_start_ticks;
         slot.packet.msg_count = msg_count;
         slot.packet.len = len;
         std::memcpy(slot.packet.data.data(), data, len);

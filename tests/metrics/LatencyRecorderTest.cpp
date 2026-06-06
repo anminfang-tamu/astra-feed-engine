@@ -37,6 +37,20 @@ TEST(LatencyRecorderTest, TracksInvalidSamplesWithoutRecordingLatency) {
   EXPECT_EQ(stats.max_ns, 5u);
 }
 
+TEST(LatencyRecorderTest, RecordsRepeatedDurationAsWeightedSamples) {
+  LatencyRecorder recorder;
+
+  recorder.recordDuration(10, 20);
+
+  const auto stats = recorder.snapshot();
+
+  EXPECT_EQ(stats.count, 20u);
+  EXPECT_EQ(stats.min_ns, 10u);
+  EXPECT_EQ(stats.max_ns, 10u);
+  EXPECT_DOUBLE_EQ(static_cast<double>(stats.mean_ns), 10.0);
+  EXPECT_EQ(stats.p99_ns, 10u);
+}
+
 TEST(LatencyRecorderTest, ReportsEmptyRecorder) {
   LatencyRecorder recorder;
   std::ostringstream out;

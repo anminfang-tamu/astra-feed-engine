@@ -7,10 +7,6 @@ namespace astra::capacity {
 
 enum class SymbolTier : unsigned char { Default, Active, Hot, UltraHot };
 
-// static constexpr std::size_t kDefaultOrderCapacity = 16 * 1024; // 16k
-// static constexpr std::size_t kActiveOrderCapacity = 100 * 1024; // 100k
-// static constexpr std::size_t kHotOrderCapacity = 512 * 1024;    // 512k
-
 static constexpr std::size_t kDefaultOrderCapacity = 64 * 1024;        // 64k
 static constexpr std::size_t kActiveOrderCapacity = 256 * 1024;        // 256k
 static constexpr std::size_t kHotOrderCapacity = 1024 * 1024;          // 1M

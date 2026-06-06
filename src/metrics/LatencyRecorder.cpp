@@ -15,9 +15,17 @@ void LatencyRecorder::record(std::uint64_t start_ns, std::uint64_t end_ns) {
 }
 
 void LatencyRecorder::recordDuration(std::uint64_t duration_ns) {
-  ++buckets_[bucketIndex(duration_ns)];
-  ++count_;
-  total_ns_ += duration_ns;
+  recordDuration(duration_ns, 1);
+}
+
+void LatencyRecorder::recordDuration(std::uint64_t duration_ns,
+                                     std::uint64_t sample_count) {
+  if (sample_count == 0)
+    return;
+
+  buckets_[bucketIndex(duration_ns)] += sample_count;
+  count_ += sample_count;
+  total_ns_ += duration_ns * sample_count;
   min_ns_ = std::min(min_ns_, duration_ns);
   max_ns_ = std::max(max_ns_, duration_ns);
 }

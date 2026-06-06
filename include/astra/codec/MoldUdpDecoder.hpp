@@ -33,8 +33,9 @@ private:
 
   DecodeResult processSequencedPacket(const std::byte *data, std::size_t size,
                                       uint64_t first_seq, uint16_t msg_count,
-                                      uint64_t start_seq);
-  void drainGapBuffer();
+                                      uint64_t start_seq,
+                                      uint64_t receive_start_ticks);
+  DecodeResult drainGapBuffer();
 
   bool first_packet_seen_{false};
   // bool stage_timing_enabled_{false};

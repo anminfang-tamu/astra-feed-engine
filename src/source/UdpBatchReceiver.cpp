@@ -157,6 +157,7 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
     msgs_[i].msg_hdr.msg_controllen = controls_[i].size();
   }
 
+  const uint64_t receive_start_ticks = rdtsc();
   const int n =
       ::recvmmsg(fd_, msgs_.data(), static_cast<unsigned int>(batch_size_),
                  MSG_DONTWAIT | MSG_TRUNC, nullptr);
@@ -169,7 +170,6 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
   }
 
   ++syscall_count_;
-  const uint64_t receive_ts_ns = nowNs();
   const std::size_t count = static_cast<std::size_t>(n);
 
   for (std::size_t i = 0; i < count; ++i) {
@@ -181,7 +181,7 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
       size = kMaxPacketSize;
     }
 
-    pending_[i] = PacketView{buffers_[i].data(), size, receive_ts_ns};
+    pending_[i] = PacketView{buffers_[i].data(), size, receive_start_ticks};
   }
 
   pending_count_ = count;

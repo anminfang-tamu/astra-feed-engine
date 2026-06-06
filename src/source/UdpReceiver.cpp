@@ -114,6 +114,8 @@ UdpReceiver::~UdpReceiver() {
 }
 
 bool UdpReceiver::next(PacketView &packet) noexcept {
+  const uint64_t receive_start_ticks = rdtsc();
+
   // MSG_DONTWAIT — explicit non-blocking on this call (belt-and-braces with
   // O_NONBLOCK). MSG_TRUNC   — return the original packet length even if it
   // exceeded our buffer,
@@ -143,7 +145,6 @@ bool UdpReceiver::next(PacketView &packet) noexcept {
 
   packet.data = buf_;
   packet.size = size;
-  packet.receive_ts_ns =
-      nowNs(); // keep your existing time source; swap to TSC later
+  packet.receive_start_ticks = receive_start_ticks;
   return true;
 }
