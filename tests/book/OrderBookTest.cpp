@@ -1,6 +1,5 @@
 #include "astra/book/OrderBook.hpp"
 #include "astra/book/TopOfBook.hpp"
-#include "astra/protocol/OrderSide.hpp"
 
 #include <gtest/gtest.h>
 
@@ -16,10 +15,10 @@ TEST(OrderBookTest, StartsWithEmptyTopOfBook) {
 
 TEST(OrderBookTest, AddOrdersUpdatesTopOfBook) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 11,  50, OrderSide::Buy);
-  book.addOrder(3, 13,  75, OrderSide::Sell);
-  book.addOrder(4, 12,  25, OrderSide::Sell);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 11,  50, 'B');
+  book.addOrder(3, 13,  75, 'S');
+  book.addOrder(4, 12,  25, 'S');
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 11u);
@@ -30,7 +29,7 @@ TEST(OrderBookTest, AddOrdersUpdatesTopOfBook) {
 
 TEST(OrderBookTest, CancelSharesReducesBestLevelQuantity) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.cancelShares(1, 60); // 100 - 60 = 40 remaining
 
   const TopOfBook top = book.getTopOfBook();
@@ -40,8 +39,8 @@ TEST(OrderBookTest, CancelSharesReducesBestLevelQuantity) {
 
 TEST(OrderBookTest, DeleteOrderFallsBackToNextBestBid) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 11,  50, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 11,  50, 'B');
   book.deleteOrder(2);
 
   const TopOfBook top = book.getTopOfBook();
@@ -53,8 +52,8 @@ TEST(OrderBookTest, DeleteOrderFallsBackToNextBestBid) {
 
 TEST(OrderBookTest, DeleteOrderFallsBackToNextBestAsk) {
   OrderBook book(42);
-  book.addOrder(1, 12, 100, OrderSide::Sell);
-  book.addOrder(2, 13,  50, OrderSide::Sell);
+  book.addOrder(1, 12, 100, 'S');
+  book.addOrder(2, 13,  50, 'S');
   book.deleteOrder(1);
 
   const TopOfBook top = book.getTopOfBook();
@@ -66,7 +65,7 @@ TEST(OrderBookTest, DeleteOrderFallsBackToNextBestAsk) {
 
 TEST(OrderBookTest, ReplaceOrderMovesToNewPrice) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.replaceOrder(1, 2, 12, 75); // old id=1 → new id=2 at price 12 qty 75
 
   const TopOfBook top = book.getTopOfBook();
@@ -76,7 +75,7 @@ TEST(OrderBookTest, ReplaceOrderMovesToNewPrice) {
 
 TEST(OrderBookTest, CancelAllSharesRemovesOrder) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.cancelShares(1, 100); // fully cancel → book should be empty
 
   const TopOfBook top = book.getTopOfBook();
@@ -88,7 +87,7 @@ TEST(OrderBookTest, HandlesSparseLargeOrderIdWithoutDenseAllocation) {
   constexpr uint64_t large_id = 9'000'000'000'000'000'000ULL;
   OrderBook book(42);
 
-  book.addOrder(large_id, 10, 100, OrderSide::Buy);
+  book.addOrder(large_id, 10, 100, 'B');
   TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
   EXPECT_EQ(top.bid_qty,  100u);
@@ -106,10 +105,10 @@ TEST(OrderBookTest, HandlesSparseLargeOrderIdWithoutDenseAllocation) {
 
 TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 11,  50, OrderSide::Buy);
-  book.addOrder(3, 12,  75, OrderSide::Sell);
-  book.addOrder(4, 13,  25, OrderSide::Sell);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 11,  50, 'B');
+  book.addOrder(3, 12,  75, 'S');
+  book.addOrder(4, 13,  25, 'S');
 
   const BookUpdate update = book.getBookUpdate();
   EXPECT_EQ(update.symbol_id,  42u);
@@ -127,8 +126,8 @@ TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
 
 TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 10,  40, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 10,  40, 'B');
 
   TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -142,7 +141,7 @@ TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
 
 TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.trade(1, 25);
 
   const TopOfBook top = book.getTopOfBook();
@@ -152,8 +151,8 @@ TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
 
 TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 11,  50, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 11,  50, 'B');
   book.trade(2, 50);
 
   const TopOfBook top = book.getTopOfBook();
@@ -163,8 +162,8 @@ TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
 
 TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(2, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(2, 10, 100, 'B');
   book.trade(1, 150); // exceeds order qty — ignored
 
   const TopOfBook top = book.getTopOfBook();
@@ -174,8 +173,8 @@ TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
 
 TEST(OrderBookTest, DuplicateOrderIdIsIgnored) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
-  book.addOrder(1, 11,  50, OrderSide::Buy); // duplicate id — ignored
+  book.addOrder(1, 10, 100, 'B');
+  book.addOrder(1, 11,  50, 'B'); // duplicate id — ignored
 
   TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -189,7 +188,7 @@ TEST(OrderBookTest, DuplicateOrderIdIsIgnored) {
 
 TEST(OrderBookTest, ZeroQuantityAddIsIgnored) {
   OrderBook book(42);
-  book.addOrder(1, 10, 0, OrderSide::Buy);
+  book.addOrder(1, 10, 0, 'B');
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 0u);
@@ -198,7 +197,7 @@ TEST(OrderBookTest, ZeroQuantityAddIsIgnored) {
 
 TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
 
   book.cancelShares(99, 50);   // unknown id — ignored
   book.deleteOrder(99);        // unknown id — ignored
@@ -212,8 +211,8 @@ TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
 TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
   OrderBook book(42);
   for (uint32_t i = 0; i < 12; ++i) {
-    book.addOrder(100 + i, 10 + i, 10 + i, OrderSide::Buy);
-    book.addOrder(200 + i, 20 + i, 20 + i, OrderSide::Sell);
+    book.addOrder(100 + i, 10 + i, 10 + i, 'B');
+    book.addOrder(200 + i, 20 + i, 20 + i, 'S');
   }
 
   const BookUpdate update = book.getBookUpdate();
@@ -227,9 +226,9 @@ TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
 
 TEST(OrderBookTest, ReverseExecutionRestoresPartialQuantity) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.trade(1, 40);
-  book.reverseExecution(1, 10, 40, OrderSide::Buy);
+  book.reverseExecution(1, 10, 40, 'B');
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -238,9 +237,9 @@ TEST(OrderBookTest, ReverseExecutionRestoresPartialQuantity) {
 
 TEST(OrderBookTest, ReverseExecutionReAddsFullyTradedOrder) {
   OrderBook book(42);
-  book.addOrder(1, 10, 100, OrderSide::Buy);
+  book.addOrder(1, 10, 100, 'B');
   book.trade(1, 100); // fully consumed
-  book.reverseExecution(1, 10, 100, OrderSide::Buy);
+  book.reverseExecution(1, 10, 100, 'B');
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);

@@ -4,7 +4,7 @@
 #include "astra/codec/DecodeResult.hpp"
 #include "astra/codec/IPacketProcessor.hpp"
 #include "astra/protocol/PacketHeader.hpp"
-#include "astra/protocol/SymbolTable.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 #include "astra/source/PacketView.hpp"
 #include "replay/itch/ItchParser.hpp"
 
@@ -16,8 +16,8 @@
 // No intermediate structs — raw bytes go straight to the order book.
 class MoldUdpDecoder : public IPacketProcessor {
 public:
-  explicit MoldUdpDecoder(SymbolTable &symbols, BookManager &books,
-                          uint8_t channel_id = 0);
+  explicit MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
+                          BookManager &books, uint8_t channel_id = 0);
 
   DecodeResult processPacket(const PacketView &packet) override;
   const DecodeStageTiming *lastStageTiming() const noexcept override;

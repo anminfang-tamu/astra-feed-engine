@@ -12,6 +12,9 @@ sender processes from a second EC2 instance over UDP.
 ```bash
 ASTRA_R_BOOK_WARMUP=prepare ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_STAGE_LATENCY_METRICS=off \
   ./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
+
+ASTRA_R_BOOK_WARMUP=prepare ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_UDP_DROP_METRICS=on ASTRA_STAGE_LATENCY_METRICS=off \
+  ./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
 ```
 
 For packet-level latency only, leave `ASTRA_LATENCY_METRICS=on` and set
@@ -47,6 +50,7 @@ line_a_packets=600293 line_b_packets=600297
 latency count=1200590 invalid=0 min_ns=43 max_ns=175306683 mean_ns=31789.81 p50_ns=1199 p90_ns=17983 p99_ns=42671 p99.9_ns=927743 p99.99_ns=175306683
 2. No log and time tracing
 latency count=1200209 invalid=0 min_ns=36 max_ns=216690863 mean_ns=24676.08 p50_ns=974 p90_ns=14623 p99_ns=36575 p99.9_ns=1513471 p99.99_ns=216690863
-3. From recv to parsing
+3. From recv to parsing (5000 packet/sec)
+latency count=4656400 invalid=0 min_ns=58 max_ns=218098 mean_ns=914.96 p50_ns=516 p90_ns=716 p99_ns=2655 p99.9_ns=96255 p99.99_ns=162815
 
 ```

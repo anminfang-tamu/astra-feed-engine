@@ -2,7 +2,7 @@
 
 #include "astra/book/BookManager.hpp"
 #include "astra/metrics/DecodeStageTiming.hpp"
-#include "astra/protocol/SymbolTable.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 #include "astra/utils/FixedHashMap.hpp"
 
 #include <cstddef>
@@ -17,8 +17,8 @@ class ItchParser {
 public:
   static constexpr int64_t kPriceScale = 10000; // ITCH price unit = 1/10000 dollar
 
-  explicit ItchParser(SymbolTable &symbols, BookManager &books,
-                      uint8_t channel_id = 0);
+  explicit ItchParser(astra::symbol::StockDirectory &symbols,
+                      BookManager &books, uint8_t channel_id = 0);
 
   // Parse one raw ITCH 5.0 message and apply to the book.
   // Returns true if the message produced a book update, false if skipped/error.
@@ -42,7 +42,7 @@ private:
     uint64_t  order_id;
     uint32_t  executed_qty;
     uint64_t  price;
-    OrderSide side;
+    char      side;
   };
 
   // Minimal order state kept only to record MatchEntry on execution.
@@ -69,7 +69,7 @@ private:
   static uint32_t readU32BE(std::span<const std::byte> msg, std::size_t off);
   static uint64_t readU64BE(std::span<const std::byte> msg, std::size_t off);
 
-  SymbolTable  &symbols_;
+  astra::symbol::StockDirectory &symbols_;
   BookManager  &books_;
   uint8_t       channel_id_{0};
   bool          last_message_skipped_{false};

@@ -15,8 +15,8 @@ void mergeLatency(DecodeResult &target, const DecodeResult &source) noexcept {
 
 } // namespace
 
-MoldUdpDecoder::MoldUdpDecoder(SymbolTable &symbols, BookManager &books,
-                               uint8_t channel_id)
+MoldUdpDecoder::MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
+                               BookManager &books, uint8_t channel_id)
     : parser_(symbols, books, channel_id) {
   channel_.channel_id = channel_id;
 }

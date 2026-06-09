@@ -4,11 +4,11 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/metrics/LatencyRecorder.hpp"
 // #include "astra/metrics/StageLatencyRecorder.hpp"
-#include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/DualUdpBatchReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
 #include "astra/source/UdpBatchReceiver.hpp"
 #include "astra/source/UdpReceiver.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 
 #include <csignal>
@@ -122,7 +122,7 @@ int main(int argc, char *argv[]) {
         batch_size = static_cast<std::size_t>(parsed);
     }
 
-    SymbolTable symbols;
+    astra::symbol::StockDirectory symbols;
     BookManager book_manager;
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
     bool prepare_books_on_r = true;

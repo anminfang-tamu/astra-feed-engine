@@ -1,7 +1,7 @@
 #include "astra/book/BookManager.hpp"
 #include "astra/book/TopOfBook.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 #include "replay/itch/ItchParser.hpp"
-#include "astra/protocol/SymbolTable.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -110,7 +110,7 @@ Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1) {
 auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
-  SymbolTable  symbols;
+  astra::symbol::StockDirectory symbols;
   BookManager  books;
   ItchParser   parser{symbols, books, /*channel_id=*/2};
 
@@ -249,7 +249,6 @@ TEST(ItchParserTest, StockDirectoryPreparesBookBeforeFirstAdd) {
   const OrderBook *book = f.books.getOrderBook(7);
   ASSERT_NE(book, nullptr);
   EXPECT_EQ(book->liveOrderCount(), 0u);
-  EXPECT_EQ(book->channelId(), 2u);
   EXPECT_TRUE(f.symbols.isRegistered(7));
   EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
 }

@@ -1,6 +1,6 @@
 #include "replay/itch/ItchParser.hpp"
+#include "astra/book/BookCapacity.hpp"
 #include "astra/core/Time.hpp"
-#include "astra/utils/DebugTrace.hpp"
 
 #include <cstring>
 #include <string_view>
@@ -20,22 +20,10 @@ std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
   return {p, n};
 }
 
-bool parseSide(uint8_t raw, OrderSide &side) {
-  if (raw == 'B') {
-    side = OrderSide::Buy;
-    return true;
-  }
-  if (raw == 'S') {
-    side = OrderSide::Sell;
-    return true;
-  }
-  return false;
-}
-
 } // namespace
 
-ItchParser::ItchParser(SymbolTable &symbols, BookManager &books,
-                       uint8_t channel_id)
+ItchParser::ItchParser(astra::symbol::StockDirectory &symbols,
+                       BookManager &books, uint8_t channel_id)
     : symbols_(symbols), books_(books), channel_id_(channel_id),
       orders_(kOrderStateCapacity), executions_by_match_(kExecutionCapacity) {}
 
@@ -125,11 +113,6 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
     return (void)fail("truncated add order");
   }
 
-  OrderSide side{};
-  if (!parseSide(std::to_integer<uint8_t>(msg[19]), side)) {
-    return (void)fail("invalid side in add order");
-  }
-
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t qty = readU32BE(msg, 20);
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
@@ -138,17 +121,16 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
     const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
     if (!t.empty()) {
       symbols_.setTicker(locate, t);
-      books_.setSymbolTier(locate, astra::capacity::tierForTicker(t));
+      books_.setBookCapacityTier(locate,
+                                 astra::book_capacity::tierForTicker(t));
     }
   }
 
-  if (!orders_.insert(order_id,
-                      {side == OrderSide::Buy ? 'B' : 'S', price, qty})) {
-    orders_.insertOrAssign(order_id,
-                           {side == OrderSide::Buy ? 'B' : 'S', price, qty});
+  if (!orders_.insert(order_id, {(char)msg[19], price, qty})) {
+    orders_.insertOrAssign(order_id, {(char)msg[19], price, qty});
   }
 
-  books_.addOrder(locate, order_id, price, qty, side, channel_id_);
+  books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
 }
 
 // 'E' (31 bytes) / 'C' (36 bytes)
@@ -176,8 +158,7 @@ void ItchParser::handleExecution(std::span<const std::byte> msg,
   // Record match for potential BrokenTrade reversal
   const uint64_t exec_price =
       with_price ? static_cast<uint64_t>(readU32BE(msg, 32)) : order->price;
-  const OrderSide exec_side =
-      order->side == 'B' ? OrderSide::Buy : OrderSide::Sell;
+  const char exec_side = order->side;
   if (!executions_by_match_.insert(
           match_number, {order_id, executed_qty, exec_price, exec_side})) {
     executions_by_match_.insertOrAssign(
@@ -275,10 +256,8 @@ void ItchParser::handleBrokenTrade(std::span<const std::byte> msg,
   // Restore order-state cache if fully executed order came back
   OrderState *order = orders_.find(m.order_id);
   if (order == nullptr) {
-    if (!orders_.insert(m.order_id, {m.side == OrderSide::Buy ? 'B' : 'S',
-                                     m.price, m.executed_qty})) {
-      orders_.insertOrAssign(m.order_id, {m.side == OrderSide::Buy ? 'B' : 'S',
-                                          m.price, m.executed_qty});
+    if (!orders_.insert(m.order_id, {m.side, m.price, m.executed_qty})) {
+      orders_.insertOrAssign(m.order_id, {m.side, m.price, m.executed_qty});
     }
   } else {
     order->qty += m.executed_qty;
@@ -304,23 +283,22 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   if (sym.empty() || locate == 0)
     return;
 
-  SymbolInfo info{};
+  astra::symbol::StockDirectoryEntry entry{};
   const std::size_t n = sym.size() < 8 ? sym.size() : 8;
-  std::memcpy(info.ticker, sym.data(), n);
-  info.ticker[n] = '\0';
-  info.locate = locate;
-  info.market_category = static_cast<char>(std::to_integer<uint8_t>(msg[19]));
-  info.fin_status = static_cast<char>(std::to_integer<uint8_t>(msg[20]));
-  info.round_lot_size = readU32BE(msg, 21);
-  info.round_lots_only = std::to_integer<uint8_t>(msg[25]) == 'Y';
-  info.issue_classification =
+  std::memcpy(entry.ticker, sym.data(), n);
+  entry.ticker[n] = '\0';
+  entry.locate = locate;
+  entry.market_category = static_cast<char>(std::to_integer<uint8_t>(msg[19]));
+  entry.fin_status = static_cast<char>(std::to_integer<uint8_t>(msg[20]));
+  entry.round_lot_size = readU32BE(msg, 21);
+  entry.round_lots_only = std::to_integer<uint8_t>(msg[25]) == 'Y';
+  entry.issue_classification =
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
-  info.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
-  symbols_.set(locate, info);
-  books_.setSymbolTier(locate, astra::capacity::tierForTicker(sym));
-  books_.registerStockLocate(locate, channel_id_);
+  entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
+  symbols_.set(locate, entry);
+  books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
   if (prepare_books_on_directory_) {
-    books_.prepareBook(locate, channel_id_, touch_book_pages_on_directory_);
+    books_.prepareBook(locate, touch_book_pages_on_directory_);
   }
 }
 

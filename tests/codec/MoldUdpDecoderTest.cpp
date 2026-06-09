@@ -2,8 +2,8 @@
 #include "astra/channel/ChannelHealth.hpp"
 #include "astra/codec/MoldUdpDecoder.hpp"
 #include "astra/core/Time.hpp"
-#include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/PacketView.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -77,7 +77,7 @@ PacketView view(const Bytes &b) {
 } // namespace
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
-  SymbolTable symbols;
+  astra::symbol::StockDirectory symbols;
   BookManager books;
   MoldUdpDecoder decoder(symbols, books, 3);
 

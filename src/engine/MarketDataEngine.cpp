@@ -1,6 +1,5 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/source/PacketView.hpp"
-#include "astra/utils/DebugTrace.hpp"
 
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    IPacketProcessor &processor,
@@ -26,14 +25,9 @@ void MarketDataEngine::run() {
     PacketView packet;
     if (!source_.next(packet))
       continue;
-    // ASTRA_TRACE("engine packet data=%p size=%zu rx_ns=%llu",
-    //             static_cast<const void *>(packet.data), packet.size,
-    //             static_cast<unsigned long long>(packet.receive_start_ticks));
 
     const bool latency_enabled = config_.enable_latency_metrics;
     const DecodeResult result = processor_.processPacket(packet);
-    // ASTRA_TRACE("engine decoded status=%d had_gap=%d",
-    //             static_cast<int>(result.status), result.had_gap ? 1 : 0);
 
     if (result.status == DecodeStatus::EndOfStream) {
       stop();
@@ -50,9 +44,9 @@ void MarketDataEngine::run() {
     }
 
     if (latency_enabled && result.latency_sample_count != 0) {
-      latency_recorder_.recordDuration(
-          result.latency_total_ns / result.latency_sample_count,
-          result.latency_sample_count);
+      latency_recorder_.recordDuration(result.latency_total_ns /
+                                           result.latency_sample_count,
+                                       result.latency_sample_count);
     }
   }
 }
