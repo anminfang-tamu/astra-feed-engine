@@ -1,7 +1,7 @@
+#include "astra/parser/ItchParser.hpp"
 #include "astra/book/BookManager.hpp"
 #include "astra/book/TopOfBook.hpp"
 #include "astra/symbol/StockDirectory.hpp"
-#include "replay/itch/ItchParser.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,29 +15,37 @@ namespace {
 
 using Bytes = std::vector<std::byte>;
 
-void appendU8(Bytes &b, uint8_t v)  { b.push_back(static_cast<std::byte>(v)); }
-void appendU16(Bytes &b, uint16_t v) { appendU8(b, v >> 8); appendU8(b, v & 0xFF); }
+void appendU8(Bytes &b, uint8_t v) { b.push_back(static_cast<std::byte>(v)); }
+void appendU16(Bytes &b, uint16_t v) {
+  appendU8(b, v >> 8);
+  appendU8(b, v & 0xFF);
+}
 void appendU32(Bytes &b, uint32_t v) {
-  appendU8(b, v >> 24); appendU8(b, (v >> 16) & 0xFF);
-  appendU8(b, (v >>  8) & 0xFF); appendU8(b, v & 0xFF);
+  appendU8(b, v >> 24);
+  appendU8(b, (v >> 16) & 0xFF);
+  appendU8(b, (v >> 8) & 0xFF);
+  appendU8(b, v & 0xFF);
 }
 void appendU48(Bytes &b, uint64_t v) {
-  for (int s = 40; s >= 0; s -= 8) appendU8(b, (v >> s) & 0xFF);
+  for (int s = 40; s >= 0; s -= 8)
+    appendU8(b, (v >> s) & 0xFF);
 }
 void appendU64(Bytes &b, uint64_t v) {
-  for (int s = 56; s >= 0; s -= 8) appendU8(b, (v >> s) & 0xFF);
+  for (int s = 56; s >= 0; s -= 8)
+    appendU8(b, (v >> s) & 0xFF);
 }
 void appendStock(Bytes &b, std::string_view sym) {
   for (std::size_t i = 0; i < 8; ++i)
     appendU8(b, i < sym.size() ? static_cast<uint8_t>(sym[i]) : ' ');
 }
 
-// Build the common 11-byte ITCH prefix: type + stock_locate + tracking + timestamp
+// Build the common 11-byte ITCH prefix: type + stock_locate + tracking +
+// timestamp
 Bytes commonMsg(char type, uint16_t locate = 1) {
   Bytes b;
   appendU8(b, static_cast<uint8_t>(type));
   appendU16(b, locate);
-  appendU16(b, 7);           // tracking number (ignored)
+  appendU16(b, 7); // tracking number (ignored)
   appendU48(b, 34200123456789ULL);
   return b;
 }
@@ -117,8 +125,8 @@ auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
   astra::symbol::StockDirectory symbols;
-  BookManager  books;
-  ItchParser   parser{symbols, books, /*channel_id=*/2};
+  BookManager books;
+  ItchParser parser{symbols, books, /*channel_id=*/2};
 
   void send(const Bytes &b) { parser.handleMessage(asSpan(b)); }
 
@@ -136,7 +144,7 @@ TEST(ItchParserTest, AddOrderUpdatesBook) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 1905900u);
-  EXPECT_EQ(t.bid_qty,   100u);
+  EXPECT_EQ(t.bid_qty, 100u);
   EXPECT_EQ(t.ask_price, 0u);
 
   // Ticker should be registered under locate 1
@@ -151,7 +159,7 @@ TEST(ItchParserTest, ExecutionReducesOrderQuantity) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.ask_price, 4102500u);
-  EXPECT_EQ(t.ask_qty,   60u);
+  EXPECT_EQ(t.ask_qty, 60u);
 }
 
 TEST(ItchParserTest, FullExecutionRemovesOrder) {
@@ -161,7 +169,7 @@ TEST(ItchParserTest, FullExecutionRemovesOrder) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.ask_price, 0u);
-  EXPECT_EQ(t.ask_qty,   0u);
+  EXPECT_EQ(t.ask_qty, 0u);
 }
 
 TEST(ItchParserTest, CancelSharesReducesQuantity) {
@@ -171,7 +179,7 @@ TEST(ItchParserTest, CancelSharesReducesQuantity) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 9231250u);
-  EXPECT_EQ(t.bid_qty,   75u);
+  EXPECT_EQ(t.bid_qty, 75u);
 }
 
 TEST(ItchParserTest, CancelAllSharesRemovesOrder) {
@@ -181,7 +189,7 @@ TEST(ItchParserTest, CancelAllSharesRemovesOrder) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 0u);
-  EXPECT_EQ(t.bid_qty,   0u);
+  EXPECT_EQ(t.bid_qty, 0u);
 }
 
 TEST(ItchParserTest, DeleteRemovesOrder) {
@@ -191,7 +199,7 @@ TEST(ItchParserTest, DeleteRemovesOrder) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 0u);
-  EXPECT_EQ(t.bid_qty,   0u);
+  EXPECT_EQ(t.bid_qty, 0u);
 }
 
 TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
@@ -201,7 +209,7 @@ TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.ask_price, 1873600u);
-  EXPECT_EQ(t.ask_qty,   25u);
+  EXPECT_EQ(t.ask_qty, 25u);
 
   // New order id (556) should be executable
   f.send(msgExecute(556, 25));
@@ -216,7 +224,7 @@ TEST(ItchParserTest, BrokenTradeRestoresPartialExecution) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 1905900u);
-  EXPECT_EQ(t.bid_qty,   100u);
+  EXPECT_EQ(t.bid_qty, 100u);
 }
 
 TEST(ItchParserTest, BrokenTradeRestoresFullyExecutedOrder) {
@@ -227,7 +235,7 @@ TEST(ItchParserTest, BrokenTradeRestoresFullyExecutedOrder) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.ask_price, 1905900u);
-  EXPECT_EQ(t.ask_qty,   100u);
+  EXPECT_EQ(t.ask_qty, 100u);
 }
 
 TEST(ItchParserTest, UnknownExecutionIsSkipped) {
@@ -240,7 +248,7 @@ TEST(ItchParserTest, UnknownExecutionIsSkipped) {
 TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   Fixture f;
   f.send(msgAdd(1, 'B', 100, "AAPL", 500, /*locate=*/1));
-  f.send(msgAdd(2, 'S',  50, "MSFT", 400, /*locate=*/2));
+  f.send(msgAdd(2, 'S', 50, "MSFT", 400, /*locate=*/2));
 
   EXPECT_EQ(f.top(1).bid_price, 500u);
   EXPECT_EQ(f.top(2).ask_price, 400u);

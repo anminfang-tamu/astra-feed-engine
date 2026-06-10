@@ -3,10 +3,10 @@
 #include "astra/channel/ChannelState.hpp"
 #include "astra/codec/DecodeResult.hpp"
 #include "astra/codec/IPacketProcessor.hpp"
+#include "astra/parser/ItchParser.hpp"
 #include "astra/protocol/PacketHeader.hpp"
-#include "astra/symbol/StockDirectory.hpp"
 #include "astra/source/PacketView.hpp"
-#include "replay/itch/ItchParser.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 
 #include <cstddef>
 #include <cstdint>
