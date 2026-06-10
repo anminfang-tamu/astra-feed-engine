@@ -6,6 +6,7 @@
 #include "astra/symbol/StockDirectory.hpp"
 #include "astra/utils/FixedHashMap.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -66,7 +67,8 @@ private:
   void handleSystemEvent(std::span<const std::byte> msg);
   void handleSystemHoursStart() noexcept;
   void markStartupAdminMessage(char type) noexcept;
-  bool shouldPrepareBookOnDirectory() const noexcept;
+  void prepareRegisteredBook(uint16_t locate) noexcept;
+  void prepareRegisteredBooks() noexcept;
 
   bool skip();
   bool fail(std::string error);
@@ -82,9 +84,11 @@ private:
   uint8_t channel_id_{0};
   ChannelPhase channel_phase_{ChannelPhase::WaitingStartOfMessages};
   bool last_message_skipped_{false};
-  bool prepare_books_on_directory_{true};
-  bool touch_book_pages_on_directory_{false};
+  bool prepare_books_during_system_hours_{true};
+  bool touch_book_pages_during_system_hours_{false};
   std::string last_error_;
+  std::array<bool, astra::symbol::StockDirectory::kMaxLocate>
+      prepared_book_by_locate_{};
   // DecodeStageTiming *timing_{nullptr};
 
   FixedHashMap<OrderState> orders_;              // for MatchEntry recording

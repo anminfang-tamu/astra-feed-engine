@@ -315,8 +315,8 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
   books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
-  if (shouldPrepareBookOnDirectory()) {
-    books_.prepareBook(locate, touch_book_pages_on_directory_);
+  if (channel_phase_ == ChannelPhase::SystemHours) {
+    prepareRegisteredBook(locate);
   }
 }
 
@@ -357,6 +357,7 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
 
 void ItchParser::handleSystemHoursStart() noexcept {
   channel_phase_ = ChannelPhase::SystemHours;
+  prepareRegisteredBooks();
 }
 
 void ItchParser::markStartupAdminMessage(char type) noexcept {
@@ -366,9 +367,24 @@ void ItchParser::markStartupAdminMessage(char type) noexcept {
   }
 }
 
-bool ItchParser::shouldPrepareBookOnDirectory() const noexcept {
-  return prepare_books_on_directory_ &&
-         channel_phase_ == ChannelPhase::StartupDirectorySpin;
+void ItchParser::prepareRegisteredBook(uint16_t locate) noexcept {
+  if (!prepare_books_during_system_hours_) {
+    return;
+  }
+  if (!astra::symbol::isValidStockLocate(locate) ||
+      prepared_book_by_locate_[locate] || !symbols_.isRegistered(locate)) {
+    return;
+  }
+
+  books_.prepareBook(locate, touch_book_pages_during_system_hours_);
+  prepared_book_by_locate_[locate] = true;
+}
+
+void ItchParser::prepareRegisteredBooks() noexcept {
+  for (uint16_t locate = 1;
+       locate < astra::symbol::StockDirectory::kMaxLocate; ++locate) {
+    prepareRegisteredBook(locate);
+  }
 }
 
 void ItchParser::reset() {
@@ -377,6 +393,7 @@ void ItchParser::reset() {
   last_error_.clear();
   orders_.clear();
   executions_by_match_.clear();
+  prepared_book_by_locate_.fill(false);
 }
 
 void ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
@@ -385,8 +402,8 @@ void ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
 // }
 void ItchParser::setStockDirectoryWarmup(bool prepare_books,
                                          bool touch_pages) noexcept {
-  prepare_books_on_directory_ = prepare_books;
-  touch_book_pages_on_directory_ = prepare_books && touch_pages;
+  prepare_books_during_system_hours_ = prepare_books;
+  touch_book_pages_during_system_hours_ = prepare_books && touch_pages;
 }
 uint8_t ItchParser::channelId() const { return channel_id_; }
 ChannelPhase ItchParser::channelPhase() const noexcept {

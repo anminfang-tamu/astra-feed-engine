@@ -248,13 +248,11 @@ TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   EXPECT_EQ(f.top(2).bid_price, 0u);
 }
 
-TEST(ItchParserTest, StockDirectoryPreparesBookBeforeFirstAdd) {
+TEST(ItchParserTest, StockDirectoryDoesNotPrepareBookBeforeSystemHours) {
   Fixture f;
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
 
-  const OrderBook *book = f.books.getOrderBook(7);
-  ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->liveOrderCount(), 0u);
+  EXPECT_EQ(f.books.getOrderBook(7), nullptr);
   EXPECT_TRUE(f.symbols.isRegistered(7));
   EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
 }
@@ -273,19 +271,34 @@ TEST(ItchParserTest, SystemEventAdvancesChannelPhase) {
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
 }
 
-TEST(ItchParserTest, SystemHoursStartStopsDirectoryPreallocation) {
+TEST(ItchParserTest, SystemHoursStartPreparesDirectoryBooks) {
   Fixture f;
   f.send(msgSystemEvent('O'));
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
-  ASSERT_NE(f.books.getOrderBook(7), nullptr);
+  EXPECT_EQ(f.books.getOrderBook(7), nullptr);
 
   f.send(msgSystemEvent('S'));
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::SystemHours);
 
+  const OrderBook *book = f.books.getOrderBook(7);
+  ASSERT_NE(book, nullptr);
+  EXPECT_EQ(book->liveOrderCount(), 0u);
+}
+
+TEST(ItchParserTest, StockDirectoryDuringSystemHoursPreparesBookImmediately) {
+  Fixture f;
+  f.send(msgSystemEvent('O'));
+  f.send(msgStockDirectory("AAPL", /*locate=*/7));
+  f.send(msgSystemEvent('S'));
+  ASSERT_NE(f.books.getOrderBook(7), nullptr);
+
   f.send(msgStockDirectory("MSFT", /*locate=*/8));
-  EXPECT_EQ(f.books.getOrderBook(8), nullptr);
+  ASSERT_NE(f.books.getOrderBook(8), nullptr);
   EXPECT_TRUE(f.symbols.isRegistered(8));
   EXPECT_STREQ(f.symbols.ticker(8), "MSFT");
+
+  f.send(msgSystemEvent('Q'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
 }
 
 TEST(ItchParserTest, ResetClearsState) {
