@@ -107,6 +107,12 @@ Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1) {
   return b;
 }
 
+Bytes msgSystemEvent(char event_code) {
+  Bytes b = commonMsg('S', /*locate=*/0);
+  appendU8(b, static_cast<uint8_t>(event_code));
+  return b;
+}
+
 auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
@@ -251,6 +257,35 @@ TEST(ItchParserTest, StockDirectoryPreparesBookBeforeFirstAdd) {
   EXPECT_EQ(book->liveOrderCount(), 0u);
   EXPECT_TRUE(f.symbols.isRegistered(7));
   EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
+}
+
+TEST(ItchParserTest, SystemEventAdvancesChannelPhase) {
+  Fixture f;
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::WaitingStartOfMessages);
+
+  f.send(msgSystemEvent('O'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::StartupDirectorySpin);
+
+  f.send(msgSystemEvent('S'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::SystemHours);
+
+  f.send(msgSystemEvent('Q'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+}
+
+TEST(ItchParserTest, SystemHoursStartStopsDirectoryPreallocation) {
+  Fixture f;
+  f.send(msgSystemEvent('O'));
+  f.send(msgStockDirectory("AAPL", /*locate=*/7));
+  ASSERT_NE(f.books.getOrderBook(7), nullptr);
+
+  f.send(msgSystemEvent('S'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::SystemHours);
+
+  f.send(msgStockDirectory("MSFT", /*locate=*/8));
+  EXPECT_EQ(f.books.getOrderBook(8), nullptr);
+  EXPECT_TRUE(f.symbols.isRegistered(8));
+  EXPECT_STREQ(f.symbols.ticker(8), "MSFT");
 }
 
 TEST(ItchParserTest, ResetClearsState) {

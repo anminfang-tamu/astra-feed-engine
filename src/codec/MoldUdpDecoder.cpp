@@ -179,6 +179,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(
 
       parser_.handleMessage(
           std::span<const std::byte>(data + offset, msg_len));
+      channel_.phase = parser_.channelPhase();
       ++processed_messages;
     }
 

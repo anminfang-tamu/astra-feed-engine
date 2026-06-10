@@ -10,6 +10,8 @@ namespace {
 constexpr std::size_t kStockOffset =
     24; // offset of 8-char ticker in Add messages
 constexpr std::size_t kStockLen = 8;
+constexpr std::size_t kSystemEventLen = 12;
+constexpr std::size_t kSystemEventCodeOffset = 11;
 
 std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
                            std::size_t len) {
@@ -88,6 +90,19 @@ bool ItchParser::handleMessage(std::span<const std::byte> msg) {
     return !last_message_skipped_;
   case 'R':
     handleStockDirectory(msg);
+    return false;
+  case 'S':
+    handleSystemEvent(msg);
+    return false;
+  case 'H': // Stock Trading Action
+  case 'Y': // Reg SHO Restriction
+  case 'L': // Market Participant Position
+  case 'V': // MWCB Decline Level
+  case 'W': // MWCB Status
+  case 'K': // IPO Quoting Period Update
+  case 'J': // LULD Auction Collar
+  case 'h': // Operational Halt
+    markStartupAdminMessage(type);
     return false;
   // System / non-book messages — skip silently
   default:
@@ -282,6 +297,9 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   const std::string_view sym = fixedText(msg, 11, kStockLen);
   if (sym.empty() || locate == 0)
     return;
+  if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
+    channel_phase_ = ChannelPhase::StartupDirectorySpin;
+  }
 
   astra::symbol::StockDirectoryEntry entry{};
   const std::size_t n = sym.size() < 8 ? sym.size() : 8;
@@ -297,12 +315,64 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
   books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
-  if (prepare_books_on_directory_) {
+  if (shouldPrepareBookOnDirectory()) {
     books_.prepareBook(locate, touch_book_pages_on_directory_);
   }
 }
 
+// 'S' (12 bytes) — System Event
+// [11] Event Code:
+//      'O' Start of Messages, 'S' Start of System Hours,
+//      'Q' Start of Market Hours, 'M' End of Market Hours,
+//      'E' End of System Hours, 'C' End of Messages.
+void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
+  if (msg.size() < kSystemEventLen) {
+    return (void)fail("truncated system event");
+  }
+
+  const char event_code =
+      static_cast<char>(std::to_integer<uint8_t>(msg[kSystemEventCodeOffset]));
+  switch (event_code) {
+  case 'O':
+    channel_phase_ = ChannelPhase::StartupDirectorySpin;
+    break;
+  case 'S':
+    handleSystemHoursStart();
+    break;
+  case 'Q':
+    channel_phase_ = ChannelPhase::MarketHours;
+    break;
+  case 'M':
+    channel_phase_ = ChannelPhase::SystemHours;
+    break;
+  case 'E':
+  case 'C':
+    channel_phase_ = ChannelPhase::WaitingStartOfMessages;
+    break;
+  default:
+    markStartupAdminMessage(event_code);
+    break;
+  }
+}
+
+void ItchParser::handleSystemHoursStart() noexcept {
+  channel_phase_ = ChannelPhase::SystemHours;
+}
+
+void ItchParser::markStartupAdminMessage(char type) noexcept {
+  (void)type;
+  if (channel_phase_ == ChannelPhase::StartupDirectorySpin) {
+    channel_phase_ = ChannelPhase::StartupAdminSpin;
+  }
+}
+
+bool ItchParser::shouldPrepareBookOnDirectory() const noexcept {
+  return prepare_books_on_directory_ &&
+         channel_phase_ == ChannelPhase::StartupDirectorySpin;
+}
+
 void ItchParser::reset() {
+  channel_phase_ = ChannelPhase::WaitingStartOfMessages;
   last_message_skipped_ = false;
   last_error_.clear();
   orders_.clear();
@@ -319,6 +389,9 @@ void ItchParser::setStockDirectoryWarmup(bool prepare_books,
   touch_book_pages_on_directory_ = prepare_books && touch_pages;
 }
 uint8_t ItchParser::channelId() const { return channel_id_; }
+ChannelPhase ItchParser::channelPhase() const noexcept {
+  return channel_phase_;
+}
 bool ItchParser::lastMessageSkipped() const { return last_message_skipped_; }
 const std::string &ItchParser::lastError() const { return last_error_; }
 

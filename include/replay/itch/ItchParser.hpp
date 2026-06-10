@@ -1,6 +1,7 @@
 #pragma once
 
 #include "astra/book/BookManager.hpp"
+#include "astra/channel/ChannelPhase.hpp"
 #include "astra/metrics/DecodeStageTiming.hpp"
 #include "astra/symbol/StockDirectory.hpp"
 #include "astra/utils/FixedHashMap.hpp"
@@ -15,7 +16,8 @@
 // no secondary symbol-table lookup needed on the hot path.
 class ItchParser {
 public:
-  static constexpr int64_t kPriceScale = 10000; // ITCH price unit = 1/10000 dollar
+  static constexpr int64_t kPriceScale =
+      10000; // ITCH price unit = 1/10000 dollar
 
   explicit ItchParser(astra::symbol::StockDirectory &symbols,
                       BookManager &books, uint8_t channel_id = 0);
@@ -24,41 +26,47 @@ public:
   // Returns true if the message produced a book update, false if skipped/error.
   bool handleMessage(std::span<const std::byte> message);
 
-  void    reset();
-  void    setChannelId(uint8_t channel_id);
+  void reset();
+  void setChannelId(uint8_t channel_id);
   // void    setStageTiming(DecodeStageTiming *timing) noexcept;
-  void    setStockDirectoryWarmup(bool prepare_books,
-                                  bool touch_pages) noexcept;
+  void setStockDirectoryWarmup(bool prepare_books, bool touch_pages) noexcept;
   uint8_t channelId() const;
-  bool    lastMessageSkipped() const;
+  ChannelPhase channelPhase() const noexcept;
+  bool lastMessageSkipped() const;
   const std::string &lastError() const;
 
 private:
   static constexpr uint32_t kOrderStateCapacity = 1u << 20;
-  static constexpr uint32_t kExecutionCapacity  = 1u << 20;
+  static constexpr uint32_t kExecutionCapacity = 1u << 20;
 
   // Stored per execution for BrokenTrade ('B') reversal only.
   struct MatchEntry {
-    uint64_t  order_id;
-    uint32_t  executed_qty;
-    uint64_t  price;
-    char      side;
+    uint64_t order_id;
+    uint32_t executed_qty;
+    uint64_t price;
+    char side;
   };
 
   // Minimal order state kept only to record MatchEntry on execution.
   struct OrderState {
-    char     side;
+    char side;
     uint64_t price; // price_ticks
     uint32_t qty;
   };
 
-  void handleAdd(std::span<const std::byte> msg, uint16_t locate, bool with_mpid);
-  void handleExecution(std::span<const std::byte> msg, uint16_t locate, bool with_price);
+  void handleAdd(std::span<const std::byte> msg, uint16_t locate,
+                 bool with_mpid);
+  void handleExecution(std::span<const std::byte> msg, uint16_t locate,
+                       bool with_price);
   void handleCancel(std::span<const std::byte> msg, uint16_t locate);
   void handleDelete(std::span<const std::byte> msg, uint16_t locate);
   void handleReplace(std::span<const std::byte> msg, uint16_t locate);
   void handleBrokenTrade(std::span<const std::byte> msg, uint16_t locate);
   void handleStockDirectory(std::span<const std::byte> msg);
+  void handleSystemEvent(std::span<const std::byte> msg);
+  void handleSystemHoursStart() noexcept;
+  void markStartupAdminMessage(char type) noexcept;
+  bool shouldPrepareBookOnDirectory() const noexcept;
 
   bool skip();
   bool fail(std::string error);
@@ -70,12 +78,13 @@ private:
   static uint64_t readU64BE(std::span<const std::byte> msg, std::size_t off);
 
   astra::symbol::StockDirectory &symbols_;
-  BookManager  &books_;
-  uint8_t       channel_id_{0};
-  bool          last_message_skipped_{false};
-  bool          prepare_books_on_directory_{true};
-  bool          touch_book_pages_on_directory_{false};
-  std::string   last_error_;
+  BookManager &books_;
+  uint8_t channel_id_{0};
+  ChannelPhase channel_phase_{ChannelPhase::WaitingStartOfMessages};
+  bool last_message_skipped_{false};
+  bool prepare_books_on_directory_{true};
+  bool touch_book_pages_on_directory_{false};
+  std::string last_error_;
   // DecodeStageTiming *timing_{nullptr};
 
   FixedHashMap<OrderState> orders_;              // for MatchEntry recording

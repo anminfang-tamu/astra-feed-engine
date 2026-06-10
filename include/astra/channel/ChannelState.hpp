@@ -1,6 +1,7 @@
 #pragma once
 
 #include "astra/channel/ChannelHealth.hpp"
+#include "astra/channel/ChannelPhase.hpp"
 #include "astra/sequencing/GapBuffer.hpp"
 #include "astra/symbol/StockLocate.hpp"
 
@@ -17,6 +18,7 @@ struct ChannelState {
 
   uint64_t next_expected_seq = 1;
   ChannelHealth status = ChannelHealth::Good;
+  ChannelPhase phase = ChannelPhase::WaitingStartOfMessages;
 
   // out-of-order packets waiting for missing seqs
   GapBuffer gap_buffer;
