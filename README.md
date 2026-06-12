@@ -54,3 +54,11 @@ latency count=1200209 invalid=0 min_ns=36 max_ns=216690863 mean_ns=24676.08 p50_
 latency count=4656400 invalid=0 min_ns=58 max_ns=218098 mean_ns=914.96 p50_ns=516 p90_ns=716 p99_ns=2655 p99.9_ns=96255 p99.99_ns=162815
 
 ```
+
+### TEST ENV
+
+```text
+1. Sender: c7i.4xlarge with 100GB gp3 EBS
+2. Engine: r7iz.8xlarge
+
+```
