@@ -254,7 +254,7 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   symbols_.set(locate, entry);
   books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
   if (channel_phase_ == ChannelPhase::SystemHours) {
-    prepareRegisteredBook(locate);
+    createRegisteredBook(locate);
   }
 }
 
@@ -295,7 +295,7 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
 
 void ItchParser::handleSystemHoursStart() noexcept {
   channel_phase_ = ChannelPhase::SystemHours;
-  prepareRegisteredBooks();
+  createRegisteredBooks();
 }
 
 void ItchParser::markStartupAdminMessage(char type) noexcept {
@@ -305,23 +305,20 @@ void ItchParser::markStartupAdminMessage(char type) noexcept {
   }
 }
 
-void ItchParser::prepareRegisteredBook(uint16_t locate) noexcept {
-  if (!prepare_books_during_system_hours_) {
-    return;
-  }
+void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
   if (!astra::symbol::isValidStockLocate(locate) ||
       prepared_book_by_locate_[locate] || !symbols_.isRegistered(locate)) {
     return;
   }
 
-  books_.prepareBook(locate, touch_book_pages_during_system_hours_);
+  (void)books_.getOrCreate(locate);
   prepared_book_by_locate_[locate] = true;
 }
 
-void ItchParser::prepareRegisteredBooks() noexcept {
+void ItchParser::createRegisteredBooks() noexcept {
   for (uint16_t locate = 1;
        locate < astra::symbol::StockDirectory::kMaxLocate; ++locate) {
-    prepareRegisteredBook(locate);
+    createRegisteredBook(locate);
   }
 }
 
@@ -336,11 +333,6 @@ void ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
 // void    ItchParser::setStageTiming(DecodeStageTiming *timing) noexcept {
 //   timing_ = timing;
 // }
-void ItchParser::setStockDirectoryWarmup(bool prepare_books,
-                                         bool touch_pages) noexcept {
-  prepare_books_during_system_hours_ = prepare_books;
-  touch_book_pages_during_system_hours_ = prepare_books && touch_pages;
-}
 uint8_t ItchParser::channelId() const { return channel_id_; }
 ChannelPhase ItchParser::channelPhase() const noexcept {
   return channel_phase_;

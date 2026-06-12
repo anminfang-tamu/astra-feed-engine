@@ -157,9 +157,7 @@ OrderBook::OrderBook(uint32_t symbol_id, size_t order_capacity)
       free_list_(order_capacity), free_list_size_(0), next_order_idx_(0),
       bid_levels_(kMaxPriceLevels), ask_levels_(kMaxPriceLevels),
       order_index_(orderIndexCapacity(order_capacity)),
-      stock_locate_(static_cast<uint16_t>(symbol_id)) {}
-
-void OrderBook::warmStorage() noexcept {
+      stock_locate_(static_cast<uint16_t>(symbol_id)) {
   touchPages(order_pool_.data(), order_pool_.size() * sizeof(Order));
   touchPages(free_list_.data(), free_list_.size() * sizeof(uint32_t));
   touchPages(bid_levels_.data(), bid_levels_.size() * sizeof(PriceLevel));
@@ -228,7 +226,7 @@ bool OrderBook::removeFromLevel(uint32_t order_idx) noexcept {
     return false;
   }
 
-  FixedMmapArray<PriceLevel> &levels =
+  std::vector<PriceLevel> &levels =
       order.side == 'B' ? bid_levels_ : ask_levels_;
   PriceBitmap &bitmap = order.side == 'B' ? bid_bitmap_ : ask_bitmap_;
   PriceLevel &level = levels[order.level_idx];
@@ -277,7 +275,7 @@ void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
   if (order_idx == kInvalidIdx)
     return;
 
-  FixedMmapArray<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
+  std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
   PriceBitmap &bitmap = side == 'B' ? bid_bitmap_ : ask_bitmap_;
   PriceLevel &level = levels[level_idx];
   const bool was_empty = level.num_orders == 0;
@@ -324,7 +322,7 @@ void OrderBook::cancelShares(uint64_t order_id,
     return;
   }
 
-  FixedMmapArray<PriceLevel> &levels =
+  std::vector<PriceLevel> &levels =
       order.side == 'B' ? bid_levels_ : ask_levels_;
   PriceLevel &level = levels[order.level_idx];
 
@@ -342,7 +340,7 @@ void OrderBook::deleteOrder(uint64_t order_id) noexcept {
   if (order.order_id != order_id) {
     return;
   }
-  FixedMmapArray<PriceLevel> &levels =
+  std::vector<PriceLevel> &levels =
       order.side == 'B' ? bid_levels_ : ask_levels_;
   PriceLevel &level = levels[order.level_idx];
 
@@ -372,7 +370,7 @@ bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
     return false;
   }
 
-  FixedMmapArray<PriceLevel> &levels =
+  std::vector<PriceLevel> &levels =
       order.side == 'B' ? bid_levels_ : ask_levels_;
   PriceLevel &level = levels[order.level_idx];
 
@@ -423,7 +421,7 @@ void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
     return;
   }
 
-  FixedMmapArray<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
+  std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
   PriceBitmap &bitmap = side == 'B' ? bid_bitmap_ : ask_bitmap_;
   PriceLevel &level = levels[new_level_idx];
   const bool was_empty = level.num_orders == 0;
@@ -464,7 +462,7 @@ void OrderBook::reverseExecution(uint64_t order_id, uint64_t price,
   if (order_idx != kInvalidIdx && order_idx < order_pool_.size()) {
     // Order still exists — add qty back to existing order and level
     Order &order = order_pool_[order_idx];
-    FixedMmapArray<PriceLevel> &levels =
+    std::vector<PriceLevel> &levels =
         order.side == 'B' ? bid_levels_ : ask_levels_;
     PriceLevel &level = levels[order.level_idx];
     order.qty += qty;

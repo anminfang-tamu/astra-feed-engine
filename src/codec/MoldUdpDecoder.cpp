@@ -140,11 +140,6 @@ void MoldUdpDecoder::setStageTimingEnabled(bool enabled) noexcept {
   (void)enabled;
 }
 
-void MoldUdpDecoder::setStockDirectoryWarmup(bool prepare_books,
-                                             bool touch_pages) noexcept {
-  parser_.setStockDirectoryWarmup(prepare_books, touch_pages);
-}
-
 DecodeResult MoldUdpDecoder::processSequencedPacket(
     const std::byte *data, std::size_t size, uint64_t first_seq,
     uint16_t msg_count, uint64_t start_seq, uint64_t receive_start_ticks) {

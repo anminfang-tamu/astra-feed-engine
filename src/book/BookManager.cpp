@@ -47,14 +47,6 @@ void BookManager::setBookCapacityTier(
       astra::book_capacity::orderCapacity(tier);
 }
 
-void BookManager::prepareBook(uint16_t stock_locate,
-                              bool touch_pages) noexcept {
-  OrderBook *book = getOrCreate(stock_locate);
-  if (book != nullptr && touch_pages) {
-    book->warmStorage();
-  }
-}
-
 void BookManager::addOrder(uint16_t stock_locate, uint64_t order_id,
                            uint64_t price, uint32_t qty, char side) noexcept {
   OrderBook *book = getOrCreate(stock_locate);

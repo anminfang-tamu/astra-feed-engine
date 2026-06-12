@@ -14,7 +14,7 @@ The latest dual-feed EC2 runs show that gap recovery itself is not the root prob
   - `line_a_kernel_drops > 0`
   - `line_b_kernel_drops > 0`
   - later packets were buffered, but the missing sequence was dropped by both redundant feeds, so the gap could not recover.
-- `ASTRA_R_BOOK_WARMUP=touch` can get the process killed because it commits all pages for every prepared book. With about `8713` symbols, default-sized books alone are roughly `70 GiB` committed before hot-symbol tiers, parser maps, gap buffer, socket queues, and OS memory.
+- `OrderBook` creation now touches all owned pages by default. Creating books for the full directory can still get the process killed because about `8713` default-sized books alone are roughly `70 GiB` committed before hot-symbol tiers, parser maps, gap buffer, socket queues, and OS memory.
 
 The practical conclusion is that the current single-thread path is overloaded by the book-update workload:
 
@@ -92,11 +92,10 @@ Suggested direction:
 
 Current path:
 
-- `OrderBook` uses fixed mmap-backed arrays for `order_pool_`, `free_list_`, bid levels, ask levels, and `OrderIdMap`.
+- `OrderBook` uses a fixed mmap-backed `order_pool_`, vector-backed `free_list_` and bid/ask levels, and a fixed mmap-backed `OrderIdMap`.
 - Default order capacity is `64k` orders per symbol.
 - Hot tiers can grow to `1M` or `4M` orders per symbol.
-- `ASTRA_R_BOOK_WARMUP=prepare` reserves these structures.
-- `ASTRA_R_BOOK_WARMUP=touch` commits pages for all prepared books and can OOM the process.
+- Book creation commits/touches these structures by default and can OOM if done for the full symbol universe.
 
 Relevant files:
 
@@ -205,9 +204,8 @@ Suggested direction:
 
 Current path:
 
-- `ItchParser::handleStockDirectory()` registers each stock locate and can call `BookManager::prepareBook()`.
-- `ASTRA_R_BOOK_WARMUP=prepare` creates an `OrderBook` for each directory entry.
-- `ASTRA_R_BOOK_WARMUP=touch` also touches every page of each prepared book.
+- `ItchParser::handleStockDirectory()` registers each stock locate and `SS`-time creation calls `BookManager::getOrCreate()`.
+- `BookManager::getOrCreate()` creates an `OrderBook` for each directory entry, and `OrderBook` creation touches its pages by default.
 
 Relevant file:
 

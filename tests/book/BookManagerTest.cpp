@@ -99,11 +99,11 @@ TEST(BookManagerTest, AppliesConfiguredBookCapacityBeforeBookCreation) {
   EXPECT_EQ(book->orderCapacity(), astra::book_capacity::kActiveOrderCapacity);
 }
 
-TEST(BookManagerTest, PrepareBookCreatesEmptyBookWithConfiguredCapacity) {
+TEST(BookManagerTest, GetOrCreateCreatesEmptyBookWithConfiguredCapacity) {
   BookManager manager;
   manager.setBookCapacityTier(7, astra::symbol::SymbolTier::Active);
 
-  manager.prepareBook(7);
+  (void)manager.getOrCreate(7);
 
   const OrderBook *book = manager.getOrderBook(7);
   ASSERT_NE(book, nullptr);

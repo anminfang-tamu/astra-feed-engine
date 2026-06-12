@@ -10,10 +10,10 @@ sender processes from a second EC2 instance over UDP.
 ### Run configuration
 
 ```bash
-ASTRA_R_BOOK_WARMUP=prepare ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_STAGE_LATENCY_METRICS=off \
+ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_STAGE_LATENCY_METRICS=off \
   ./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
 
-ASTRA_R_BOOK_WARMUP=prepare ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_UDP_DROP_METRICS=on ASTRA_STAGE_LATENCY_METRICS=off \
+ASTRA_CPU=2 ASTRA_UDP_RX=recv ASTRA_UDP_DROP_METRICS=on ASTRA_STAGE_LATENCY_METRICS=off \
   ./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
 ```
 

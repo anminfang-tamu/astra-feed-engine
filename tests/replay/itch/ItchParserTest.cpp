@@ -258,7 +258,7 @@ TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   EXPECT_EQ(f.top(2).bid_price, 0u);
 }
 
-TEST(ItchParserTest, StockDirectoryDoesNotPrepareBookBeforeSystemHours) {
+TEST(ItchParserTest, StockDirectoryDoesNotCreateBookBeforeSystemHours) {
   Fixture f;
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
 
@@ -281,7 +281,7 @@ TEST(ItchParserTest, SystemEventAdvancesChannelPhase) {
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
 }
 
-TEST(ItchParserTest, SystemHoursStartPreparesDirectoryBooks) {
+TEST(ItchParserTest, SystemHoursStartCreatesDirectoryBooks) {
   Fixture f;
   f.send(msgSystemEvent('O'));
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
@@ -295,7 +295,7 @@ TEST(ItchParserTest, SystemHoursStartPreparesDirectoryBooks) {
   EXPECT_EQ(book->liveOrderCount(), 0u);
 }
 
-TEST(ItchParserTest, StockDirectoryDuringSystemHoursPreparesBookImmediately) {
+TEST(ItchParserTest, StockDirectoryDuringSystemHoursCreatesBookImmediately) {
   Fixture f;
   f.send(msgSystemEvent('O'));
   f.send(msgStockDirectory("AAPL", /*locate=*/7));

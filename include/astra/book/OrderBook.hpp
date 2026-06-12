@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 class OrderBook {
 public:
@@ -32,8 +33,6 @@ public:
                     uint32_t new_qty) noexcept;
   void reverseExecution(uint64_t order_id, uint64_t price, uint32_t qty,
                         char side) noexcept;
-  void warmStorage() noexcept;
-
   TopOfBook getTopOfBook() const noexcept;
   BookUpdate getBookUpdate() const noexcept;
 
@@ -63,12 +62,12 @@ private:
   uint64_t tick_size_;
 
   alignas(64) FixedMmapArray<Order> order_pool_;
-  FixedMmapArray<uint32_t> free_list_;
+  std::vector<uint32_t> free_list_;
   size_t free_list_size_;
   size_t next_order_idx_;
 
-  FixedMmapArray<PriceLevel> bid_levels_;
-  FixedMmapArray<PriceLevel> ask_levels_;
+  std::vector<PriceLevel> bid_levels_;
+  std::vector<PriceLevel> ask_levels_;
 
   PriceBitmap bid_bitmap_;
   PriceBitmap ask_bitmap_;

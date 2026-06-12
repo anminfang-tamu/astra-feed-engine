@@ -20,9 +20,9 @@ public:
   BookManager();
   ~BookManager();
 
+  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
   void setBookCapacityTier(uint16_t stock_locate,
                            astra::symbol::SymbolTier tier) noexcept;
-  void prepareBook(uint16_t stock_locate, bool touch_pages = false) noexcept;
   void addOrder(uint16_t stock_locate, uint64_t order_id, uint64_t price,
                 uint32_t qty, char side) noexcept;
   void cancelShares(uint16_t stock_locate, uint64_t order_id,
@@ -38,7 +38,6 @@ public:
   const OrderBook *getOrderBook(uint16_t stock_locate) const noexcept;
 
 private:
-  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
   OrderBook *find(uint16_t stock_locate) const noexcept;
   size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
 
