@@ -356,20 +356,20 @@ void OrderBook::deleteOrder(uint64_t order_id) noexcept {
   freeOrder(order_idx);
 }
 
-void OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
+bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
   if (executed_qty == 0)
-    return;
+    return false;
   const uint32_t order_idx = order_index_.find(order_id);
   if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
-    return;
+    return false;
   }
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != order_id) {
-    return;
+    return false;
   }
   if (executed_qty > order.qty) {
-    return;
+    return false;
   }
 
   FixedMmapArray<PriceLevel> &levels =
@@ -377,17 +377,18 @@ void OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
   PriceLevel &level = levels[order.level_idx];
 
   if (level.num_orders == 0 || level.total_qty < executed_qty) {
-    return;
+    return false;
   }
 
   if (executed_qty == order.qty) {
     if (!removeFromLevel(order_idx))
-      return;
+      return false;
     freeOrder(order_idx);
   } else {
     level.total_qty -= executed_qty;
     order.qty -= executed_qty;
   }
+  return true;
 }
 
 void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,

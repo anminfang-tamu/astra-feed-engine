@@ -142,7 +142,7 @@ TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
 TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
   OrderBook book(42);
   book.addOrder(1, 10, 100, 'B');
-  book.trade(1, 25);
+  EXPECT_TRUE(book.trade(1, 25));
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -153,7 +153,7 @@ TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
   OrderBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 11,  50, 'B');
-  book.trade(2, 50);
+  EXPECT_TRUE(book.trade(2, 50));
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -164,7 +164,7 @@ TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
   OrderBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 10, 100, 'B');
-  book.trade(1, 150); // exceeds order qty — ignored
+  EXPECT_FALSE(book.trade(1, 150)); // exceeds order qty — ignored
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);
@@ -201,7 +201,7 @@ TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
 
   book.cancelShares(99, 50);   // unknown id — ignored
   book.deleteOrder(99);        // unknown id — ignored
-  book.trade(99, 50);          // unknown id — ignored
+  EXPECT_FALSE(book.trade(99, 50)); // unknown id — ignored
 
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 10u);

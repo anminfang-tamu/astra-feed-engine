@@ -27,7 +27,7 @@ public:
                 char side) noexcept;
   void cancelShares(uint64_t order_id, uint32_t canceled_qty) noexcept;
   void deleteOrder(uint64_t order_id) noexcept;
-  void trade(uint64_t order_id, uint32_t executed_qty) noexcept;
+  bool trade(uint64_t order_id, uint32_t executed_qty) noexcept;
   void replaceOrder(uint64_t old_id, uint64_t new_id, uint64_t new_price,
                     uint32_t new_qty) noexcept;
   void reverseExecution(uint64_t order_id, uint64_t price, uint32_t qty,

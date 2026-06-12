@@ -28,7 +28,7 @@ public:
   void cancelShares(uint16_t stock_locate, uint64_t order_id,
                     uint32_t canceled_qty) noexcept;
   void deleteOrder(uint16_t stock_locate, uint64_t order_id) noexcept;
-  void trade(uint16_t stock_locate, uint64_t order_id,
+  bool trade(uint16_t stock_locate, uint64_t order_id,
              uint32_t executed_qty) noexcept;
   void replaceOrder(uint16_t stock_locate, uint64_t old_id, uint64_t new_id,
                     uint64_t new_price, uint32_t new_qty) noexcept;

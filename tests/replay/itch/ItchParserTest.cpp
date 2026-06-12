@@ -216,7 +216,7 @@ TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
   EXPECT_EQ(f.top().ask_price, 0u);
 }
 
-TEST(ItchParserTest, BrokenTradeRestoresPartialExecution) {
+TEST(ItchParserTest, BrokenTradeIsSkippedWithoutMatchHistory) {
   Fixture f;
   f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
   f.send(msgExecute(555, 40, 9001));
@@ -224,18 +224,20 @@ TEST(ItchParserTest, BrokenTradeRestoresPartialExecution) {
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 1905900u);
-  EXPECT_EQ(t.bid_qty, 100u);
+  EXPECT_EQ(t.bid_qty, 60u);
+  EXPECT_TRUE(f.parser.lastMessageSkipped());
 }
 
-TEST(ItchParserTest, BrokenTradeRestoresFullyExecutedOrder) {
+TEST(ItchParserTest, BrokenTradeDoesNotRecreateFullyExecutedOrder) {
   Fixture f;
   f.send(msgAdd(555, 'S', 100, "AAPL", 1905900));
   f.send(msgExecute(555, 100, 9001));
   f.send(msgBrokenTrade(9001));
 
   const TopOfBook t = f.top();
-  EXPECT_EQ(t.ask_price, 1905900u);
-  EXPECT_EQ(t.ask_qty, 100u);
+  EXPECT_EQ(t.ask_price, 0u);
+  EXPECT_EQ(t.ask_qty, 0u);
+  EXPECT_TRUE(f.parser.lastMessageSkipped());
 }
 
 TEST(ItchParserTest, UnknownExecutionIsSkipped) {
@@ -313,9 +315,9 @@ TEST(ItchParserTest, ResetClearsState) {
   Fixture f;
   f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
   f.parser.reset();
-  // BrokenTrade for match 9001 should be a no-op after reset
+  // Parser reset does not own order-book state; execution still routes there.
   f.send(msgExecute(555, 100, 9001));
+  EXPECT_FALSE(f.parser.lastMessageSkipped());
   f.send(msgBrokenTrade(9001));
-  // After reset, execution state is cleared so BrokenTrade is ignored
   EXPECT_TRUE(f.parser.lastMessageSkipped());
 }

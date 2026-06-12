@@ -4,7 +4,6 @@
 #include "astra/channel/ChannelPhase.hpp"
 #include "astra/metrics/DecodeStageTiming.hpp"
 #include "astra/symbol/StockDirectory.hpp"
-#include "astra/utils/FixedHashMap.hpp"
 
 #include <array>
 #include <cstddef>
@@ -37,24 +36,6 @@ public:
   const std::string &lastError() const;
 
 private:
-  static constexpr uint32_t kOrderStateCapacity = 1u << 20;
-  static constexpr uint32_t kExecutionCapacity = 1u << 20;
-
-  // Stored per execution for BrokenTrade ('B') reversal only.
-  struct MatchEntry {
-    uint64_t order_id;
-    uint32_t executed_qty;
-    uint64_t price;
-    char side;
-  };
-
-  // Minimal order state kept only to record MatchEntry on execution.
-  struct OrderState {
-    char side;
-    uint64_t price; // price_ticks
-    uint32_t qty;
-  };
-
   void handleAdd(std::span<const std::byte> msg, uint16_t locate,
                  bool with_mpid);
   void handleExecution(std::span<const std::byte> msg, uint16_t locate,
@@ -90,7 +71,4 @@ private:
   std::array<bool, astra::symbol::StockDirectory::kMaxLocate>
       prepared_book_by_locate_{};
   // DecodeStageTiming *timing_{nullptr};
-
-  FixedHashMap<OrderState> orders_;              // for MatchEntry recording
-  FixedHashMap<MatchEntry> executions_by_match_; // BrokenTrade
 };

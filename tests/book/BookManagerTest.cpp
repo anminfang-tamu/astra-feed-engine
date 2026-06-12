@@ -65,7 +65,7 @@ TEST(BookManagerTest, CancelSharesReducesQuantity) {
 TEST(BookManagerTest, TradeReducesQuantity) {
   BookManager manager;
   manager.addOrder(1, 10, 50, 100, 'B');
-  manager.trade(1, 10, 30);
+  EXPECT_TRUE(manager.trade(1, 10, 30));
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 50u);

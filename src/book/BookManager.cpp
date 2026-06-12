@@ -76,11 +76,12 @@ void BookManager::deleteOrder(uint16_t stock_locate,
     book->deleteOrder(order_id);
 }
 
-void BookManager::trade(uint16_t stock_locate, uint64_t order_id,
+bool BookManager::trade(uint16_t stock_locate, uint64_t order_id,
                         uint32_t executed_qty) noexcept {
   OrderBook *book = find(stock_locate);
   if (book)
-    book->trade(order_id, executed_qty);
+    return book->trade(order_id, executed_qty);
+  return false;
 }
 
 void BookManager::replaceOrder(uint16_t stock_locate, uint64_t old_id,

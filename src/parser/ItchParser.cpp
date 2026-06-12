@@ -26,8 +26,7 @@ std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
 
 ItchParser::ItchParser(astra::symbol::StockDirectory &symbols,
                        BookManager &books, uint8_t channel_id)
-    : symbols_(symbols), books_(books), channel_id_(channel_id),
-      orders_(kOrderStateCapacity), executions_by_match_(kExecutionCapacity) {}
+    : symbols_(symbols), books_(books), channel_id_(channel_id) {}
 
 uint16_t ItchParser::readU16BE(std::span<const std::byte> msg,
                                std::size_t off) {
@@ -141,10 +140,6 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
     }
   }
 
-  if (!orders_.insert(order_id, {(char)msg[19], price, qty})) {
-    orders_.insertOrAssign(order_id, {(char)msg[19], price, qty});
-  }
-
   books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
 }
 
@@ -163,29 +158,10 @@ void ItchParser::handleExecution(std::span<const std::byte> msg,
 
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t executed_qty = readU32BE(msg, 19);
-  const uint64_t match_number = readU64BE(msg, 23);
 
-  OrderState *order = orders_.find(order_id);
-  if (order == nullptr) {
+  if (!books_.trade(locate, order_id, executed_qty)) {
     return (void)skip();
   }
-
-  // Record match for potential BrokenTrade reversal
-  const uint64_t exec_price =
-      with_price ? static_cast<uint64_t>(readU32BE(msg, 32)) : order->price;
-  const char exec_side = order->side;
-  if (!executions_by_match_.insert(
-          match_number, {order_id, executed_qty, exec_price, exec_side})) {
-    executions_by_match_.insertOrAssign(
-        match_number, {order_id, executed_qty, exec_price, exec_side});
-  }
-
-  books_.trade(locate, order_id, executed_qty);
-
-  if (executed_qty >= order->qty)
-    orders_.erase(order_id);
-  else
-    order->qty -= executed_qty;
 }
 
 // 'X' (23 bytes)
@@ -200,14 +176,6 @@ void ItchParser::handleCancel(std::span<const std::byte> msg, uint16_t locate) {
   const uint32_t canceled_qty = readU32BE(msg, 19);
 
   books_.cancelShares(locate, order_id, canceled_qty);
-
-  OrderState *order = orders_.find(order_id);
-  if (order != nullptr) {
-    if (canceled_qty >= order->qty)
-      orders_.erase(order_id);
-    else
-      order->qty -= canceled_qty;
-  }
 }
 
 // 'D' (19 bytes)
@@ -218,7 +186,6 @@ void ItchParser::handleDelete(std::span<const std::byte> msg, uint16_t locate) {
   }
 
   const uint64_t order_id = readU64BE(msg, 11);
-  orders_.erase(order_id);
   books_.deleteOrder(locate, order_id);
 }
 
@@ -238,47 +205,18 @@ void ItchParser::handleReplace(std::span<const std::byte> msg,
   const uint32_t new_qty = readU32BE(msg, 27);
   const uint64_t new_price = static_cast<uint64_t>(readU32BE(msg, 31));
 
-  // Update our order-state cache: old entry → new entry (same side)
-  OrderState *old_state = orders_.find(old_id);
-  if (old_state != nullptr) {
-    const char side = old_state->side;
-    orders_.erase(old_id);
-    if (!orders_.insert(new_id, {side, new_price, new_qty}))
-      orders_.insertOrAssign(new_id, {side, new_price, new_qty});
-  }
-
   books_.replaceOrder(locate, old_id, new_id, new_price, new_qty);
 }
 
 // 'B' (19 bytes)
 // [11-18] Match Number
-void ItchParser::handleBrokenTrade(std::span<const std::byte> msg,
-                                   uint16_t locate) {
+void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t) {
   if (msg.size() < 19) {
     return (void)fail("truncated broken trade");
   }
 
-  const uint64_t match_number = readU64BE(msg, 11);
-  const MatchEntry *entry = executions_by_match_.find(match_number);
-  if (entry == nullptr) {
-    return (void)skip();
-  }
-
-  const MatchEntry &m = *entry;
-
-  books_.reverseExecution(locate, m.order_id, m.price, m.executed_qty, m.side);
-
-  // Restore order-state cache if fully executed order came back
-  OrderState *order = orders_.find(m.order_id);
-  if (order == nullptr) {
-    if (!orders_.insert(m.order_id, {m.side, m.price, m.executed_qty})) {
-      orders_.insertOrAssign(m.order_id, {m.side, m.price, m.executed_qty});
-    }
-  } else {
-    order->qty += m.executed_qty;
-  }
-
-  executions_by_match_.erase(match_number);
+  // Match-number history is not tracked in the parser.
+  return (void)skip();
 }
 
 // 'R' (39 bytes) — Stock Directory
@@ -391,8 +329,6 @@ void ItchParser::reset() {
   channel_phase_ = ChannelPhase::WaitingStartOfMessages;
   last_message_skipped_ = false;
   last_error_.clear();
-  orders_.clear();
-  executions_by_match_.clear();
   prepared_book_by_locate_.fill(false);
 }
 
