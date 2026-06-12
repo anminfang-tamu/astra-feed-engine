@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <vector>
 
 namespace {
 
@@ -72,7 +73,7 @@ uint64_t indexToPrice(uint64_t reference_price, uint64_t tick_size,
   return reference_price >= ticks_below ? reference_price - ticks_below : 0;
 }
 
-bool appendOrder(FixedMmapArray<Order> &orders, PriceLevel &level,
+bool appendOrder(std::vector<Order> &orders, PriceLevel &level,
                  uint32_t order_idx) noexcept {
   if (order_idx >= orders.size())
     return false;
@@ -92,7 +93,7 @@ bool appendOrder(FixedMmapArray<Order> &orders, PriceLevel &level,
   return true;
 }
 
-bool unlinkOrder(FixedMmapArray<Order> &orders, PriceLevel &level,
+bool unlinkOrder(std::vector<Order> &orders, PriceLevel &level,
                  uint32_t order_idx) noexcept {
   if (order_idx >= orders.size() || level.num_orders == 0)
     return false;

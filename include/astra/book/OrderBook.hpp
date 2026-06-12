@@ -6,7 +6,6 @@
 #include "astra/book/Order.hpp"
 #include "astra/book/PriceLevel.hpp"
 #include "astra/channel/ChannelHealth.hpp"
-#include "astra/utils/FixedMmapArray.hpp"
 #include "astra/utils/OrderIdMap.hpp"
 #include "astra/utils/PriceBitmap.hpp"
 
@@ -61,7 +60,7 @@ private:
   uint64_t reference_price_;
   uint64_t tick_size_;
 
-  alignas(64) FixedMmapArray<Order> order_pool_;
+  alignas(64) std::vector<Order> order_pool_;
   std::vector<uint32_t> free_list_;
   size_t free_list_size_;
   size_t next_order_idx_;
