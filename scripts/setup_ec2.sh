@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 DATA_DIR="${DATA_DIR:-/data/itch/unzipped}"
@@ -167,6 +168,11 @@ init_submodules() {
 
 configure_project() {
   require_command cmake
+
+  if [[ ! -f "${ROOT_DIR}/CMakeLists.txt" ]]; then
+    echo "CMakeLists.txt was not found at repo root: ${ROOT_DIR}" >&2
+    exit 1
+  fi
 
   local generator="${CMAKE_GENERATOR:-Ninja}"
   if [[ "${generator}" == "Ninja" ]] && ! command -v ninja >/dev/null 2>&1; then
