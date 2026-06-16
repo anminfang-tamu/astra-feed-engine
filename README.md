@@ -24,7 +24,7 @@ packet processing/order-book update without collecting the per-stage breakdown.
 ```bash
 ASTRA_CPU_A=3 ASTRA_CPU_B=4 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.72.10 \
+  172.31.32.91 \
   9000 \
   9001 \
   20 \
