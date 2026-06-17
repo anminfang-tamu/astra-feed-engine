@@ -89,7 +89,7 @@ ITCH burst shape.
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
 ASTRA_PREMARKET_SECONDS=600 \
-ASTRA_SS_PAUSE_SECONDS=30 \
+ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
@@ -118,6 +118,11 @@ run_itch_ab_senders.sh \
 Timestamp-mode example using only positional arguments:
 
 ```bash
+ASTRA_CPU_A=3 \
+ASTRA_CPU_B=4 \
+ASTRA_PREMARKET_REPLAY_MODE=timestamp \
+ASTRA_PREMARKET_SPEEDUP=33 \
+ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
@@ -125,11 +130,7 @@ Timestamp-mode example using only positional arguments:
   9001 \
   20 \
   "ASTRA     " \
-  10000 \
-  0 \
-  30 \
-  timestamp \
-  33
+  10000
 ```
 
 ## Validation
@@ -152,23 +153,22 @@ baseline.
 
 ### Full-Day Flat Replay
 
-`recv`, A/B lines, `20` messages per packet, `ASTRA_PREMARKET_SECONDS=600`,
-`ASTRA_SS_PAUSE_SECONDS=30`.
+`recv`, A/B lines, `20` messages per packet, `ASTRA_PREMARKET_SECONDS=600`.
 
-| Post-`SQ` rate per line | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
-| ----------------------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
-|           `10000 pkt/s` | `Good` |      `0 / 0` |    `102437301` | `170 ns` | `570 ns` | `1535 ns` | `1935 ns` |
-|           `50000 pkt/s` | `Good` |      `0 / 0` |    `368366635` | `126 ns` | `296 ns` | `1103 ns` | `1695 ns` |
+| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
+| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
+|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |    `102437301` | `170 ns` | `570 ns` | `1535 ns` | `1935 ns` |
+|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `116 ns` | `310 ns` | `1023 ns` | `1775 ns` |
 
 ### Timestamp-Shaped Replay
 
 `recv`, A/B lines, `20` messages per packet,
-`ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`,
-`ASTRA_SS_PAUSE_SECONDS=30`, post-`SQ` rate `10000 pkt/s` per line.
+`ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`.
 
-| Status | Kernel drops | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
-| ------ | -----------: | -------------: | -------: | -------: | -------: | --------: |
-| `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` | `899 ns` | `3759 ns` |
+| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
+| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | -------: | --------: |
+|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` | `899 ns` | `3759 ns` |
+|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` | `870 ns` | `1423 ns` |
 
 The `max_ns` value in these runs includes the one-time `SS` book creation and
 warmup event, so use the percentile distribution and zero-drop validation when
