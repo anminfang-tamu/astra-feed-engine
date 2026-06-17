@@ -70,12 +70,6 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     const bool first_gap = channel_.status != ChannelHealth::GapDetected &&
                            channel_.status != ChannelHealth::Recovering;
 
-    if (first_gap) {
-      std::cout << "Gap meet expected_seq=" << expected
-                << " first_seq=" << first_seq << " msg_count=" << msg_count
-                << " gap_messages=" << (first_seq - expected) << "\n";
-    }
-
     const bool already_stale = channel_.status == ChannelHealth::Stale;
     channel_.status = ChannelHealth::GapDetected;
 
@@ -88,9 +82,6 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     if (!channel_.gap_buffer.insert(
             packet.data, static_cast<uint16_t>(packet.size), first_seq,
             msg_count, packet.receive_start_ticks)) {
-      std::cout << "Gap buffer insert failed expected_seq=" << expected
-                << " first_seq=" << first_seq << " msg_count=" << msg_count
-                << " gap_messages=" << (first_seq - expected) << "\n";
       channel_.status = ChannelHealth::Stale;
     }
 
@@ -172,8 +163,7 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(
         channel_.registerStockLocate(locate);
       }
 
-      parser_.handleMessage(
-          std::span<const std::byte>(data + offset, msg_len));
+      parser_.handleMessage(std::span<const std::byte>(data + offset, msg_len));
       channel_.phase = parser_.channelPhase();
       ++processed_messages;
     }

@@ -26,22 +26,39 @@ packet processing/order-book update without collecting the per-stage breakdown.
 
 ```bash
 ASTRA_CPU_A=3 ASTRA_CPU_B=4 \
-ASTRA_PREMARKET_SECONDS=600 \
+ASTRA_PREMARKET_REPLAY_MODE=timestamp \
+ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=30 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 9000 9001 20 "ASTRA     " 1000
+  172.31.32.91 9000 9001 20 "ASTRA     " 10000
+```
+
+```bash
+./scripts/run_itch_ab_senders.sh \
+  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  172.31.32.91 9000 9001 20 "ASTRA     " 10000 0 30 timestamp 33
+```
+
+```
+Speedup Examples:
+10  -> about 33 minutes
+33  -> about 10 minutes
+165 -> about 2 minutes
 ```
 
 Sender rate: `10000 pkt/s` per line, `20` ITCH messages per packet.
-Add an eighth argument, or set `ASTRA_PREMARKET_SECONDS`, to stretch the replay
-from ITCH `SS` (start of system hours) through `SQ` (start of market hours) into
-a compressed pre-market window. A ninth argument, or `ASTRA_SS_PAUSE_SECONDS`,
-adds a quiet pause immediately after sending `SS` so the receiver can finish
-book creation before pre-market order flow resumes. For example, append
-`120 10` to simulate that startup/premarket segment over two minutes with a
-10-second post-`SS` allocation pause while keeping the raw ITCH message order
-unchanged.
+For pre-market replay, `ASTRA_PREMARKET_REPLAY_MODE=timestamp` follows the ITCH
+timestamps between `SS` (start of system hours) and `SQ` (start of market hours)
+scaled by `ASTRA_PREMARKET_SPEEDUP`. For this sample file, `33` compresses the
+real 5.5-hour pre-market window to about 10 minutes while preserving its burst
+shape. `ASTRA_SS_PAUSE_SECONDS` adds a quiet pause immediately after sending
+`SS` so the receiver can finish book creation before pre-market order flow
+resumes.
+
+For a flat stress replay instead, set `ASTRA_PREMARKET_SECONDS`, or pass it as
+the eighth argument. A ninth argument controls the post-`SS` pause, the tenth
+argument controls replay mode, and the eleventh controls timestamp speedup.
 
 ### Health checks
 

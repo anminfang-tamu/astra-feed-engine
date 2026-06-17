@@ -235,9 +235,6 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
   }
-  std::cout << "ITCH R StockDirectory channel="
-            << static_cast<unsigned>(channel_id_) << " locate=" << locate
-            << " ticker=" << sym << "\n";
 
   astra::symbol::StockDirectoryEntry entry{};
   const std::size_t n = sym.size() < 8 ? sym.size() : 8;
@@ -272,9 +269,6 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
     break;
   case 'S':
-    std::cout << "ITCH SS SystemHoursStart channel="
-              << static_cast<unsigned>(channel_id_)
-              << " registered_symbols=" << symbols_.size() << "\n";
     handleSystemHoursStart();
     break;
   case 'Q':
