@@ -34,10 +34,12 @@ ASTRA_SS_PAUSE_SECONDS=30 \
   172.31.32.91 9000 9001 20 "ASTRA     " 10000
 ```
 
-```bash
-./scripts/run_itch_ab_senders.sh \
-  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 9000 9001 20 "ASTRA     " 10000 0 30 timestamp 33
+```
+timestamp mode: preserve real ITCH premarket burst shape
+speedup=33: compress 5.5 hours to about 10 minutes
+ss_pause=30: give engine 30s after SS to allocate books
+10000: post-SQ normal packet rate per line
+
 ```
 
 ```
@@ -92,6 +94,11 @@ symbols=8713
 engine_stats channel_next_seq=368366635 channel_status=1 channel_status_name=Good
 rx_stats line_a_packets=18418332 line_b_packets=18418332 line_a_errors=0 line_b_errors=0 line_a_truncated=0 line_b_truncated=0 drop_metrics=on line_a_kernel_drops=0 line_b_kernel_drops=0
 latency count=368366634 invalid=0 min_ns=19 max_ns=785261060 mean_ns=180.31 p50_ns=126 p90_ns=188 p99_ns=296 p99.9_ns=1103 p99.99_ns=1695
+8. Real world Simulation with ITCH Timestamp
+symbols=8713
+engine_stats channel_next_seq=48386301 channel_status=1 channel_status_name=Good
+rx_stats line_a_packets=2419313 line_b_packets=2419315 line_a_errors=0 line_b_errors=0 line_a_truncated=0 line_b_truncated=0 drop_metrics=on line_a_kernel_drops=0 line_b_kernel_drops=0
+latency count=48386020 invalid=0 min_ns=21 max_ns=775620324 mean_ns=475.62 p50_ns=138 p90_ns=171 p99_ns=320 p99.9_ns=899 p99.99_ns=3759
 
 ```
 
