@@ -165,10 +165,11 @@ baseline.
 `recv`, A/B lines, `20` messages per packet,
 `ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`.
 
-| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | -------: | --------: |
-|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` | `899 ns` | `3759 ns` |
-|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` | `870 ns` | `1423 ns` |
+| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
+| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
+|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` |  `899 ns` | `3759 ns` |
+|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` |  `870 ns` | `1423 ns` |
+|          `100000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `150 ns` | `541 ns` | `1727 ns` | `2127 ns` |
 
 The `max_ns` value in these runs includes the one-time `SS` book creation and
 warmup event, so use the percentile distribution and zero-drop validation when
