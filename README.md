@@ -22,23 +22,29 @@ For packet-level latency only, leave `ASTRA_LATENCY_METRICS=on` and set
 packet processing/order-book update without collecting the per-stage breakdown.
 
 ```bash
-ASTRA_CPU_A=3 ASTRA_CPU_B=4 ./scripts/run_itch_ab_senders.sh \
+ASTRA_CPU_A=3 \
+ASTRA_CPU_B=4 \
+ASTRA_PREMARKET_SECONDS=60 \
+ASTRA_SS_PAUSE_SECONDS=10 \
+./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
   9000 \
   9001 \
   20 \
   "ASTRA     " \
-  10000 \
-  60
+  1000
 ```
 
 Sender rate: `10000 pkt/s` per line, `20` ITCH messages per packet.
 Add an eighth argument, or set `ASTRA_PREMARKET_SECONDS`, to stretch the replay
 from ITCH `SS` (start of system hours) through `SQ` (start of market hours) into
-a compressed pre-market window. For example, append `120` to simulate that
-startup/premarket segment over two minutes while keeping the raw ITCH message
-order unchanged.
+a compressed pre-market window. A ninth argument, or `ASTRA_SS_PAUSE_SECONDS`,
+adds a quiet pause immediately after sending `SS` so the receiver can finish
+book creation before pre-market order flow resumes. For example, append
+`120 10` to simulate that startup/premarket segment over two minutes with a
+10-second post-`SS` allocation pause while keeping the raw ITCH message order
+unchanged.
 
 ### Health checks
 

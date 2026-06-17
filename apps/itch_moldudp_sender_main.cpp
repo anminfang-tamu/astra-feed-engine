@@ -149,10 +149,11 @@ std::chrono::nanoseconds intervalFor(uint64_t seconds, uint64_t packets) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    if (argc < 4 || argc > 8) {
+    if (argc < 4 || argc > 9) {
         std::cerr << "Usage: " << argv[0]
                   << " <NASDAQ_ITCH50> <dest-ip> <port>"
-                     " [msgs_per_packet] [session] [pkt/s] [premarket_seconds]\n"
+                     " [msgs_per_packet] [session] [pkt/s] [premarket_seconds]"
+                     " [ss_pause_seconds]\n"
                   << "  msgs_per_packet  ITCH messages bundled per UDP datagram"
                      " (default " << ItchMoldUdpSource::kDefaultMsgsPerPacket << ")\n"
                   << "  session          10-char MoldUDP64 session id"
@@ -160,7 +161,10 @@ int main(int argc, char *argv[]) {
                   << "  pkt/s            packet rate limit; 0 = max speed\n"
                   << "  premarket_seconds"
                      "  stretch traffic after SS until SQ to this duration;"
-                     " 0 = disabled (default, or ASTRA_PREMARKET_SECONDS)\n";
+                     " 0 = disabled (default, or ASTRA_PREMARKET_SECONDS)\n"
+                  << "  ss_pause_seconds"
+                     "  pause after sending SS before premarket pacing starts;"
+                     " 0 = disabled (default, or ASTRA_SS_PAUSE_SECONDS)\n";
         return EXIT_FAILURE;
     }
 
@@ -175,6 +179,9 @@ int main(int argc, char *argv[]) {
     const uint64_t    premarket_seconds =
         argc >= 8 ? parseU64(argv[7], 0)
                   : parseU64(std::getenv("ASTRA_PREMARKET_SECONDS"), 0);
+    const uint64_t    ss_pause_seconds =
+        argc >= 9 ? parseU64(argv[8], 0)
+                  : parseU64(std::getenv("ASTRA_SS_PAUSE_SECONDS"), 0);
 
     try {
         if (const char *cpu_env = std::getenv("ASTRA_CPU")) {
@@ -223,6 +230,8 @@ int main(int argc, char *argv[]) {
                           << " premarket_window=not-found";
             }
         }
+        if (ss_pause_seconds > 0)
+            std::cout << "  ss_pause_seconds=" << ss_pause_seconds;
         std::cout << "\n  (press Ctrl+C to stop)\n";
 
         const auto interval =
@@ -263,6 +272,10 @@ int main(int argc, char *argv[]) {
             }
 
             if (contains_ss && !premarket_active) {
+                if (ss_pause_seconds > 0) {
+                    std::this_thread::sleep_for(
+                        std::chrono::seconds(ss_pause_seconds));
+                }
                 premarket_active = true;
                 next_premarket_send = std::chrono::steady_clock::now();
             }
