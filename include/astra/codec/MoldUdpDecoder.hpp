@@ -3,10 +3,10 @@
 #include "astra/channel/ChannelState.hpp"
 #include "astra/codec/DecodeResult.hpp"
 #include "astra/codec/IPacketProcessor.hpp"
+#include "astra/parser/ItchParser.hpp"
 #include "astra/protocol/PacketHeader.hpp"
-#include "astra/protocol/SymbolTable.hpp"
 #include "astra/source/PacketView.hpp"
-#include "replay/itch/ItchParser.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,13 +16,12 @@
 // No intermediate structs — raw bytes go straight to the order book.
 class MoldUdpDecoder : public IPacketProcessor {
 public:
-  explicit MoldUdpDecoder(SymbolTable &symbols, BookManager &books,
-                          uint8_t channel_id = 0);
+  explicit MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
+                          BookManager &books, uint8_t channel_id = 0);
 
   DecodeResult processPacket(const PacketView &packet) override;
   const DecodeStageTiming *lastStageTiming() const noexcept override;
   void setStageTimingEnabled(bool enabled) noexcept;
-  void setStockDirectoryWarmup(bool prepare_books, bool touch_pages) noexcept;
   const ChannelState &channelState() const noexcept { return channel_; }
   ChannelState &channelState() noexcept { return channel_; }
 
@@ -33,8 +32,9 @@ private:
 
   DecodeResult processSequencedPacket(const std::byte *data, std::size_t size,
                                       uint64_t first_seq, uint16_t msg_count,
-                                      uint64_t start_seq);
-  void drainGapBuffer();
+                                      uint64_t start_seq,
+                                      uint64_t receive_start_ticks);
+  DecodeResult drainGapBuffer();
 
   bool first_packet_seen_{false};
   // bool stage_timing_enabled_{false};

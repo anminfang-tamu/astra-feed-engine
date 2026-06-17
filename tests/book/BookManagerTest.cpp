@@ -1,6 +1,7 @@
 #include "astra/book/BookManager.hpp"
+#include "astra/book/BookCapacity.hpp"
 #include "astra/book/TopOfBook.hpp"
-#include "astra/protocol/OrderSide.hpp"
+#include "astra/symbol/SymbolTier.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,8 +12,8 @@ TEST(BookManagerTest, UnknownLocateReturnsNull) {
 
 TEST(BookManagerTest, RoutesOrdersByStockLocate) {
   BookManager manager;
-  manager.addOrder(7,  1, 100, 10, OrderSide::Buy);
-  manager.addOrder(9,  2, 200, 20, OrderSide::Sell);
+  manager.addOrder(7,  1, 100, 10, 'B');
+  manager.addOrder(9,  2, 200, 20, 'S');
 
   const OrderBook *book7 = manager.getOrderBook(7);
   const OrderBook *book9 = manager.getOrderBook(9);
@@ -43,7 +44,7 @@ TEST(BookManagerTest, DeleteForUnknownLocateIsIgnored) {
 
 TEST(BookManagerTest, DeleteRemovesOrder) {
   BookManager manager;
-  manager.addOrder(1, 10, 50, 100, OrderSide::Buy);
+  manager.addOrder(1, 10, 50, 100, 'B');
   manager.deleteOrder(1, 10);
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
@@ -53,7 +54,7 @@ TEST(BookManagerTest, DeleteRemovesOrder) {
 
 TEST(BookManagerTest, CancelSharesReducesQuantity) {
   BookManager manager;
-  manager.addOrder(1, 10, 50, 100, OrderSide::Buy);
+  manager.addOrder(1, 10, 50, 100, 'B');
   manager.cancelShares(1, 10, 60); // 100 - 60 = 40 remaining
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
@@ -63,8 +64,8 @@ TEST(BookManagerTest, CancelSharesReducesQuantity) {
 
 TEST(BookManagerTest, TradeReducesQuantity) {
   BookManager manager;
-  manager.addOrder(1, 10, 50, 100, OrderSide::Buy);
-  manager.trade(1, 10, 30);
+  manager.addOrder(1, 10, 50, 100, 'B');
+  EXPECT_TRUE(manager.trade(1, 10, 30));
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
   EXPECT_EQ(top.bid_price, 50u);
@@ -73,7 +74,7 @@ TEST(BookManagerTest, TradeReducesQuantity) {
 
 TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
   BookManager manager;
-  manager.addOrder(1, 10, 50, 100, OrderSide::Buy);
+  manager.addOrder(1, 10, 50, 100, 'B');
   manager.replaceOrder(1, 10, 20, 60, 75); // old=10 → new=20 at price 60 qty 75
 
   const TopOfBook top = manager.getOrderBook(1)->getTopOfBook();
@@ -83,40 +84,39 @@ TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
 
 TEST(BookManagerTest, ZeroLocateIsIgnored) {
   BookManager manager;
-  manager.addOrder(0, 1, 100, 50, OrderSide::Buy); // locate 0 is invalid
+  manager.addOrder(0, 1, 100, 50, 'B'); // locate 0 is invalid
   EXPECT_EQ(manager.getOrderBook(0), nullptr);
 }
 
-TEST(BookManagerTest, AppliesConfiguredSymbolCapacityBeforeBookCreation) {
+TEST(BookManagerTest, AppliesConfiguredBookCapacityBeforeBookCreation) {
   BookManager manager;
-  manager.setSymbolTier(7, astra::capacity::SymbolTier::Active);
+  manager.setBookCapacityTier(7, astra::symbol::SymbolTier::Active);
 
-  manager.addOrder(7, 1, 100, 10, OrderSide::Buy);
+  manager.addOrder(7, 1, 100, 10, 'B');
 
   const OrderBook *book = manager.getOrderBook(7);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
+  EXPECT_EQ(book->orderCapacity(), astra::book_capacity::kActiveOrderCapacity);
 }
 
-TEST(BookManagerTest, PrepareBookCreatesEmptyBookWithConfiguredCapacity) {
+TEST(BookManagerTest, GetOrCreateCreatesEmptyBookWithConfiguredCapacity) {
   BookManager manager;
-  manager.setSymbolTier(7, astra::capacity::SymbolTier::Active);
+  manager.setBookCapacityTier(7, astra::symbol::SymbolTier::Active);
 
-  manager.prepareBook(7, /*channel_id=*/2);
+  (void)manager.getOrCreate(7);
 
   const OrderBook *book = manager.getOrderBook(7);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kActiveOrderCapacity);
-  EXPECT_EQ(book->channelId(), 2u);
+  EXPECT_EQ(book->orderCapacity(), astra::book_capacity::kActiveOrderCapacity);
   EXPECT_EQ(book->liveOrderCount(), 0u);
 }
 
 TEST(BookManagerTest, UsesDefaultCapacityForUntieredSymbols) {
   BookManager manager;
 
-  manager.addOrder(8, 1, 100, 10, OrderSide::Buy);
+  manager.addOrder(8, 1, 100, 10, 'B');
 
   const OrderBook *book = manager.getOrderBook(8);
   ASSERT_NE(book, nullptr);
-  EXPECT_EQ(book->orderCapacity(), astra::capacity::kDefaultOrderCapacity);
+  EXPECT_EQ(book->orderCapacity(), astra::book_capacity::kDefaultOrderCapacity);
 }

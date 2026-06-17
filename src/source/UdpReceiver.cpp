@@ -4,6 +4,8 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -23,6 +25,13 @@ inline bool is_multicast(const struct in_addr &addr) noexcept {
 // Helper that throws a runtime_error with errno context.
 [[noreturn]] void throw_errno(const char *what) {
   throw std::runtime_error(std::string(what) + ": " + std::strerror(errno));
+}
+
+bool env_flag_enabled(const char *value) noexcept {
+  if (value == nullptr)
+    return false;
+  return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+         std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0;
 }
 
 } // namespace
@@ -64,6 +73,15 @@ UdpReceiver::UdpReceiver(const char *ip, uint16_t port) {
   // wakeups. Silently no-op on older kernels.
   int prefer = 1;
   ::setsockopt(fd_, SOL_SOCKET, SO_PREFER_BUSY_POLL, &prefer, sizeof(prefer));
+#endif
+
+#ifdef SO_RXQ_OVFL
+  drop_metrics_enabled_ =
+      env_flag_enabled(std::getenv("ASTRA_UDP_DROP_METRICS"));
+  if (drop_metrics_enabled_) {
+    int overflow = 1;
+    ::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
+  }
 #endif
 
 #ifdef SO_INCOMING_CPU
@@ -114,6 +132,13 @@ UdpReceiver::~UdpReceiver() {
 }
 
 bool UdpReceiver::next(PacketView &packet) noexcept {
+  const uint64_t receive_start_ticks = rdtsc();
+
+#ifdef __linux__
+  if (drop_metrics_enabled_)
+    return nextWithDropMetrics(packet, receive_start_ticks);
+#endif
+
   // MSG_DONTWAIT — explicit non-blocking on this call (belt-and-braces with
   // O_NONBLOCK). MSG_TRUNC   — return the original packet length even if it
   // exceeded our buffer,
@@ -135,15 +160,75 @@ bool UdpReceiver::next(PacketView &packet) noexcept {
   std::size_t size = static_cast<std::size_t>(n);
   if (size > sizeof(buf_)) [[unlikely]] {
     // Packet was larger than our buffer; we got the truncated bytes.
-    // Count it and clamp size to what we actually have.
-    // ++truncated_count_;
-    // size = sizeof(buf_);
+    ++truncated_count_;
     return false;
   }
 
   packet.data = buf_;
   packet.size = size;
-  packet.receive_ts_ns =
-      nowNs(); // keep your existing time source; swap to TSC later
+  packet.receive_start_ticks = receive_start_ticks;
   return true;
 }
+
+#ifdef __linux__
+bool UdpReceiver::nextWithDropMetrics(PacketView &packet,
+                                      uint64_t receive_start_ticks) noexcept {
+  struct iovec iov{};
+  iov.iov_base = buf_;
+  iov.iov_len = sizeof(buf_);
+
+  control_.fill(std::byte{0});
+  struct msghdr msg{};
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control_.data();
+  msg.msg_controllen = control_.size();
+
+  const ssize_t n = ::recvmsg(fd_, &msg, MSG_DONTWAIT | MSG_TRUNC);
+
+  if (n < 0) [[unlikely]] {
+    const int e = errno;
+    if (e != EAGAIN && e != EWOULDBLOCK && e != EINTR) {
+      ++error_count_;
+    }
+    return false;
+  }
+
+  recordKernelDrops(msg);
+
+  std::size_t size = static_cast<std::size_t>(n);
+  if (size > sizeof(buf_)) [[unlikely]] {
+    ++truncated_count_;
+    return false;
+  }
+
+  packet.data = buf_;
+  packet.size = size;
+  packet.receive_start_ticks = receive_start_ticks;
+  return true;
+}
+
+void UdpReceiver::recordKernelDrops(const struct msghdr &msg) noexcept {
+#ifdef SO_RXQ_OVFL
+  for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr;
+       cmsg = CMSG_NXTHDR(const_cast<struct msghdr *>(&msg), cmsg)) {
+    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SO_RXQ_OVFL)
+      continue;
+
+    uint32_t kernel_drop_count = 0;
+    std::memcpy(&kernel_drop_count, CMSG_DATA(cmsg), sizeof(kernel_drop_count));
+    if (kernel_drop_count >= last_kernel_drop_count_) {
+      kernel_drop_count_ += kernel_drop_count - last_kernel_drop_count_;
+    } else {
+      kernel_drop_count_ +=
+          static_cast<uint64_t>(UINT_MAX - last_kernel_drop_count_) +
+          kernel_drop_count + 1u;
+    }
+    last_kernel_drop_count_ = kernel_drop_count;
+    return;
+  }
+#else
+  (void)msg;
+#endif
+}
+#endif

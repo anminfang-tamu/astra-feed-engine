@@ -1,5 +1,7 @@
 #include "replay/itch/ItchMoldUdpSource.hpp"
 
+#include "astra/core/Time.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +37,7 @@ ItchMoldUdpSource::ItchMoldUdpSource(const std::string &path,
 
 bool ItchMoldUdpSource::next(PacketView &packet) {
     packet = PacketView{};
+    packet.receive_start_ticks = rdtsc();
     if (eof_) return false;
 
     const uint64_t first_seq = next_seq_;

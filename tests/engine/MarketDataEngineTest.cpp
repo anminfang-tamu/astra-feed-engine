@@ -33,7 +33,7 @@ class ScriptedProcessor : public IPacketProcessor {
 public:
   DecodeResult processPacket(const PacketView &) override {
     ++process_calls_;
-    return process_calls_ == 1 ? DecodeResult{DecodeStatus::Ok}
+    return process_calls_ == 1 ? DecodeResult{DecodeStatus::Ok, false, 40, 2}
                                : DecodeResult{DecodeStatus::EndOfStream};
   }
 
@@ -104,7 +104,7 @@ TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
   engine.run();
 
   EXPECT_EQ(processor.processCalls(), 2);
-  EXPECT_EQ(latency_recorder.count(), 1u);
+  EXPECT_EQ(latency_recorder.count(), 2u);
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
 }
 
@@ -136,6 +136,6 @@ TEST(MarketDataEngineTest, StageLatencyModeDoesNotReadStageTiming) {
   engine.run();
 
   EXPECT_EQ(processor.processCalls(), 2);
-  EXPECT_EQ(latency_recorder.count(), 1u);
+  EXPECT_EQ(latency_recorder.count(), 2u);
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
 }

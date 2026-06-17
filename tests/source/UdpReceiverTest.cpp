@@ -69,7 +69,7 @@ TEST_F(UdpReceiverTest, ReceivesUnicastPacket) {
   EXPECT_EQ(std::memcmp(pkt.data, payload, sizeof(payload)), 0);
 }
 
-TEST_F(UdpReceiverTest, ReceiveTimestampIsNonZero) {
+TEST_F(UdpReceiverTest, ReceiveStartTicksAreNonZero) {
   UdpReceiver rx("127.0.0.1", kPort);
 
   const char payload[] = "ts";
@@ -77,7 +77,7 @@ TEST_F(UdpReceiverTest, ReceiveTimestampIsNonZero) {
 
   PacketView pkt = spin_next(rx);
 
-  EXPECT_GT(pkt.receive_ts_ns, 0u);
+  EXPECT_GT(pkt.receive_start_ticks, 0u);
 }
 
 TEST_F(UdpReceiverTest, MultiplePacketsReceivedInOrder) {

@@ -13,6 +13,10 @@ PORT_B="${4:-9001}"
 MSGS_PER_PACKET="${5:-20}"
 SESSION="${6:-ASTRA     }"
 PKTS_PER_SECOND="${7:-5000}"
+PREMARKET_SECONDS="${8:-${ASTRA_PREMARKET_SECONDS:-0}}"
+SS_PAUSE_SECONDS="${9:-${ASTRA_SS_PAUSE_SECONDS:-0}}"
+PREMARKET_REPLAY_MODE="${10:-${ASTRA_PREMARKET_REPLAY_MODE:-}}"
+PREMARKET_SPEEDUP="${11:-${ASTRA_PREMARKET_SPEEDUP:-1}}"
 CPU_A="${ASTRA_CPU_A:-}"
 CPU_B="${ASTRA_CPU_B:-}"
 
@@ -50,22 +54,27 @@ echo "  file=${ITCH_FILE}"
 echo "  line_a=${DEST_IP}:${PORT_A}"
 echo "  line_b=${DEST_IP}:${PORT_B}"
 echo "  msgs_per_packet=${MSGS_PER_PACKET} session='${SESSION}' rate=${PKTS_PER_SECOND} pkt/s per line"
+echo "  premarket_seconds=${PREMARKET_SECONDS}"
+echo "  ss_pause_seconds=${SS_PAUSE_SECONDS}"
+if [[ -n "${PREMARKET_REPLAY_MODE}" ]]; then
+  echo "  premarket_replay_mode=${PREMARKET_REPLAY_MODE} premarket_speedup=${PREMARKET_SPEEDUP}"
+fi
 if [[ -n "${CPU_A}" || -n "${CPU_B}" ]]; then
   echo "  cpu_a=${CPU_A:-unset} cpu_b=${CPU_B:-unset}"
 fi
 echo "  press Ctrl+C to stop both"
 
 if [[ -n "${CPU_A}" ]]; then
-  ASTRA_CPU="${CPU_A}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+  ASTRA_CPU="${CPU_A}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" "${PREMARKET_SECONDS}" "${SS_PAUSE_SECONDS}" "${PREMARKET_REPLAY_MODE}" "${PREMARKET_SPEEDUP}" &
 else
-  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_A}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" "${PREMARKET_SECONDS}" "${SS_PAUSE_SECONDS}" "${PREMARKET_REPLAY_MODE}" "${PREMARKET_SPEEDUP}" &
 fi
 pids+=("$!")
 
 if [[ -n "${CPU_B}" ]]; then
-  ASTRA_CPU="${CPU_B}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+  ASTRA_CPU="${CPU_B}" "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" "${PREMARKET_SECONDS}" "${SS_PAUSE_SECONDS}" "${PREMARKET_REPLAY_MODE}" "${PREMARKET_SPEEDUP}" &
 else
-  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" &
+  "${BINARY}" "${ITCH_FILE}" "${DEST_IP}" "${PORT_B}" "${MSGS_PER_PACKET}" "${SESSION}" "${PKTS_PER_SECOND}" "${PREMARKET_SECONDS}" "${SS_PAUSE_SECONDS}" "${PREMARKET_REPLAY_MODE}" "${PREMARKET_SPEEDUP}" &
 fi
 pids+=("$!")
 

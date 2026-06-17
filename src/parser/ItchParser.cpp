@@ -1,8 +1,9 @@
-#include "replay/itch/ItchParser.hpp"
+#include "astra/parser/ItchParser.hpp"
 #include "astra/book/BookCapacity.hpp"
 #include "astra/core/Time.hpp"
 
 #include <cstring>
+#include <iostream>
 #include <string_view>
 
 namespace {
@@ -132,12 +133,7 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
 
   if (!symbols_.isRegistered(locate)) {
-    const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
-    if (!t.empty()) {
-      symbols_.setTicker(locate, t);
-      books_.setBookCapacityTier(locate,
-                                 astra::book_capacity::tierForTicker(t));
-    }
+    return (void)skip();
   }
 
   books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
@@ -162,6 +158,7 @@ void ItchParser::handleExecution(std::span<const std::byte> msg,
   if (!books_.trade(locate, order_id, executed_qty)) {
     return (void)skip();
   }
+  // Execution part will be implemented later
 }
 
 // 'X' (23 bytes)
@@ -253,9 +250,6 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
   books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
-  if (channel_phase_ == ChannelPhase::SystemHours) {
-    createRegisteredBook(locate);
-  }
 }
 
 // 'S' (12 bytes) — System Event
@@ -316,8 +310,8 @@ void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
 }
 
 void ItchParser::createRegisteredBooks() noexcept {
-  for (uint16_t locate = 1;
-       locate < astra::symbol::StockDirectory::kMaxLocate; ++locate) {
+  for (uint16_t locate = 1; locate < astra::symbol::StockDirectory::kMaxLocate;
+       ++locate) {
     createRegisteredBook(locate);
   }
 }
