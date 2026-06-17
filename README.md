@@ -29,10 +29,16 @@ ASTRA_CPU_A=3 ASTRA_CPU_B=4 ./scripts/run_itch_ab_senders.sh \
   9001 \
   20 \
   "ASTRA     " \
-  10000
+  10000 \
+  60
 ```
 
 Sender rate: `10000 pkt/s` per line, `20` ITCH messages per packet.
+Add an eighth argument, or set `ASTRA_PREMARKET_SECONDS`, to stretch the replay
+from ITCH `SS` (start of system hours) through `SQ` (start of market hours) into
+a compressed pre-market window. For example, append `120` to simulate that
+startup/premarket segment over two minutes while keeping the raw ITCH message
+order unchanged.
 
 ### Health checks
 
