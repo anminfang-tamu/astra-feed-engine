@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 DATA_DIR="${DATA_DIR:-/data/itch/unzipped}"
+NUMA_IFACE="${NUMA_IFACE:-}"
 
 RUN_APT=1
 RUN_SUBMODULES=1
@@ -14,6 +15,8 @@ RUN_BUILD=1
 RUN_TESTS=0
 BUILD_TESTS=1
 CREATE_DATA_DIR=1
+RUN_NUMA_REPORT=1
+APPLY_NUMA_TUNING=0
 
 usage() {
   cat <<'USAGE'
@@ -29,13 +32,16 @@ Options:
   --no-tests           Configure without building tests.
   --run-tests          Run ctest after building.
   --no-data-dir        Do not create /data/itch/unzipped.
+  --no-numa-report     Skip NUMA topology report.
+  --numa-iface IFACE   Network interface for NUMA lookup, default auto-detect.
+  --apply-numa-tuning  Disable automatic NUMA balancing for the current boot.
   --build-dir DIR      Override build directory.
   --build-type TYPE    CMake build type, default Release.
   --data-dir DIR       Data directory to create, default /data/itch/unzipped.
   -h, --help           Show this help.
 
 Environment overrides:
-  BUILD_DIR, BUILD_TYPE, DATA_DIR, CMAKE_GENERATOR
+  BUILD_DIR, BUILD_TYPE, DATA_DIR, CMAKE_GENERATOR, NUMA_IFACE
 USAGE
 }
 
@@ -63,6 +69,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-data-dir)
       CREATE_DATA_DIR=0
+      ;;
+    --no-numa-report)
+      RUN_NUMA_REPORT=0
+      ;;
+    --numa-iface)
+      NUMA_IFACE="${2:?missing value for --numa-iface}"
+      shift
+      ;;
+    --apply-numa-tuning)
+      APPLY_NUMA_TUNING=1
       ;;
     --build-dir)
       BUILD_DIR="${2:?missing value for --build-dir}"
@@ -120,6 +136,7 @@ install_apt_packages() {
     gdb
     git
     libgtest-dev
+    iproute2
     ninja-build
     pkg-config
     unzip
@@ -154,6 +171,100 @@ create_data_dir() {
   if id "${owner}" >/dev/null 2>&1; then
     sudo chown "${owner}:${owner}" "${DATA_DIR}"
   fi
+}
+
+detect_default_iface() {
+  if ! command -v ip >/dev/null 2>&1; then
+    return 1
+  fi
+
+  ip route get 1.1.1.1 2>/dev/null |
+    awk '{for (i = 1; i <= NF; ++i) if ($i == "dev") {print $(i + 1); exit}}'
+}
+
+cpus_for_numa_node() {
+  local node="$1"
+
+  if ! command -v lscpu >/dev/null 2>&1; then
+    return 0
+  fi
+
+  lscpu -p=CPU,NODE 2>/dev/null |
+    awk -F, -v node="${node}" '
+      $1 !~ /^#/ && $2 == node {
+        cpus = cpus ? cpus "," $1 : $1
+      }
+      END { print cpus }
+    '
+}
+
+report_numa_topology() {
+  log "NUMA topology"
+
+  if command -v numactl >/dev/null 2>&1; then
+    numactl --hardware || true
+  else
+    echo "numactl was not found; install apt packages or run without --no-apt." >&2
+  fi
+
+  if command -v lscpu >/dev/null 2>&1; then
+    lscpu -e=CPU,NODE,SOCKET,CORE,ONLINE || true
+  else
+    echo "lscpu was not found; CPU-to-NUMA mapping is unavailable." >&2
+  fi
+
+  local iface="${NUMA_IFACE}"
+  if [[ -z "${iface}" ]]; then
+    iface="$(detect_default_iface || true)"
+  fi
+
+  if [[ -n "${iface}" ]]; then
+    echo "Network interface: ${iface}"
+
+    local numa_node_path="/sys/class/net/${iface}/device/numa_node"
+    if [[ -r "${numa_node_path}" ]]; then
+      local numa_node
+      numa_node="$(<"${numa_node_path}")"
+      echo "Interface NUMA node: ${numa_node}"
+
+      if [[ "${numa_node}" =~ ^[0-9]+$ ]]; then
+        local cpus
+        cpus="$(cpus_for_numa_node "${numa_node}")"
+        if [[ -n "${cpus}" ]]; then
+          echo "CPUs on interface node: ${cpus}"
+        fi
+      elif [[ "${numa_node}" == "-1" ]]; then
+        echo "Interface does not report a NUMA node; choose from lscpu output."
+      fi
+    else
+      echo "Interface NUMA node not available at ${numa_node_path}."
+    fi
+  else
+    echo "Could not auto-detect the default network interface. Use --numa-iface IFACE."
+  fi
+
+  cat <<'EOF'
+
+NUMA runtime knobs:
+  ASTRA_NUMA_NODE=<node>       Enable numactl in repo run scripts.
+  ASTRA_NUMA_MEM_POLICY=...    membind (default), localalloc, preferred, or none.
+  ASTRA_CPU=<cpu>              Pin md_engine to a CPU from the selected node.
+  ASTRA_CPU_A/B=<cpu>          Pin A/B senders to CPUs from the selected node.
+
+Pick a CPU from the same NUMA node as the receiving network interface.
+EOF
+}
+
+apply_numa_tuning() {
+  log "Applying NUMA tuning"
+
+  if [[ ! -e /proc/sys/kernel/numa_balancing ]]; then
+    echo "kernel.numa_balancing is not available on this host; skipping." >&2
+    return
+  fi
+
+  require_command sudo
+  sudo sysctl -w kernel.numa_balancing=0
 }
 
 init_submodules() {
@@ -212,6 +323,14 @@ run_tests() {
 main() {
   if [[ "${RUN_APT}" -eq 1 ]]; then
     install_apt_packages
+  fi
+
+  if [[ "${APPLY_NUMA_TUNING}" -eq 1 ]]; then
+    apply_numa_tuning
+  fi
+
+  if [[ "${RUN_NUMA_REPORT}" -eq 1 ]]; then
+    report_numa_topology
   fi
 
   if [[ "${CREATE_DATA_DIR}" -eq 1 ]]; then

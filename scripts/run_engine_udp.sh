@@ -6,8 +6,106 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/md_engine"
 
-LISTEN_IP="${1:-127.0.0.1}"
-PORT="${2:-9001}"
+NUMA_NODE="${ASTRA_NUMA_NODE:-}"
+NUMA_MEM_POLICY="${ASTRA_NUMA_MEM_POLICY:-membind}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/run_engine_udp.sh
+  ./scripts/run_engine_udp.sh --help
+  ./scripts/run_engine_udp.sh <ip>
+  ./scripts/run_engine_udp.sh <ip> <port> [channel_id]
+  ./scripts/run_engine_udp.sh <ip_a> <port_a> <ip_b> <port_b> [channel_id]
+
+Default: dual-feed A/B receiver on 0.0.0.0:9000 and 0.0.0.0:9001.
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+case "$#" in
+  0)
+    ENGINE_ARGS=(0.0.0.0 9000 0.0.0.0 9001)
+    ;;
+  1)
+    ENGINE_ARGS=("$1" 9000 "$1" 9001)
+    ;;
+  2|3|4|5)
+    ENGINE_ARGS=("$@")
+    ;;
+  *)
+    echo "Invalid arguments." >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+warn_cpu_numa_mismatch() {
+  local cpu="$1"
+
+  if [[ -z "${cpu}" || -z "${NUMA_NODE}" ]]; then
+    return
+  fi
+
+  if ! command -v lscpu >/dev/null 2>&1; then
+    return
+  fi
+
+  local cpu_node
+  cpu_node="$(
+    lscpu -p=CPU,NODE 2>/dev/null |
+      awk -F, -v cpu="${cpu}" '$1 !~ /^#/ && $1 == cpu {print $2; exit}'
+  )"
+
+  if [[ -n "${cpu_node}" && "${cpu_node}" != "${NUMA_NODE}" ]]; then
+    echo "Warning: ASTRA_CPU=${cpu} is on NUMA node ${cpu_node}, not ${NUMA_NODE}." >&2
+  fi
+}
+
+build_numa_command() {
+  local cpu="${1:-}"
+  NUMA_CMD=()
+
+  if [[ -z "${NUMA_NODE}" ]]; then
+    return
+  fi
+
+  if ! command -v numactl >/dev/null 2>&1; then
+    echo "ASTRA_NUMA_NODE is set, but numactl was not found." >&2
+    exit 1
+  fi
+
+  NUMA_CMD=(numactl)
+  if [[ -n "${cpu}" ]]; then
+    warn_cpu_numa_mismatch "${cpu}"
+    NUMA_CMD+=("--physcpubind=${cpu}")
+  else
+    NUMA_CMD+=("--cpunodebind=${NUMA_NODE}")
+  fi
+
+  case "${NUMA_MEM_POLICY}" in
+    membind)
+      NUMA_CMD+=("--membind=${NUMA_NODE}")
+      ;;
+    localalloc)
+      NUMA_CMD+=(--localalloc)
+      ;;
+    preferred)
+      NUMA_CMD+=("--preferred=${NUMA_NODE}")
+      ;;
+    none)
+      ;;
+    *)
+      echo "Unknown ASTRA_NUMA_MEM_POLICY: ${NUMA_MEM_POLICY}" >&2
+      echo "Expected membind, localalloc, preferred, or none." >&2
+      exit 2
+      ;;
+  esac
+}
 
 if [[ ! -x "${BINARY}" ]]; then
   echo "md_engine not found — configuring and building..."
@@ -15,5 +113,10 @@ if [[ ! -x "${BINARY}" ]]; then
   cmake --build "${BUILD_DIR}" --target md_engine -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
 fi
 
-echo "Starting engine on ${LISTEN_IP}:${PORT} — press Ctrl+C to stop"
-exec "${BINARY}" "${LISTEN_IP}" "${PORT}"
+build_numa_command "${ASTRA_CPU:-}"
+
+echo "Starting engine: ${ENGINE_ARGS[*]} — press Ctrl+C to stop"
+if [[ -n "${NUMA_NODE}" ]]; then
+  echo "  numa_node=${NUMA_NODE} numa_mem_policy=${NUMA_MEM_POLICY}"
+fi
+exec "${NUMA_CMD[@]}" "${BINARY}" "${ENGINE_ARGS[@]}"

@@ -23,11 +23,41 @@ ASTRA_CPU=2 \
 ASTRA_UDP_RX=recv \
 ASTRA_UDP_DROP_METRICS=on \
 ASTRA_STAGE_LATENCY_METRICS=off \
-./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
+./scripts/run_engine_udp.sh
 ```
 
 `ASTRA_STAGE_LATENCY_METRICS=off` disables the per-stage breakdown. Packet-level
 latency remains enabled unless `ASTRA_LATENCY_METRICS=off` is also set.
+
+### NUMA Binding
+
+`scripts/setup_ec2.sh` reports NUMA topology by default, including
+`numactl --hardware`, `lscpu`, and the NUMA node for the default network
+interface when Linux exposes it under `/sys/class/net`. Use `--numa-iface IFACE`
+when the benchmark traffic uses a non-default interface.
+
+For the engine host, choose `ASTRA_CPU` from the same NUMA node as the receiving
+network interface, then enable the repo wrapper's `numactl` path:
+
+```bash
+ASTRA_NUMA_NODE=0 \
+ASTRA_NUMA_MEM_POLICY=membind \
+ASTRA_CPU=2 \
+ASTRA_UDP_RX=recv \
+ASTRA_UDP_DROP_METRICS=on \
+ASTRA_STAGE_LATENCY_METRICS=off \
+./scripts/run_engine_udp.sh 0.0.0.0 9000 0.0.0.0 9001
+```
+
+`ASTRA_NUMA_MEM_POLICY=membind` is the strict benchmark default. Use
+`localalloc` for a softer policy, `preferred` to prefer the selected node, or
+`none` to apply only CPU binding. `scripts/run_itch_ab_senders.sh` honors the
+same `ASTRA_NUMA_NODE` and `ASTRA_NUMA_MEM_POLICY` variables; pick
+`ASTRA_CPU_A` and `ASTRA_CPU_B` from that node when binding the sender host.
+
+Automatic NUMA balancing is not changed by default. If you want the EC2 setup
+script to disable it for benchmark determinism during the current boot, run with
+`--apply-numa-tuning`.
 
 ### Sender
 
@@ -38,6 +68,7 @@ scaled by `ASTRA_PREMARKET_SPEEDUP`.
 ```bash
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
+ASTRA_NUMA_NODE=0 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=30 \
