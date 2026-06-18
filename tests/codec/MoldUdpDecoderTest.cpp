@@ -120,7 +120,7 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
 }
 
 TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
-  SymbolTable symbols;
+  astra::symbol::StockDirectory symbols;
   BookManager books;
   MoldUdpDecoder decoder(symbols, books, 3);
 
@@ -129,9 +129,9 @@ TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
 
   const DecodeResult first_result = decoder.processPacket(view(pkt1));
   EXPECT_EQ(first_result.status, DecodeStatus::Ok);
-  EXPECT_TRUE(first_result.record_latency);
+  EXPECT_EQ(first_result.latency_sample_count, 1u);
 
   const DecodeResult duplicate_result = decoder.processPacket(view(pkt1));
   EXPECT_EQ(duplicate_result.status, DecodeStatus::Ok);
-  EXPECT_FALSE(duplicate_result.record_latency);
+  EXPECT_EQ(duplicate_result.latency_sample_count, 0u);
 }
