@@ -73,6 +73,12 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     const bool already_stale = channel_.status == ChannelHealth::Stale;
     channel_.status = ChannelHealth::GapDetected;
 
+    if (first_gap) {
+      std::cout << "Gap meet channel_expected_seq=" << expected
+                << " packet_first_seq=" << first_seq
+                << " packet_end_seq=" << packet_end << "\n";
+    }
+
     // FIXME: may not return immediately but buffer the packet and try to
     // recover later
     if (already_stale) {
