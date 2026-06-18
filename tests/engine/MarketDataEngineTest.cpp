@@ -76,9 +76,9 @@ public:
   DecodeResult processPacket(const PacketView &) override {
     ++process_calls_;
     if (process_calls_ == 1)
-      return DecodeResult{DecodeStatus::Ok, false, false};
-    if (process_calls_ == 2)
       return DecodeResult{DecodeStatus::Ok};
+    if (process_calls_ == 2)
+      return DecodeResult{DecodeStatus::Ok, false, 50, 1};
     return DecodeResult{DecodeStatus::EndOfStream};
   }
 
