@@ -4,6 +4,9 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/metrics/LatencyRecorder.hpp"
 // #include "astra/metrics/StageLatencyRecorder.hpp"
+#ifdef ASTRA_ENABLE_DPDK
+#include "astra/source/DpdkReceiver.hpp"
+#endif
 #include "astra/source/DualUdpBatchReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
 #include "astra/source/UdpBatchReceiver.hpp"
@@ -16,6 +19,8 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 static MarketDataEngine *g_engine = nullptr;
 
@@ -85,6 +90,16 @@ int main(int argc, char *argv[]) {
       std::cout << "\n";
     }
 
+    const char *rx_transport = std::getenv("ASTRA_RX");
+    const bool use_dpdk =
+        rx_transport != nullptr && std::strcmp(rx_transport, "dpdk") == 0;
+    if (rx_transport != nullptr && !use_dpdk &&
+        std::strcmp(rx_transport, "udp") != 0 &&
+        std::strcmp(rx_transport, "kernel") != 0) {
+      throw std::runtime_error(std::string("Unknown ASTRA_RX: ") +
+                               rx_transport);
+    }
+
     const char *rx_mode = std::getenv("ASTRA_UDP_RX");
     const bool use_recvmmsg =
         rx_mode != nullptr && (std::strcmp(rx_mode, "recvmmsg") == 0 ||
@@ -103,7 +118,28 @@ int main(int argc, char *argv[]) {
     DualUdpReceiver *dual_receiver = nullptr;
     DualUdpBatchReceiver *dual_batch_receiver = nullptr;
     UdpBatchReceiver *batch_receiver = nullptr;
-    if (dual_feed) {
+#ifdef ASTRA_ENABLE_DPDK
+    DpdkReceiver *dpdk_receiver = nullptr;
+#endif
+    if (use_dpdk) {
+#ifndef ASTRA_ENABLE_DPDK
+      throw std::runtime_error(
+          "ASTRA_RX=dpdk requested, but md_engine was built without "
+          "-DASTRA_ENABLE_DPDK=ON");
+#else
+      if (dual_feed) {
+        auto receiver = std::make_unique<DpdkReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])));
+        dpdk_receiver = receiver.get();
+        source = std::move(receiver);
+      } else {
+        auto receiver = std::make_unique<DpdkReceiver>(ip, port);
+        dpdk_receiver = receiver.get();
+        source = std::move(receiver);
+      }
+#endif
+    } else if (dual_feed) {
       if (use_recvmmsg) {
         auto receiver = std::make_unique<DualUdpBatchReceiver>(
             argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
@@ -142,13 +178,26 @@ int main(int argc, char *argv[]) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
+    const char *rx_name =
+        use_dpdk ? "dpdk" : (use_recvmmsg ? "recvmmsg" : "recv");
+    std::size_t rx_batch_size = use_recvmmsg ? batch_size : 1;
+#ifdef ASTRA_ENABLE_DPDK
+    if (dpdk_receiver != nullptr)
+      rx_batch_size = dpdk_receiver->burstSize();
+#endif
+
     if (dual_feed) {
       std::cout << "Engine started  line_a=" << argv[1] << ":" << argv[2]
                 << "  line_b=" << argv[3] << ":" << argv[4]
                 << "  channel=" << static_cast<int>(channel_id)
-                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
-                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
-                << "  metrics="
+                << "  rx=" << rx_name << "  batch_size=" << rx_batch_size;
+#ifdef ASTRA_ENABLE_DPDK
+      if (dpdk_receiver != nullptr) {
+        std::cout << "  dpdk_port=" << dpdk_receiver->portId()
+                  << "  dpdk_queue=" << dpdk_receiver->queueId();
+      }
+#endif
+      std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
@@ -156,9 +205,14 @@ int main(int argc, char *argv[]) {
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
                 << "  channel=" << static_cast<int>(channel_id)
-                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
-                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
-                << "  metrics="
+                << "  rx=" << rx_name << "  batch_size=" << rx_batch_size;
+#ifdef ASTRA_ENABLE_DPDK
+      if (dpdk_receiver != nullptr) {
+        std::cout << "  dpdk_port=" << dpdk_receiver->portId()
+                  << "  dpdk_queue=" << dpdk_receiver->queueId();
+      }
+#endif
+      std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
@@ -224,6 +278,19 @@ int main(int argc, char *argv[]) {
                 << " line_b_kernel_drops="
                 << dual_batch_receiver->kernelDropsB() << "\n";
     }
+#ifdef ASTRA_ENABLE_DPDK
+    if (dpdk_receiver != nullptr) {
+      std::cout << "rx_stats line_a_packets=" << dpdk_receiver->packetsA()
+                << " line_b_packets=" << dpdk_receiver->packetsB()
+                << " filtered=" << dpdk_receiver->filtered()
+                << " malformed=" << dpdk_receiver->malformed()
+                << " polls=" << dpdk_receiver->polls()
+                << " empty_polls=" << dpdk_receiver->emptyPolls()
+                << " imissed=" << dpdk_receiver->imissed()
+                << " ierrors=" << dpdk_receiver->ierrors()
+                << " rx_nombuf=" << dpdk_receiver->rxNombuf() << "\n";
+    }
+#endif
     if (config.enable_latency_metrics) {
       latency_recorder.report();
       // if (config.enable_stage_latency_metrics)

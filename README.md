@@ -59,6 +59,37 @@ Automatic NUMA balancing is not changed by default. If you want the EC2 setup
 script to disable it for benchmark determinism during the current boot, run with
 `--apply-numa-tuning`.
 
+### DPDK Receiver
+
+The DPDK path replaces only the UDP socket receiver. `MoldUdpDecoder`,
+`ItchParser`, and `BookManager` still consume the same MoldUDP64 `PacketView`
+payload used by the regular UDP path.
+
+Build and run the DPDK receiver on Linux with:
+
+```bash
+ASTRA_CPU=2 \
+ASTRA_NUMA_NODE=0 \
+ASTRA_DPDK_PORT_ID=0 \
+ASTRA_DPDK_BURST_SIZE=32 \
+ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2" \
+./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
+```
+
+DPDK is off by default. The wrapper builds `build-dpdk/md_engine` with
+`-DASTRA_ENABLE_DPDK=ON` and runs it with `ASTRA_RX=dpdk`. Validate the host
+first with hugepages, NIC binding, PMD availability, and `testpmd` RX.
+`ASTRA_DPDK_BURST_SIZE` must be divisible by `8`.
+
+Clean DPDK acceptance requires:
+
+```text
+channel_status_name=Good
+imissed=0
+ierrors=0
+rx_nombuf=0
+```
+
 ### Sender
 
 For a realistic pre-market shape without waiting the full 5.5 hours, use

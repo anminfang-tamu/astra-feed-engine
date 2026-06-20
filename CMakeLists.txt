@@ -70,8 +70,14 @@ target_compile_options(astra_feed_engine
 )
 
 if(ASTRA_ENABLE_DPDK)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "ASTRA_ENABLE_DPDK requires Linux")
+    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(DPDK REQUIRED IMPORTED_TARGET libdpdk)
     target_sources(astra_feed_engine PRIVATE src/source/DpdkReceiver.cpp)
     target_compile_definitions(astra_feed_engine PUBLIC ASTRA_ENABLE_DPDK=1)
+    target_link_libraries(astra_feed_engine PRIVATE PkgConfig::DPDK)
 endif()
 
 if(ASTRA_BUILD_APPS)

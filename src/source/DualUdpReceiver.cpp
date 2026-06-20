@@ -11,13 +11,17 @@ bool DualUdpReceiver::next(PacketView &packet) noexcept {
   UdpReceiver &second = next_a_first_ ? receiver_b_ : receiver_a_;
   uint64_t &first_count = next_a_first_ ? packets_a_ : packets_b_;
   uint64_t &second_count = next_a_first_ ? packets_b_ : packets_a_;
+  const uint8_t first_line = next_a_first_ ? 0 : 1;
+  const uint8_t second_line = next_a_first_ ? 1 : 0;
 
   if (first.next(packet)) {
+    packet.line_index = first_line;
     ++first_count;
     next_a_first_ = !next_a_first_;
     return true;
   }
   if (second.next(packet)) {
+    packet.line_index = second_line;
     ++second_count;
     return true;
   }
@@ -32,21 +36,25 @@ bool DualUdpReceiver::next(PacketView &packet) noexcept {
 
   if (next_a_first_) {
     if ((fds[0].revents & POLLIN) != 0 && receiver_a_.next(packet)) {
+      packet.line_index = 0;
       ++packets_a_;
       next_a_first_ = false;
       return true;
     }
     if ((fds[1].revents & POLLIN) != 0 && receiver_b_.next(packet)) {
+      packet.line_index = 1;
       ++packets_b_;
       return true;
     }
   } else {
     if ((fds[1].revents & POLLIN) != 0 && receiver_b_.next(packet)) {
+      packet.line_index = 1;
       ++packets_b_;
       next_a_first_ = true;
       return true;
     }
     if ((fds[0].revents & POLLIN) != 0 && receiver_a_.next(packet)) {
+      packet.line_index = 0;
       ++packets_a_;
       return true;
     }

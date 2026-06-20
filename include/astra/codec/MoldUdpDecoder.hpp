@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 
+// MoldUDP64 Packet Level
 // Strips the MoldUDP64 header, iterates each ITCH 5.0 message in the datagram,
 // and hands them to ItchParser which writes directly into BookManager.
 // No intermediate structs — raw bytes go straight to the order book.
