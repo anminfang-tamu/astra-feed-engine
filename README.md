@@ -266,6 +266,22 @@ normal. Persistent `GapDetected`, nonzero kernel drops, or a large
 sender/receiver sequence gap means the run should not be used as a clean latency
 baseline.
 
+### Latency Measurement Boundary
+
+The latency histogram is recorded by `md_engine` after `MoldUdpDecoder`
+processes a packet. For each MoldUDP64 packet, the decoder measures elapsed time
+from `PacketView.receive_start_ticks` through MoldUDP decoding, ITCH parsing,
+and book updates, then records the packet elapsed time divided by processed ITCH
+message count and weights it by that message count.
+
+For regular `recv`, `receive_start_ticks` is stamped immediately before
+`recvmsg()`, after the kernel has already handled Ethernet/IP/UDP receive work
+outside the user-space timestamp. For DPDK with
+`ASTRA_DPDK_LATENCY_MODE=packet`, `receive_start_ticks` is stamped after
+`rte_eth_rx_burst()` returns an mbuf and immediately before DPDK frame parsing,
+so the reported DPDK latency includes the user-space Ethernet/IPv4/UDP fast-path
+parse in addition to the same MoldUDP/ITCH/book path.
+
 ## Recent Results
 
 ### Full-Day Flat Replay
@@ -288,6 +304,66 @@ baseline.
 |           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` |  `870 ns` | `1423 ns` |
 |          `100000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `150 ns` | `541 ns` | `1727 ns` | `2127 ns` |
 
+### DPDK Timestamp-Shaped Replay
+
+`dpdk`, A/B lines, `20` messages per packet,
+`ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`,
+secondary ENI destination `172.31.32.18`, DPDK port `0000:28:00.0`.
+
+Receiver settings:
+
+```bash
+ASTRA_CPU=2 \
+ASTRA_NUMA_NODE=0 \
+ASTRA_DPDK_PORT_ID=0 \
+ASTRA_DPDK_BURST_SIZE=8 \
+ASTRA_DPDK_LATENCY_MODE=packet \
+ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow 0000:28:00.0" \
+ASTRA_UDP_DROP_METRICS=on \
+ASTRA_STAGE_LATENCY_METRICS=off \
+./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
+```
+
+Sender settings:
+
+```bash
+ASTRA_CPU_A=3 \
+ASTRA_CPU_B=4 \
+ASTRA_NUMA_NODE=0 \
+ASTRA_PREMARKET_REPLAY_MODE=timestamp \
+ASTRA_PREMARKET_SPEEDUP=33 \
+ASTRA_SS_PAUSE_SECONDS=30 \
+./scripts/run_itch_ab_senders.sh \
+  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  172.31.32.18 \
+  9000 \
+  9001 \
+  20 \
+  "ASTRA     " \
+  100000
+```
+
+| Post-`SQ` rate per line | SS pause | Status | `imissed / ierrors / rx_nombuf` | Fast / fallback path | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
+| ----------------------: | -------: | ------ | ------------------------------: | -------------------: | -------------: | -------: | -------: | -------: | --------: |
+|          `100000 pkt/s` |   `30 s` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
+
+Clean-run details:
+
+```text
+sender next_seq=368366635
+receiver channel_next_seq=368366635
+line_a_packets=18418332
+line_b_packets=18418332
+filtered=16
+malformed=0
+imissed=0
+ierrors=0
+rx_nombuf=0
+latency count=368366634
+mean_ns=364.98
+max_ns=949954391
+```
+
 The `max_ns` value in these runs includes the one-time `SS` book creation and
 warmup event, so use the percentile distribution and zero-drop validation when
 comparing steady-state packet processing.
@@ -297,5 +373,6 @@ comparing steady-state packet processing.
 ```text
 Sender: c7i.4xlarge with 100 GB gp3 EBS
 Engine: r7iz.8xlarge
-Transport: regular UDP recv, redundant A/B lines
+Transport: regular UDP recv and DPDK, redundant A/B lines
+DPDK feed ENI: 172.31.32.18 / enp40s0 / 0000:28:00.0
 ```
