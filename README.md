@@ -316,7 +316,7 @@ Receiver settings:
 ASTRA_CPU=2 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
-ASTRA_DPDK_BURST_SIZE=8 \
+ASTRA_DPDK_BURST_SIZE=16 \
 ASTRA_DPDK_LATENCY_MODE=packet \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow 0000:28:00.0" \
 ASTRA_UDP_DROP_METRICS=on \
@@ -332,7 +332,7 @@ ASTRA_CPU_B=4 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
-ASTRA_SS_PAUSE_SECONDS=30 \
+ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.18 \
@@ -343,11 +343,17 @@ ASTRA_SS_PAUSE_SECONDS=30 \
   100000
 ```
 
-| Post-`SQ` rate per line | SS pause | Status | `imissed / ierrors / rx_nombuf` | Fast / fallback path | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | ------------------------------: | -------------------: | -------------: | -------: | -------: | -------: | --------: |
-|          `100000 pkt/s` |   `30 s` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
+| Post-`SQ` rate per line | SS pause | DPDK burst | Status | `imissed / ierrors / rx_nombuf` | Fast / fallback path | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
+| ----------------------: | -------: | ---------: | ------ | ------------------------------: | -------------------: | -------------: | -------: | -------: | -------: | --------: |
+|          `100000 pkt/s` |   `30 s` |        `8` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
+|          `100000 pkt/s` |  `120 s` |        `8` | `Good` |                       `0 / 0 / 0` |       `36836682 / 0` |    `368366635` | `272 ns` | `493 ns` | `704 ns` |  `825 ns` |
+|          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `271 ns` | `429 ns` | `693 ns` |  `786 ns` |
+|          `100000 pkt/s` |  `120 s` |       `32` | `Good` |                       `0 / 0 / 0` |       `36836679 / 0` |    `368366635` | `273 ns` | `469 ns` | `708 ns` |  `819 ns` |
 
-Clean-run details:
+For this EC2 host and feed shape, DPDK burst `16` is the best current setting.
+Burst `32` was clean but had worse p99 and tail latency than burst `16`.
+
+Latest clean-run details for the `120 s` / burst `16` row:
 
 ```text
 sender next_seq=368366635
@@ -360,8 +366,8 @@ imissed=0
 ierrors=0
 rx_nombuf=0
 latency count=368366634
-mean_ns=364.98
-max_ns=949954391
+mean_ns=325.08
+max_ns=944172436
 ```
 
 The `max_ns` value in these runs includes the one-time `SS` book creation and
