@@ -24,6 +24,7 @@ Useful environment:
   ASTRA_DPDK_PORT_ID=0
   ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2"
   ASTRA_DPDK_BURST_SIZE=32  # must be divisible by 8
+  ASTRA_DPDK_LATENCY_MODE=packet  # packet (default) or burst
   ASTRA_DPDK_RX_DESC=4096
   ASTRA_DPDK_MEMPOOL_SIZE=65535
   ASTRA_DPDK_PROMISCUOUS=off
@@ -129,6 +130,7 @@ export ASTRA_RX=dpdk
 
 echo "Starting DPDK engine: ${ENGINE_ARGS[*]}"
 echo "  dpdk_port=${ASTRA_DPDK_PORT_ID:-0} dpdk_burst=${ASTRA_DPDK_BURST_SIZE:-32}"
+echo "  dpdk_latency_mode=${ASTRA_DPDK_LATENCY_MODE:-packet}"
 if [[ -n "${ASTRA_DPDK_EAL_ARGS:-}" ]]; then
   echo "  dpdk_eal_args=${ASTRA_DPDK_EAL_ARGS}"
 fi

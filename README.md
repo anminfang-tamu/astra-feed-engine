@@ -114,7 +114,8 @@ Build and run the DPDK receiver on Linux with:
 ASTRA_CPU=2 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
-ASTRA_DPDK_BURST_SIZE=32 \
+ASTRA_DPDK_BURST_SIZE=8 \
+ASTRA_DPDK_LATENCY_MODE=packet \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2" \
 ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
@@ -123,6 +124,13 @@ DPDK is off by default. The wrapper builds `build-dpdk/md_engine` with
 `-DASTRA_ENABLE_DPDK=ON` and runs it with `ASTRA_RX=dpdk`. Validate the host
 first with hugepages, NIC binding, PMD availability, and `testpmd` RX.
 `ASTRA_DPDK_BURST_SIZE` must be divisible by `8`.
+`ASTRA_DPDK_LATENCY_MODE=packet` timestamps each accepted packet before DPDK
+frame parsing; use `burst` only when you want the older burst-level queueing
+view.
+
+For the full AWS EC2 setup flow, including secondary-ENI binding, VFIO
+no-IOMMU mode, and restoring the NIC to Linux, see
+`docs/dpdk-aws-ec2-setup.md`.
 
 Clean DPDK acceptance requires:
 
@@ -132,6 +140,10 @@ imissed=0
 ierrors=0
 rx_nombuf=0
 ```
+
+DPDK `rx_stats` should also show most packets on `fast_path`; fallback packets
+mean the frame shape did not match the fixed Ethernet/IPv4/UDP hot path and was
+handled by the general parser.
 
 ### Sender
 
@@ -148,7 +160,7 @@ ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=30 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 \
+  172.31.32.18 \
   9000 \
   9001 \
   20 \

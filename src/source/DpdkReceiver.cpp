@@ -41,6 +41,9 @@ constexpr unsigned int kDefaultMempoolSize = 65535;
 constexpr unsigned int kDefaultMbufCacheSize = 256;
 constexpr uint16_t kDefaultRxDesc = 4096;
 constexpr std::size_t kMaxBurstSize = 256;
+constexpr uint8_t kIpv4NoOptionsVersionIhl = 0x45;
+
+enum class LatencyMode { Packet, Burst };
 
 bool envFlag(const char *name, bool fallback) noexcept {
   const char *value = std::getenv(name);
@@ -82,6 +85,20 @@ std::size_t dpdkBurstSize() {
         "ASTRA_DPDK_BURST_SIZE must be divisible by 8");
   }
   return burst_size;
+}
+
+LatencyMode dpdkLatencyMode() {
+  const char *value = std::getenv("ASTRA_DPDK_LATENCY_MODE");
+  if (value == nullptr || value[0] == '\0' ||
+      std::strcmp(value, "packet") == 0) {
+    return LatencyMode::Packet;
+  }
+  if (std::strcmp(value, "burst") == 0)
+    return LatencyMode::Burst;
+
+  throw std::runtime_error(
+      std::string("invalid ASTRA_DPDK_LATENCY_MODE: ") + value +
+      " (expected packet or burst)");
 }
 
 std::string dpdkError(const char *what, int ret) {
@@ -197,13 +214,14 @@ EndpointFilter makeEndpoint(const char *ip, uint16_t port) {
   return endpoint;
 }
 
-enum class ParseStatus { Accepted, Filtered, Malformed };
+enum class ParseStatus { Accepted, Filtered, Malformed, Unsupported };
 
 struct ParsedPacket {
   ParseStatus status{ParseStatus::Filtered};
   const std::byte *payload{nullptr};
   std::size_t payload_size{0};
   uint8_t line_index{0};
+  bool fast_path{false};
 };
 
 } // namespace
@@ -211,14 +229,14 @@ struct ParsedPacket {
 struct DpdkReceiver::Impl {
   Impl(const char *ip, uint16_t port)
       : line_a_(makeEndpoint(ip, port)), burst_size_(dpdkBurstSize()),
-        burst_(burst_size_) {
+        burst_(burst_size_), latency_mode_(dpdkLatencyMode()) {
     initialize();
   }
 
   Impl(const char *ip_a, uint16_t port_a, const char *ip_b, uint16_t port_b)
       : line_a_(makeEndpoint(ip_a, port_a)),
         line_b_(makeEndpoint(ip_b, port_b)), burst_size_(dpdkBurstSize()),
-        burst_(burst_size_) {
+        burst_(burst_size_), latency_mode_(dpdkLatencyMode()) {
     initialize();
   }
 
@@ -248,7 +266,16 @@ struct DpdkReceiver::Impl {
       }
 
       struct rte_mbuf *mbuf = burst_[burst_index_++];
+      const uint64_t packet_receive_start_ticks =
+          latency_mode_ == LatencyMode::Burst ? burst_receive_start_ticks_
+                                              : rdtsc();
       ParsedPacket parsed = parse(mbuf);
+      if (parsed.fast_path) {
+        ++fast_path_count_;
+      } else {
+        ++fallback_path_count_;
+      }
+
       if (parsed.status == ParseStatus::Filtered) {
         ++filtered_count_;
         rte_pktmbuf_free(mbuf);
@@ -268,7 +295,7 @@ struct DpdkReceiver::Impl {
 
       packet.data = parsed.payload;
       packet.size = parsed.payload_size;
-      packet.receive_start_ticks = burst_receive_start_ticks_;
+      packet.receive_start_ticks = packet_receive_start_ticks;
       packet.line_index = parsed.line_index;
       delivered_mbuf_ = mbuf;
       return true;
@@ -296,6 +323,7 @@ struct DpdkReceiver::Impl {
   struct rte_mempool *mempool_{nullptr};
   std::size_t burst_size_{DpdkReceiver::kDefaultBurstSize};
   std::vector<struct rte_mbuf *> burst_;
+  LatencyMode latency_mode_{LatencyMode::Packet};
   std::size_t burst_index_{0};
   std::size_t burst_count_{0};
   uint64_t burst_receive_start_ticks_{0};
@@ -305,6 +333,8 @@ struct DpdkReceiver::Impl {
   uint64_t packets_b_{0};
   uint64_t filtered_count_{0};
   uint64_t malformed_count_{0};
+  uint64_t fast_path_count_{0};
+  uint64_t fallback_path_count_{0};
   uint64_t poll_count_{0};
   uint64_t empty_poll_count_{0};
   std::atomic<uint64_t> owner_thread_id_{0};
@@ -353,7 +383,7 @@ private:
     all_multicast_ = envFlag("ASTRA_DPDK_ALLMULTICAST", true);
 
     socket_id_ = rte_eth_dev_socket_id(port_id_);
-    if (const char *socket_env = std::getenv("ASTRA_DPDK_SOCKET_ID")) {
+    if (std::getenv("ASTRA_DPDK_SOCKET_ID") != nullptr) {
       socket_id_ = static_cast<int>(envUnsigned("ASTRA_DPDK_SOCKET_ID", 0, 0,
                                                 std::numeric_limits<int>::max()));
     }
@@ -433,6 +463,81 @@ private:
     const std::size_t frame_len = rte_pktmbuf_pkt_len(mbuf);
     const auto *frame = reinterpret_cast<const std::byte *>(
         rte_pktmbuf_mtod(mbuf, const void *));
+
+    ParsedPacket packet = parseFast(frame, frame_len);
+    if (packet.status != ParseStatus::Unsupported)
+      return packet;
+
+    return parseGeneral(frame, frame_len);
+  }
+
+  ParsedPacket parseFast(const std::byte *frame,
+                         std::size_t frame_len) const noexcept {
+    constexpr std::size_t ether_offset = 0;
+    constexpr std::size_t ipv4_offset = sizeof(struct rte_ether_hdr);
+    constexpr std::size_t udp_offset =
+        ipv4_offset + sizeof(struct rte_ipv4_hdr);
+    constexpr std::size_t payload_offset =
+        udp_offset + sizeof(struct rte_udp_hdr);
+
+    if (frame_len < payload_offset)
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
+
+    const auto *ether =
+        reinterpret_cast<const struct rte_ether_hdr *>(frame + ether_offset);
+    const uint16_t ether_type = rte_be_to_cpu_16(ether->ether_type);
+    if (ether_type != RTE_ETHER_TYPE_IPV4) {
+      if (isVlanEtherType(ether_type))
+        return {ParseStatus::Unsupported};
+      return {ParseStatus::Filtered, nullptr, 0, 0, true};
+    }
+
+    const auto *ipv4 =
+        reinterpret_cast<const struct rte_ipv4_hdr *>(frame + ipv4_offset);
+    if (ipv4->version_ihl != kIpv4NoOptionsVersionIhl)
+      return {ParseStatus::Unsupported};
+
+    const uint16_t total_len = rte_be_to_cpu_16(ipv4->total_length);
+    if (total_len < sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) ||
+        ipv4_offset + static_cast<std::size_t>(total_len) > frame_len) {
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
+    }
+
+    const uint16_t fragment_offset = rte_be_to_cpu_16(ipv4->fragment_offset);
+    if ((fragment_offset &
+         (kIpv4FragmentOffsetMask | kIpv4MoreFragmentsFlag)) != 0) {
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
+    }
+
+    if (ipv4->next_proto_id != IPPROTO_UDP)
+      return {ParseStatus::Filtered, nullptr, 0, 0, true};
+
+    const auto *udp =
+        reinterpret_cast<const struct rte_udp_hdr *>(frame + udp_offset);
+    const uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
+    const uint16_t udp_len = rte_be_to_cpu_16(udp->dgram_len);
+    if (udp_len < sizeof(struct rte_udp_hdr) ||
+        udp_offset + static_cast<std::size_t>(udp_len) >
+            ipv4_offset + static_cast<std::size_t>(total_len)) {
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
+    }
+
+    uint8_t line_index = 0;
+    if (line_a_.matches(ipv4->dst_addr, dst_port)) {
+      line_index = 0;
+    } else if (line_b_.matches(ipv4->dst_addr, dst_port)) {
+      line_index = 1;
+    } else {
+      return {ParseStatus::Filtered, nullptr, 0, 0, true};
+    }
+
+    return {ParseStatus::Accepted, frame + payload_offset,
+            static_cast<std::size_t>(udp_len) - sizeof(struct rte_udp_hdr),
+            line_index, true};
+  }
+
+  ParsedPacket parseGeneral(const std::byte *frame,
+                            std::size_t frame_len) const noexcept {
     std::size_t offset = 0;
 
     if (frame_len < sizeof(struct rte_ether_hdr))
@@ -560,6 +665,14 @@ uint64_t DpdkReceiver::filtered() const noexcept {
 
 uint64_t DpdkReceiver::malformed() const noexcept {
   return impl_->malformed_count_;
+}
+
+uint64_t DpdkReceiver::fastPathPackets() const noexcept {
+  return impl_->fast_path_count_;
+}
+
+uint64_t DpdkReceiver::fallbackPathPackets() const noexcept {
+  return impl_->fallback_path_count_;
 }
 
 uint64_t DpdkReceiver::polls() const noexcept { return impl_->poll_count_; }

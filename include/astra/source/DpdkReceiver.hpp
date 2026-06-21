@@ -33,6 +33,8 @@ public:
   uint64_t packetsB() const noexcept;
   uint64_t filtered() const noexcept;
   uint64_t malformed() const noexcept;
+  uint64_t fastPathPackets() const noexcept;
+  uint64_t fallbackPathPackets() const noexcept;
   uint64_t polls() const noexcept;
   uint64_t emptyPolls() const noexcept;
   uint64_t imissed() const noexcept;

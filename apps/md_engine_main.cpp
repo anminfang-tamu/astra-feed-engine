@@ -284,6 +284,8 @@ int main(int argc, char *argv[]) {
                 << " line_b_packets=" << dpdk_receiver->packetsB()
                 << " filtered=" << dpdk_receiver->filtered()
                 << " malformed=" << dpdk_receiver->malformed()
+                << " fast_path=" << dpdk_receiver->fastPathPackets()
+                << " fallback_path=" << dpdk_receiver->fallbackPathPackets()
                 << " polls=" << dpdk_receiver->polls()
                 << " empty_polls=" << dpdk_receiver->emptyPolls()
                 << " imissed=" << dpdk_receiver->imissed()
