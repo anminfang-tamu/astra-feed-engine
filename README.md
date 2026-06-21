@@ -59,6 +59,49 @@ Automatic NUMA balancing is not changed by default. If you want the EC2 setup
 script to disable it for benchmark determinism during the current boot, run with
 `--apply-numa-tuning`.
 
+### Secondary ENI Feed Interface
+
+On EC2, attach the secondary ENI to the receiver instance first, usually as
+device index `1`. Linux often exposes that interface as `ens6` or `eth1`, but
+verify with `ip -br link` instead of hardcoding the name.
+
+Configure the OS side of the attached ENI with:
+
+```bash
+./scripts/setup_secondary_eni.sh
+```
+
+If auto-detection is not enough, pass the interface explicitly:
+
+```bash
+./scripts/setup_secondary_eni.sh --iface ens6
+# or
+./scripts/setup_secondary_eni.sh --iface eth1
+```
+
+Use the secondary ENI private IP as the sender destination. Keep the receiver
+bind address on `0.0.0.0`; the kernel will deliver packets that arrive on the
+secondary ENI to `md_engine`:
+
+```bash
+ASTRA_CPU=2 \
+ASTRA_UDP_RX=recv \
+ASTRA_UDP_DROP_METRICS=on \
+ASTRA_STAGE_LATENCY_METRICS=off \
+./scripts/run_engine_udp.sh 0.0.0.0 9000 0.0.0.0 9001
+```
+
+For locality checks, point the EC2 setup report at the feed interface:
+
+```bash
+./scripts/setup_ec2.sh --numa-iface ens6 \
+  --no-apt --no-data-dir --no-submodules --no-configure --no-build
+```
+
+On `r7iz.8xlarge`, this is useful for separating feed traffic by interface and
+private IP. It does not double network bandwidth because the instance exposes
+one network card.
+
 ### DPDK Receiver
 
 The DPDK path replaces only the UDP socket receiver. `MoldUdpDecoder`,
