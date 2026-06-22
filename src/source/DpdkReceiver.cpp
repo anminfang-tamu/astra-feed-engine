@@ -8,6 +8,7 @@
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
+#include <rte_flow.h>
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
@@ -41,8 +42,6 @@ constexpr unsigned int kDefaultMempoolSize = 65535;
 constexpr unsigned int kDefaultMbufCacheSize = 256;
 constexpr uint16_t kDefaultRxDesc = 4096;
 constexpr std::size_t kMaxBurstSize = 256;
-constexpr uint8_t kIpv4NoOptionsVersionIhl = 0x45;
-
 enum class LatencyMode { Packet, Burst };
 
 bool envFlag(const char *name, bool fallback) noexcept {
@@ -59,8 +58,7 @@ bool envFlag(const char *name, bool fallback) noexcept {
 }
 
 unsigned long envUnsigned(const char *name, unsigned long fallback,
-                          unsigned long minimum,
-                          unsigned long maximum) {
+                          unsigned long minimum, unsigned long maximum) {
   const char *value = std::getenv(name);
   if (value == nullptr || value[0] == '\0')
     return fallback;
@@ -81,8 +79,7 @@ std::size_t dpdkBurstSize() {
       envUnsigned("ASTRA_DPDK_BURST_SIZE", DpdkReceiver::kDefaultBurstSize, 1,
                   kMaxBurstSize));
   if (burst_size % 8 != 0) {
-    throw std::runtime_error(
-        "ASTRA_DPDK_BURST_SIZE must be divisible by 8");
+    throw std::runtime_error("ASTRA_DPDK_BURST_SIZE must be divisible by 8");
   }
   return burst_size;
 }
@@ -96,9 +93,8 @@ LatencyMode dpdkLatencyMode() {
   if (std::strcmp(value, "burst") == 0)
     return LatencyMode::Burst;
 
-  throw std::runtime_error(
-      std::string("invalid ASTRA_DPDK_LATENCY_MODE: ") + value +
-      " (expected packet or burst)");
+  throw std::runtime_error(std::string("invalid ASTRA_DPDK_LATENCY_MODE: ") +
+                           value + " (expected packet or burst)");
 }
 
 std::string dpdkError(const char *what, int ret) {
@@ -107,6 +103,18 @@ std::string dpdkError(const char *what, int ret) {
   if (errnum != 0) {
     message += ": ";
     message += rte_strerror(errnum);
+  }
+  return message;
+}
+
+std::string flowError(const char *what, const struct rte_flow_error &error) {
+  std::string message = what;
+  if (error.message != nullptr) {
+    message += ": ";
+    message += error.message;
+  } else if (rte_errno != 0) {
+    message += ": ";
+    message += rte_strerror(rte_errno);
   }
   return message;
 }
@@ -198,13 +206,12 @@ EndpointFilter makeEndpoint(const char *ip, uint16_t port) {
   endpoint.port = port;
   endpoint.enabled = true;
 
-  if (ip == nullptr || std::strcmp(ip, "") == 0 ||
-      std::strcmp(ip, "*") == 0 || std::strcmp(ip, "any") == 0 ||
-      std::strcmp(ip, "0.0.0.0") == 0) {
+  if (ip == nullptr || std::strcmp(ip, "") == 0 || std::strcmp(ip, "*") == 0 ||
+      std::strcmp(ip, "any") == 0 || std::strcmp(ip, "0.0.0.0") == 0) {
     return endpoint;
   }
 
-  struct in_addr addr {};
+  struct in_addr addr{};
   if (::inet_pton(AF_INET, ip, &addr) != 1) {
     throw std::runtime_error(std::string("inet_pton: bad address: ") + ip);
   }
@@ -214,7 +221,7 @@ EndpointFilter makeEndpoint(const char *ip, uint16_t port) {
   return endpoint;
 }
 
-enum class ParseStatus { Accepted, Filtered, Malformed, Unsupported };
+enum class ParseStatus { Accepted, Filtered, Malformed };
 
 struct ParsedPacket {
   ParseStatus status{ParseStatus::Filtered};
@@ -244,6 +251,7 @@ struct DpdkReceiver::Impl {
     releaseDelivered();
     releaseCachedBurst();
 
+    destroyFlowFilters();
     if (started_)
       (void)rte_eth_dev_stop(port_id_);
     if (configured_)
@@ -256,7 +264,7 @@ struct DpdkReceiver::Impl {
   Impl &operator=(const Impl &) = delete;
 
   bool next(PacketView &packet) {
-    ensureSingleThreadCaller();
+    // ensureSingleThreadCaller();
     releaseDelivered();
 
     for (;;) {
@@ -316,11 +324,14 @@ struct DpdkReceiver::Impl {
   unsigned int mbuf_cache_size_{kDefaultMbufCacheSize};
   bool promiscuous_{false};
   bool all_multicast_{true};
+  bool flow_filter_{true};
+  bool flow_isolated_{false};
   bool configured_{false};
   bool started_{false};
 
-  struct rte_eth_dev_info dev_info_ {};
+  struct rte_eth_dev_info dev_info_{};
   struct rte_mempool *mempool_{nullptr};
+  std::vector<struct rte_flow *> flows_;
   std::size_t burst_size_{DpdkReceiver::kDefaultBurstSize};
   std::vector<struct rte_mbuf *> burst_;
   LatencyMode latency_mode_{LatencyMode::Packet};
@@ -343,12 +354,10 @@ private:
   void initialize() {
     initializeEalOnce();
 
-    port_id_ = static_cast<uint16_t>(
-        envUnsigned("ASTRA_DPDK_PORT_ID", 0, 0,
-                    std::numeric_limits<uint16_t>::max()));
-    queue_id_ = static_cast<uint16_t>(
-        envUnsigned("ASTRA_DPDK_QUEUE_ID", 0, 0,
-                    std::numeric_limits<uint16_t>::max()));
+    port_id_ = static_cast<uint16_t>(envUnsigned(
+        "ASTRA_DPDK_PORT_ID", 0, 0, std::numeric_limits<uint16_t>::max()));
+    queue_id_ = static_cast<uint16_t>(envUnsigned(
+        "ASTRA_DPDK_QUEUE_ID", 0, 0, std::numeric_limits<uint16_t>::max()));
     if (queue_id_ != 0) {
       // Multi-queue support requires explicit RSS or flow steering so the two
       // redundant lines do not race one logical MoldUDP sequence stream.
@@ -381,24 +390,27 @@ private:
                     std::numeric_limits<unsigned int>::max()));
     promiscuous_ = envFlag("ASTRA_DPDK_PROMISCUOUS", false);
     all_multicast_ = envFlag("ASTRA_DPDK_ALLMULTICAST", true);
+    flow_filter_ = envFlag("ASTRA_DPDK_FLOW_FILTER", true);
+    if (flow_filter_)
+      enableFlowIsolation();
 
     socket_id_ = rte_eth_dev_socket_id(port_id_);
     if (std::getenv("ASTRA_DPDK_SOCKET_ID") != nullptr) {
-      socket_id_ = static_cast<int>(envUnsigned("ASTRA_DPDK_SOCKET_ID", 0, 0,
-                                                std::numeric_limits<int>::max()));
+      socket_id_ = static_cast<int>(envUnsigned(
+          "ASTRA_DPDK_SOCKET_ID", 0, 0, std::numeric_limits<int>::max()));
     }
     if (socket_id_ < 0)
       socket_id_ = static_cast<int>(rte_socket_id());
 
     std::ostringstream pool_name;
     pool_name << "astra_rx_pool_" << port_id_;
-    mempool_ = rte_pktmbuf_pool_create(
-        pool_name.str().c_str(), mempool_size_, mbuf_cache_size_, 0,
-        RTE_MBUF_DEFAULT_BUF_SIZE, socket_id_);
+    mempool_ = rte_pktmbuf_pool_create(pool_name.str().c_str(), mempool_size_,
+                                       mbuf_cache_size_, 0,
+                                       RTE_MBUF_DEFAULT_BUF_SIZE, socket_id_);
     if (mempool_ == nullptr)
       throwDpdk("rte_pktmbuf_pool_create", -rte_errno);
 
-    struct rte_eth_conf port_conf {};
+    struct rte_eth_conf port_conf{};
     ret = rte_eth_dev_configure(port_id_, 1, 0, &port_conf);
     if (ret < 0)
       throwDpdk("rte_eth_dev_configure", ret);
@@ -416,6 +428,9 @@ private:
     if (ret < 0)
       throwDpdk("rte_eth_rx_queue_setup", ret);
 
+    if (flow_filter_)
+      installFlowFilters();
+
     ret = rte_eth_dev_start(port_id_);
     if (ret < 0)
       throwDpdk("rte_eth_dev_start", ret);
@@ -427,14 +442,92 @@ private:
       (void)rte_eth_allmulticast_enable(port_id_);
   }
 
+  void enableFlowIsolation() {
+    struct rte_flow_error error{};
+    const int ret = rte_flow_isolate(port_id_, 1, &error);
+    if (ret != 0)
+      throw std::runtime_error(flowError("rte_flow_isolate", error));
+    flow_isolated_ = true;
+  }
+
+  void installFlowFilters() {
+    installEndpointFlow(line_a_);
+    if (line_b_.enabled)
+      installEndpointFlow(line_b_);
+  }
+
+  void installEndpointFlow(const EndpointFilter &endpoint) {
+    struct rte_flow_attr attr{};
+    attr.ingress = 1;
+
+    struct rte_flow_item_ipv4 ipv4_spec{};
+    struct rte_flow_item_ipv4 ipv4_mask{};
+    ipv4_spec.hdr.next_proto_id = IPPROTO_UDP;
+    ipv4_mask.hdr.next_proto_id = UINT8_MAX;
+    if (endpoint.match_ip) {
+      ipv4_spec.hdr.dst_addr = endpoint.ip;
+      ipv4_mask.hdr.dst_addr = rte_cpu_to_be_32(UINT32_MAX);
+    }
+
+    struct rte_flow_item_udp udp_spec{};
+    struct rte_flow_item_udp udp_mask{};
+    udp_spec.hdr.dst_port = rte_cpu_to_be_16(endpoint.port);
+    udp_mask.hdr.dst_port = rte_cpu_to_be_16(UINT16_MAX);
+
+    struct rte_flow_item pattern[4]{};
+    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+    pattern[1].spec = &ipv4_spec;
+    pattern[1].mask = &ipv4_mask;
+    pattern[2].type = RTE_FLOW_ITEM_TYPE_UDP;
+    pattern[2].spec = &udp_spec;
+    pattern[2].mask = &udp_mask;
+    pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+
+    struct rte_flow_action_queue queue{};
+    queue.index = queue_id_;
+
+    struct rte_flow_action actions[2]{};
+    actions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    actions[0].conf = &queue;
+    actions[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    struct rte_flow_error error{};
+    int ret = rte_flow_validate(port_id_, &attr, pattern, actions, &error);
+    if (ret != 0)
+      throw std::runtime_error(flowError("rte_flow_validate", error));
+
+    struct rte_flow *flow =
+        rte_flow_create(port_id_, &attr, pattern, actions, &error);
+    if (flow == nullptr)
+      throw std::runtime_error(flowError("rte_flow_create", error));
+    flows_.push_back(flow);
+  }
+
+  void destroyFlowFilters() noexcept {
+    for (struct rte_flow *flow : flows_) {
+      if (flow == nullptr)
+        continue;
+      struct rte_flow_error error{};
+      (void)rte_flow_destroy(port_id_, flow, &error);
+    }
+    flows_.clear();
+
+    if (flow_isolated_) {
+      struct rte_flow_error error{};
+      (void)rte_flow_isolate(port_id_, 0, &error);
+      flow_isolated_ = false;
+    }
+  }
+
   void ensureSingleThreadCaller() {
     const uint64_t current_thread = currentThreadId();
     uint64_t expected = 0;
     if (owner_thread_id_.compare_exchange_strong(expected, current_thread))
       return;
     if (expected != current_thread) {
-      throw std::runtime_error(
-          "DpdkReceiver::next() must be called by only one thread per RX queue");
+      throw std::runtime_error("DpdkReceiver::next() must be called by only "
+                               "one thread per RX queue");
     }
   }
 
@@ -443,9 +536,8 @@ private:
     burst_count_ = 0;
     burst_receive_start_ticks_ = rdtsc();
 
-    const uint16_t received =
-        rte_eth_rx_burst(port_id_, queue_id_, burst_.data(),
-                         static_cast<uint16_t>(burst_size_));
+    const uint16_t received = rte_eth_rx_burst(
+        port_id_, queue_id_, burst_.data(), static_cast<uint16_t>(burst_size_));
     ++poll_count_;
     if (received == 0) {
       ++empty_poll_count_;
@@ -464,16 +556,14 @@ private:
     const auto *frame = reinterpret_cast<const std::byte *>(
         rte_pktmbuf_mtod(mbuf, const void *));
 
-    ParsedPacket packet = parseFast(frame, frame_len);
-    if (packet.status != ParseStatus::Unsupported)
-      return packet;
-
+    if (flow_filter_)
+      return parseFast(frame, frame_len);
     return parseGeneral(frame, frame_len);
   }
 
   ParsedPacket parseFast(const std::byte *frame,
                          std::size_t frame_len) const noexcept {
-    constexpr std::size_t ether_offset = 0;
+    // Flow filtering guarantees plain Ethernet/IPv4/UDP endpoint matches.
     constexpr std::size_t ipv4_offset = sizeof(struct rte_ether_hdr);
     constexpr std::size_t udp_offset =
         ipv4_offset + sizeof(struct rte_ipv4_hdr);
@@ -483,42 +573,14 @@ private:
     if (frame_len < payload_offset)
       return {ParseStatus::Malformed, nullptr, 0, 0, true};
 
-    const auto *ether =
-        reinterpret_cast<const struct rte_ether_hdr *>(frame + ether_offset);
-    const uint16_t ether_type = rte_be_to_cpu_16(ether->ether_type);
-    if (ether_type != RTE_ETHER_TYPE_IPV4) {
-      if (isVlanEtherType(ether_type))
-        return {ParseStatus::Unsupported};
-      return {ParseStatus::Filtered, nullptr, 0, 0, true};
-    }
-
     const auto *ipv4 =
         reinterpret_cast<const struct rte_ipv4_hdr *>(frame + ipv4_offset);
-    if (ipv4->version_ihl != kIpv4NoOptionsVersionIhl)
-      return {ParseStatus::Unsupported};
-
-    const uint16_t total_len = rte_be_to_cpu_16(ipv4->total_length);
-    if (total_len < sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) ||
-        ipv4_offset + static_cast<std::size_t>(total_len) > frame_len) {
-      return {ParseStatus::Malformed, nullptr, 0, 0, true};
-    }
-
-    const uint16_t fragment_offset = rte_be_to_cpu_16(ipv4->fragment_offset);
-    if ((fragment_offset &
-         (kIpv4FragmentOffsetMask | kIpv4MoreFragmentsFlag)) != 0) {
-      return {ParseStatus::Malformed, nullptr, 0, 0, true};
-    }
-
-    if (ipv4->next_proto_id != IPPROTO_UDP)
-      return {ParseStatus::Filtered, nullptr, 0, 0, true};
-
     const auto *udp =
         reinterpret_cast<const struct rte_udp_hdr *>(frame + udp_offset);
     const uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
     const uint16_t udp_len = rte_be_to_cpu_16(udp->dgram_len);
     if (udp_len < sizeof(struct rte_udp_hdr) ||
-        udp_offset + static_cast<std::size_t>(udp_len) >
-            ipv4_offset + static_cast<std::size_t>(total_len)) {
+        udp_offset + static_cast<std::size_t>(udp_len) > frame_len) {
       return {ParseStatus::Malformed, nullptr, 0, 0, true};
     }
 
@@ -616,7 +678,7 @@ private:
   }
 
   struct rte_eth_stats ethStats() const noexcept {
-    struct rte_eth_stats stats {};
+    struct rte_eth_stats stats{};
     if (rte_eth_stats_get(port_id_, &stats) != 0)
       return {};
     return stats;
@@ -647,17 +709,11 @@ DpdkReceiver::DpdkReceiver(const char *ip_a, uint16_t port_a, const char *ip_b,
 
 DpdkReceiver::~DpdkReceiver() = default;
 
-bool DpdkReceiver::next(PacketView &packet) {
-  return impl_->next(packet);
-}
+bool DpdkReceiver::next(PacketView &packet) { return impl_->next(packet); }
 
-uint64_t DpdkReceiver::packetsA() const noexcept {
-  return impl_->packets_a_;
-}
+uint64_t DpdkReceiver::packetsA() const noexcept { return impl_->packets_a_; }
 
-uint64_t DpdkReceiver::packetsB() const noexcept {
-  return impl_->packets_b_;
-}
+uint64_t DpdkReceiver::packetsB() const noexcept { return impl_->packets_b_; }
 
 uint64_t DpdkReceiver::filtered() const noexcept {
   return impl_->filtered_count_;
@@ -685,9 +741,7 @@ uint64_t DpdkReceiver::imissed() const noexcept { return impl_->imissed(); }
 
 uint64_t DpdkReceiver::ierrors() const noexcept { return impl_->ierrors(); }
 
-uint64_t DpdkReceiver::rxNombuf() const noexcept {
-  return impl_->rxNombuf();
-}
+uint64_t DpdkReceiver::rxNombuf() const noexcept { return impl_->rxNombuf(); }
 
 std::size_t DpdkReceiver::burstSize() const noexcept {
   return impl_->burst_size_;

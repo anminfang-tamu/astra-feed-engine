@@ -116,6 +116,7 @@ ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
 ASTRA_DPDK_BURST_SIZE=8 \
 ASTRA_DPDK_LATENCY_MODE=packet \
+ASTRA_DPDK_FLOW_FILTER=on \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2" \
 ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
@@ -127,6 +128,10 @@ first with hugepages, NIC binding, PMD availability, and `testpmd` RX.
 `ASTRA_DPDK_LATENCY_MODE=packet` timestamps each accepted packet before DPDK
 frame parsing; use `burst` only when you want the older burst-level queueing
 view.
+`ASTRA_DPDK_FLOW_FILTER=on` is the default. It enables DPDK isolated mode and
+installs `rte_flow` rules for the configured IPv4/UDP destination ports before
+the receiver starts polling. If a PMD rejects the flow rules, set
+`ASTRA_DPDK_FLOW_FILTER=off` to return to userspace filtering.
 
 For the full AWS EC2 setup flow, including secondary-ENI binding, VFIO
 no-IOMMU mode, and restoring the NIC to Linux, see

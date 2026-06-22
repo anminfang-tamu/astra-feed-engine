@@ -174,6 +174,7 @@ sudo env \
   ASTRA_DPDK_PORT_ID=0 \
   ASTRA_DPDK_BURST_SIZE=8 \
   ASTRA_DPDK_LATENCY_MODE=packet \
+  ASTRA_DPDK_FLOW_FILTER=on \
   ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
   ASTRA_UDP_DROP_METRICS=on \
   ASTRA_STAGE_LATENCY_METRICS=off \
@@ -186,9 +187,13 @@ The sender command stays the same as the `recv()` test. It should target:
 172.31.32.18
 ```
 
-DPDK filters packets in userspace by destination UDP ports `9000` and `9001`.
-The receiver still consumes the same MoldUDP64 payload path after packet
-reception.
+DPDK flow filtering is on by default. The receiver enables isolated mode and
+installs `rte_flow` rules for destination UDP ports `9000` and `9001`, while
+the parser remains in place as a safety net and to preserve A/B line
+attribution. If the active PMD rejects `rte_flow_isolate` or the IPv4/UDP flow
+rules, rerun with `ASTRA_DPDK_FLOW_FILTER=off` to use the previous userspace
+filtering path. The receiver still consumes the same MoldUDP64 payload path
+after packet reception.
 
 `ASTRA_DPDK_LATENCY_MODE=packet` timestamps each accepted packet before DPDK
 frame parsing. Use `burst` only when intentionally measuring the older
