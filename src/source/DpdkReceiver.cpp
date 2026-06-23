@@ -442,6 +442,7 @@ private:
       (void)rte_eth_allmulticast_enable(port_id_);
   }
 
+  // AWS EC2 doesn't support DPDK flow isolation
   void enableFlowIsolation() {
     struct rte_flow_error error{};
     const int ret = rte_flow_isolate(port_id_, 1, &error);
@@ -558,23 +559,20 @@ private:
 
     if (flow_filter_)
       return parseFast(frame, frame_len);
-    return parseGeneral(frame, frame_len);
+    return parseFastWithoutFlowIsolation(frame, frame_len);
   }
 
   ParsedPacket parseFast(const std::byte *frame,
                          std::size_t frame_len) const noexcept {
     // Flow filtering guarantees plain Ethernet/IPv4/UDP endpoint matches.
-    constexpr std::size_t ipv4_offset = sizeof(struct rte_ether_hdr);
     constexpr std::size_t udp_offset =
-        ipv4_offset + sizeof(struct rte_ipv4_hdr);
+        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
     constexpr std::size_t payload_offset =
         udp_offset + sizeof(struct rte_udp_hdr);
 
     if (frame_len < payload_offset)
       return {ParseStatus::Malformed, nullptr, 0, 0, true};
 
-    const auto *ipv4 =
-        reinterpret_cast<const struct rte_ipv4_hdr *>(frame + ipv4_offset);
     const auto *udp =
         reinterpret_cast<const struct rte_udp_hdr *>(frame + udp_offset);
     const uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
@@ -584,14 +582,39 @@ private:
       return {ParseStatus::Malformed, nullptr, 0, 0, true};
     }
 
-    uint8_t line_index = 0;
-    if (line_a_.matches(ipv4->dst_addr, dst_port)) {
-      line_index = 0;
-    } else if (line_b_.matches(ipv4->dst_addr, dst_port)) {
-      line_index = 1;
-    } else {
-      return {ParseStatus::Filtered, nullptr, 0, 0, true};
+    const uint8_t line_index =
+        line_b_.enabled && dst_port == line_b_.port ? 1 : 0;
+
+    return {ParseStatus::Accepted, frame + payload_offset,
+            static_cast<std::size_t>(udp_len) - sizeof(struct rte_udp_hdr),
+            line_index, true};
+  }
+
+  // Parse the packet without applying flow isolation. This method processes the
+  // packet normally, extracting the UDP header and payload, but does not filter
+  // based on predefined flow rules.
+  ParsedPacket
+  parseFastWithoutFlowIsolation(const std::byte *frame,
+                                std::size_t frame_len) const noexcept {
+    constexpr std::size_t udp_offset =
+        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+    constexpr std::size_t payload_offset =
+        udp_offset + sizeof(struct rte_udp_hdr);
+
+    if (frame_len < payload_offset)
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
+
+    const auto *udp =
+        reinterpret_cast<const struct rte_udp_hdr *>(frame + udp_offset);
+    const uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
+    const uint16_t udp_len = rte_be_to_cpu_16(udp->dgram_len);
+    if (udp_len < sizeof(struct rte_udp_hdr) ||
+        udp_offset + static_cast<std::size_t>(udp_len) > frame_len) {
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
     }
+
+    const uint8_t line_index =
+        line_b_.enabled && dst_port == line_b_.port ? 1 : 0;
 
     return {ParseStatus::Accepted, frame + payload_offset,
             static_cast<std::size_t>(udp_len) - sizeof(struct rte_udp_hdr),

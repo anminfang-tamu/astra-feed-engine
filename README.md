@@ -116,7 +116,7 @@ ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
 ASTRA_DPDK_BURST_SIZE=8 \
 ASTRA_DPDK_LATENCY_MODE=packet \
-ASTRA_DPDK_FLOW_FILTER=on \
+ASTRA_DPDK_FLOW_FILTER=off \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2" \
 ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
@@ -350,10 +350,10 @@ ASTRA_SS_PAUSE_SECONDS=120 \
 
 | Post-`SQ` rate per line | SS pause | DPDK burst | Status | `imissed / ierrors / rx_nombuf` | Fast / fallback path | Final sequence |      p50 |      p99 |    p99.9 |    p99.99 |
 | ----------------------: | -------: | ---------: | ------ | ------------------------------: | -------------------: | -------------: | -------: | -------: | -------: | --------: |
-|          `100000 pkt/s` |   `30 s` |        `8` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
-|          `100000 pkt/s` |  `120 s` |        `8` | `Good` |                       `0 / 0 / 0` |       `36836682 / 0` |    `368366635` | `272 ns` | `493 ns` | `704 ns` |  `825 ns` |
-|          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                       `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `271 ns` | `429 ns` | `693 ns` |  `786 ns` |
-|          `100000 pkt/s` |  `120 s` |       `32` | `Good` |                       `0 / 0 / 0` |       `36836679 / 0` |    `368366635` | `273 ns` | `469 ns` | `708 ns` |  `819 ns` |
+|          `100000 pkt/s` |   `30 s` |        `8` | `Good` |                     `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
+|          `100000 pkt/s` |  `120 s` |        `8` | `Good` |                     `0 / 0 / 0` |       `36836682 / 0` |    `368366635` | `272 ns` | `493 ns` | `704 ns` |  `825 ns` |
+|          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                     `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `271 ns` | `429 ns` | `693 ns` |  `786 ns` |
+|          `100000 pkt/s` |  `120 s` |       `32` | `Good` |                     `0 / 0 / 0` |       `36836679 / 0` |    `368366635` | `273 ns` | `469 ns` | `708 ns` |  `819 ns` |
 
 For this EC2 host and feed shape, DPDK burst `16` is the best current setting.
 Burst `32` was clean but had worse p99 and tail latency than burst `16`.
