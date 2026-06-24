@@ -50,10 +50,32 @@ public:
   }
 
 private:
+  friend class BookManager;
+
+  enum class MutationResult : uint8_t { Ignored, Updated, Removed };
+
   uint32_t priceToIndex(uint64_t price) const noexcept;
   uint32_t allocateOrder() noexcept;
-  void freeOrder(uint32_t order_idx) noexcept;
+  void freeOrder(uint32_t order_idx, bool erase_from_index) noexcept;
   bool removeFromLevel(uint32_t order_idx) noexcept;
+  bool hasOrderAt(uint32_t order_idx, uint64_t order_id) const noexcept;
+  bool registerOrderIndex(uint64_t order_id, uint32_t order_idx) noexcept;
+  uint32_t addOrderIndexed(uint64_t order_id, uint64_t price, uint32_t qty,
+                           char side) noexcept;
+  MutationResult cancelSharesIndexed(uint32_t order_idx, uint64_t order_id,
+                                     uint32_t canceled_qty,
+                                     bool erase_from_index) noexcept;
+  bool deleteOrderIndexed(uint32_t order_idx, uint64_t order_id,
+                          bool erase_from_index) noexcept;
+  MutationResult tradeIndexed(uint32_t order_idx, uint64_t order_id,
+                              uint32_t executed_qty,
+                              bool erase_from_index) noexcept;
+  MutationResult replaceOrderIndexed(uint32_t order_idx, uint64_t old_id,
+                                     uint64_t new_id, uint64_t new_price,
+                                     uint32_t new_qty,
+                                     bool update_index) noexcept;
+  MutationResult restoreSharesIndexed(uint32_t order_idx, uint64_t order_id,
+                                      uint32_t qty) noexcept;
 
   uint32_t symbol_id_;
   size_t order_capacity_;

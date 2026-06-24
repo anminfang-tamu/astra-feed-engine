@@ -205,15 +205,30 @@ uint32_t OrderBook::allocateOrder() noexcept {
   return idx;
 }
 
-void OrderBook::freeOrder(uint32_t order_idx) noexcept {
+void OrderBook::freeOrder(uint32_t order_idx, bool erase_from_index) noexcept {
   if (order_idx >= order_pool_.size())
     return;
   Order &order = order_pool_[order_idx];
-  if (order.order_id != kInvalidOrderId)
+  if (erase_from_index && order.order_id != kInvalidOrderId)
     order_index_.erase(order.order_id);
   resetOrder(order);
   if (free_list_size_ < free_list_.size())
     free_list_[free_list_size_++] = order_idx;
+}
+
+bool OrderBook::hasOrderAt(uint32_t order_idx, uint64_t order_id) const
+    noexcept {
+  return order_idx < order_pool_.size() &&
+         order_pool_[order_idx].order_id == order_id;
+}
+
+bool OrderBook::registerOrderIndex(uint64_t order_id,
+                                   uint32_t order_idx) noexcept {
+  if (order_id == kInvalidOrderId || order_idx >= order_pool_.size() ||
+      order_pool_[order_idx].order_id != order_id) {
+    return false;
+  }
+  return order_index_.insert(order_id, order_idx);
 }
 
 bool OrderBook::removeFromLevel(uint32_t order_idx) noexcept {
@@ -257,11 +272,10 @@ bool OrderBook::removeFromLevel(uint32_t order_idx) noexcept {
   return true;
 }
 
-void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
-                         char side) noexcept {
-  if (qty == 0 || !isValidSide(side) || order_id == kInvalidOrderId ||
-      order_index_.find(order_id) != kInvalidIdx) {
-    return;
+uint32_t OrderBook::addOrderIndexed(uint64_t order_id, uint64_t price,
+                                    uint32_t qty, char side) noexcept {
+  if (qty == 0 || !isValidSide(side) || order_id == kInvalidOrderId) {
+    return kInvalidIdx;
   }
 
   if (bid_bitmap_.empty() && ask_bitmap_.empty())
@@ -269,12 +283,12 @@ void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
 
   const uint32_t level_idx = priceToIndex(price);
   if (level_idx == kInvalidIdx) {
-    return;
+    return kInvalidIdx;
   }
 
   const uint32_t order_idx = allocateOrder();
   if (order_idx == kInvalidIdx)
-    return;
+    return kInvalidIdx;
 
   std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
   PriceBitmap &bitmap = side == 'B' ? bid_bitmap_ : ask_bitmap_;
@@ -288,39 +302,52 @@ void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
   order.order_id = order_id;
   order.side = side;
 
-  if (!order_index_.insert(order.order_id, order_idx)) {
-    order.order_id = kInvalidOrderId;
-    freeOrder(order_idx);
-    return;
-  }
-
   if (!appendOrder(order_pool_, level, order_idx)) {
     local_invalid_ = true;
-    order_index_.erase(order.order_id);
-    order.order_id = kInvalidOrderId;
-    freeOrder(order_idx);
-    return;
+    freeOrder(order_idx, false);
+    return kInvalidIdx;
   }
+
   level.total_qty += qty;
   ++level.num_orders;
   if (was_empty)
     bitmap.set(level_idx);
+
+  return order_idx;
 }
 
-void OrderBook::cancelShares(uint64_t order_id,
-                             uint32_t canceled_qty) noexcept {
-  const uint32_t order_idx = order_index_.find(order_id);
-  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
+void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
+                         char side) noexcept {
+  if (order_index_.find(order_id) != kInvalidIdx) {
     return;
+  }
+
+  const uint32_t order_idx = addOrderIndexed(order_id, price, qty, side);
+  if (order_idx == kInvalidIdx) {
+    return;
+  }
+
+  if (!registerOrderIndex(order_id, order_idx)) {
+    (void)deleteOrderIndexed(order_idx, order_id, false);
+  }
+}
+
+OrderBook::MutationResult
+OrderBook::cancelSharesIndexed(uint32_t order_idx, uint64_t order_id,
+                               uint32_t canceled_qty,
+                               bool erase_from_index) noexcept {
+  if (order_idx >= order_pool_.size()) {
+    return MutationResult::Ignored;
   }
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != order_id) {
-    return;
+    return MutationResult::Ignored;
   }
   if (canceled_qty >= order.qty) {
-    deleteOrder(order_id);
-    return;
+    return deleteOrderIndexed(order_idx, order_id, erase_from_index)
+               ? MutationResult::Removed
+               : MutationResult::Ignored;
   }
 
   std::vector<PriceLevel> &levels =
@@ -329,46 +356,59 @@ void OrderBook::cancelShares(uint64_t order_id,
 
   level.total_qty -= canceled_qty;
   order.qty -= canceled_qty;
+  return MutationResult::Updated;
 }
 
-void OrderBook::deleteOrder(uint64_t order_id) noexcept {
+void OrderBook::cancelShares(uint64_t order_id,
+                             uint32_t canceled_qty) noexcept {
   const uint32_t order_idx = order_index_.find(order_id);
-  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
-    return;
+  (void)cancelSharesIndexed(order_idx, order_id, canceled_qty, true);
+}
+
+bool OrderBook::deleteOrderIndexed(uint32_t order_idx, uint64_t order_id,
+                                   bool erase_from_index) noexcept {
+  if (order_idx >= order_pool_.size()) {
+    return false;
   }
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != order_id) {
-    return;
+    return false;
   }
   std::vector<PriceLevel> &levels =
       order.side == 'B' ? bid_levels_ : ask_levels_;
   PriceLevel &level = levels[order.level_idx];
 
   if (level.num_orders == 0 || level.total_qty < order.qty) {
-    return;
+    return false;
   }
 
   if (!removeFromLevel(order_idx))
-    return;
+    return false;
 
-  freeOrder(order_idx);
+  freeOrder(order_idx, erase_from_index);
+  return true;
 }
 
-bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
-  if (executed_qty == 0)
-    return false;
+void OrderBook::deleteOrder(uint64_t order_id) noexcept {
   const uint32_t order_idx = order_index_.find(order_id);
-  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
-    return false;
+  (void)deleteOrderIndexed(order_idx, order_id, true);
+}
+
+OrderBook::MutationResult
+OrderBook::tradeIndexed(uint32_t order_idx, uint64_t order_id,
+                        uint32_t executed_qty,
+                        bool erase_from_index) noexcept {
+  if (executed_qty == 0 || order_idx >= order_pool_.size()) {
+    return MutationResult::Ignored;
   }
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != order_id) {
-    return false;
+    return MutationResult::Ignored;
   }
   if (executed_qty > order.qty) {
-    return false;
+    return MutationResult::Ignored;
   }
 
   std::vector<PriceLevel> &levels =
@@ -376,42 +416,47 @@ bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
   PriceLevel &level = levels[order.level_idx];
 
   if (level.num_orders == 0 || level.total_qty < executed_qty) {
-    return false;
+    return MutationResult::Ignored;
   }
 
   if (executed_qty == order.qty) {
-    if (!removeFromLevel(order_idx))
-      return false;
-    freeOrder(order_idx);
-  } else {
-    level.total_qty -= executed_qty;
-    order.qty -= executed_qty;
+    return deleteOrderIndexed(order_idx, order_id, erase_from_index)
+               ? MutationResult::Removed
+               : MutationResult::Ignored;
   }
-  return true;
+
+  level.total_qty -= executed_qty;
+  order.qty -= executed_qty;
+  return MutationResult::Updated;
 }
 
-void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
-                             uint64_t new_price, uint32_t new_qty) noexcept {
-  if (new_qty == 0 || new_id == kInvalidOrderId) {
-    return;
-  }
+bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
+  const uint32_t order_idx = order_index_.find(order_id);
+  return tradeIndexed(order_idx, order_id, executed_qty, true) !=
+         MutationResult::Ignored;
+}
 
-  const uint32_t order_idx = order_index_.find(old_id);
-  if (order_idx == kInvalidIdx || order_idx >= order_pool_.size()) {
-    return;
+OrderBook::MutationResult OrderBook::replaceOrderIndexed(
+    uint32_t order_idx, uint64_t old_id, uint64_t new_id, uint64_t new_price,
+    uint32_t new_qty, bool update_index) noexcept {
+  if (new_qty == 0 || new_id == kInvalidOrderId ||
+      order_idx >= order_pool_.size()) {
+    return MutationResult::Ignored;
   }
 
   Order &order = order_pool_[order_idx];
   if (order.order_id != old_id) {
-    return;
+    return MutationResult::Ignored;
   }
   const char side = order.side;
 
   if (!removeFromLevel(order_idx)) {
-    return;
+    return MutationResult::Ignored;
   }
 
-  order_index_.erase(old_id);
+  if (update_index) {
+    order_index_.erase(old_id);
+  }
   order.order_id = kInvalidOrderId;
 
   const uint32_t new_level_idx = priceToIndex(new_price);
@@ -419,7 +464,7 @@ void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
     resetOrder(order);
     if (free_list_size_ < free_list_.size())
       free_list_[free_list_size_++] = order_idx;
-    return;
+    return MutationResult::Removed;
   }
 
   std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
@@ -434,24 +479,55 @@ void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
   order.order_id = new_id;
   order.side = side;
 
-  if (!order_index_.insert(new_id, order_idx)) {
+  if (update_index && !order_index_.insert(new_id, order_idx)) {
     resetOrder(order);
     if (free_list_size_ < free_list_.size())
       free_list_[free_list_size_++] = order_idx;
-    return;
+    return MutationResult::Removed;
   }
 
   if (!appendOrder(order_pool_, level, order_idx)) {
     local_invalid_ = true;
-    order_index_.erase(order.order_id);
+    if (update_index) {
+      order_index_.erase(order.order_id);
+    }
     order.order_id = kInvalidOrderId;
-    freeOrder(order_idx);
-    return;
+    freeOrder(order_idx, false);
+    return MutationResult::Removed;
   }
   level.total_qty += new_qty;
   ++level.num_orders;
   if (was_empty)
     bitmap.set(new_level_idx);
+
+  return MutationResult::Updated;
+}
+
+void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
+                             uint64_t new_price, uint32_t new_qty) noexcept {
+  const uint32_t order_idx = order_index_.find(old_id);
+  (void)replaceOrderIndexed(order_idx, old_id, new_id, new_price, new_qty,
+                            true);
+}
+
+OrderBook::MutationResult
+OrderBook::restoreSharesIndexed(uint32_t order_idx, uint64_t order_id,
+                                uint32_t qty) noexcept {
+  if (qty == 0 || order_idx >= order_pool_.size()) {
+    return MutationResult::Ignored;
+  }
+
+  Order &order = order_pool_[order_idx];
+  if (order.order_id != order_id) {
+    return MutationResult::Ignored;
+  }
+
+  std::vector<PriceLevel> &levels =
+      order.side == 'B' ? bid_levels_ : ask_levels_;
+  PriceLevel &level = levels[order.level_idx];
+  order.qty += qty;
+  level.total_qty += qty;
+  return MutationResult::Updated;
 }
 
 void OrderBook::reverseExecution(uint64_t order_id, uint64_t price,
@@ -460,18 +536,13 @@ void OrderBook::reverseExecution(uint64_t order_id, uint64_t price,
     return;
 
   const uint32_t order_idx = order_index_.find(order_id);
-  if (order_idx != kInvalidIdx && order_idx < order_pool_.size()) {
-    // Order still exists — add qty back to existing order and level
-    Order &order = order_pool_[order_idx];
-    std::vector<PriceLevel> &levels =
-        order.side == 'B' ? bid_levels_ : ask_levels_;
-    PriceLevel &level = levels[order.level_idx];
-    order.qty += qty;
-    level.total_qty += qty;
-  } else {
-    // Order was fully consumed — re-add it
-    addOrder(order_id, price, qty, side);
+  if (restoreSharesIndexed(order_idx, order_id, qty) ==
+      MutationResult::Updated) {
+    return;
   }
+
+  // Order was fully consumed — re-add it
+  addOrder(order_id, price, qty, side);
 }
 
 TopOfBook OrderBook::getTopOfBook() const noexcept {

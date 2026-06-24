@@ -82,6 +82,44 @@ TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
   EXPECT_EQ(top.bid_qty,   75u);
 }
 
+TEST(BookManagerTest, HandlesHighDirectOrderRef) {
+  constexpr uint64_t order_id = 3'600'000'000ULL;
+  constexpr uint64_t replacement_id = order_id + 1;
+  BookManager manager;
+
+  manager.addOrder(7, order_id, 100, 100, 'B');
+  manager.cancelShares(7, order_id, 25);
+
+  TopOfBook top = manager.getOrderBook(7)->getTopOfBook();
+  EXPECT_EQ(top.bid_price, 100u);
+  EXPECT_EQ(top.bid_qty,   75u);
+
+  manager.replaceOrder(7, order_id, replacement_id, 101, 50);
+  EXPECT_TRUE(manager.trade(7, replacement_id, 50));
+
+  top = manager.getOrderBook(7)->getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty,   0u);
+}
+
+TEST(BookManagerTest, FallsBackForSparseOrderRefOutsideDirectRange) {
+  constexpr uint64_t order_id = 9'000'000'000'000'000'000ULL;
+  BookManager manager;
+
+  manager.addOrder(7, order_id, 100, 100, 'B');
+  manager.cancelShares(7, order_id, 25);
+
+  TopOfBook top = manager.getOrderBook(7)->getTopOfBook();
+  EXPECT_EQ(top.bid_price, 100u);
+  EXPECT_EQ(top.bid_qty,   75u);
+
+  manager.deleteOrder(7, order_id);
+
+  top = manager.getOrderBook(7)->getTopOfBook();
+  EXPECT_EQ(top.bid_price, 0u);
+  EXPECT_EQ(top.bid_qty,   0u);
+}
+
 TEST(BookManagerTest, ZeroLocateIsIgnored) {
   BookManager manager;
   manager.addOrder(0, 1, 100, 50, 'B'); // locate 0 is invalid

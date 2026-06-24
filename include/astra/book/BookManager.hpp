@@ -2,6 +2,7 @@
 
 #include "astra/book/BookCapacity.hpp"
 #include "astra/book/OrderBook.hpp"
+#include "astra/book/OrderRefDirectory.hpp"
 #include "astra/symbol/StockLocate.hpp"
 #include "astra/symbol/SymbolTier.hpp"
 
@@ -34,12 +35,18 @@ public:
   void reverseExecution(uint16_t stock_locate, uint64_t order_id,
                         uint64_t price, uint32_t qty, char side) noexcept;
 
+  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
   const OrderBook *getOrderBook(uint16_t stock_locate) const noexcept;
 
 private:
   OrderBook *find(uint16_t stock_locate) const noexcept;
-  // size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
+  size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
+  OrderBook *resolveDirect(uint16_t stock_locate, uint64_t order_id,
+                           OrderRefDirectory::Handle &handle) noexcept;
+  bool removeDirectIfStale(uint64_t order_id,
+                           OrderRefDirectory::Handle handle) noexcept;
 
+  OrderRefDirectory order_refs_;
   std::array<size_t, kMaxStockLocate> order_capacity_by_locate_{};
   std::array<std::unique_ptr<OrderBook>, kMaxStockLocate> books_{};
 };
