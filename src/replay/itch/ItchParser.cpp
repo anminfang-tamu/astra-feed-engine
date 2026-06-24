@@ -132,12 +132,13 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
 
   if (!symbols_.isRegistered(locate)) {
-    const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
-    if (!t.empty()) {
-      symbols_.setTicker(locate, t);
-      books_.setBookCapacityTier(locate,
-                                 astra::book_capacity::tierForTicker(t));
-    }
+    // const std::string_view t = fixedText(msg, kStockOffset, kStockLen);
+    // if (!t.empty()) {
+    //   symbols_.setTicker(locate, t);
+    //   books_.setBookCapacityTier(locate,
+    //                              astra::book_capacity::tierForTicker(t));
+    // }
+    return (void)skip();
   }
 
   books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
@@ -316,8 +317,8 @@ void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
 }
 
 void ItchParser::createRegisteredBooks() noexcept {
-  for (uint16_t locate = 1;
-       locate < astra::symbol::StockDirectory::kMaxLocate; ++locate) {
+  for (uint16_t locate = 1; locate < astra::symbol::StockDirectory::kMaxLocate;
+       ++locate) {
     createRegisteredBook(locate);
   }
 }

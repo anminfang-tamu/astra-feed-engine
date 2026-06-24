@@ -10,33 +10,19 @@ OrderBook *BookManager::find(uint16_t stock_locate) const noexcept {
   return books_[stock_locate].get();
 }
 
-OrderBook *BookManager::getOrCreate(uint16_t stock_locate) noexcept {
-  if (!astra::symbol::isValidStockLocate(stock_locate))
-    return nullptr;
-  OrderBook *book = books_[stock_locate].get();
-  if (book) {
-    return book;
-  }
+// size_t
+// BookManager::orderCapacityForLocate(uint16_t stock_locate) const noexcept {
+//   if (!astra::symbol::isValidStockLocate(stock_locate)) {
+//     return astra::book_capacity::kDefaultOrderCapacity;
+//   }
+//   const size_t configured_capacity = order_capacity_by_locate_[stock_locate];
+//   return configured_capacity != 0 ? configured_capacity
+//                                   :
+//                                   astra::book_capacity::kDefaultOrderCapacity;
+// }
 
-  const size_t order_capacity = orderCapacityForLocate(stock_locate);
-  books_[stock_locate] = std::make_unique<OrderBook>(
-      static_cast<uint32_t>(stock_locate), order_capacity);
-  book = books_[stock_locate].get();
-  return book;
-}
-
-size_t
-BookManager::orderCapacityForLocate(uint16_t stock_locate) const noexcept {
-  if (!astra::symbol::isValidStockLocate(stock_locate)) {
-    return astra::book_capacity::kDefaultOrderCapacity;
-  }
-  const size_t configured_capacity = order_capacity_by_locate_[stock_locate];
-  return configured_capacity != 0 ? configured_capacity
-                                  : astra::book_capacity::kDefaultOrderCapacity;
-}
-
-void BookManager::setBookCapacityTier(
-    uint16_t stock_locate, astra::symbol::SymbolTier tier) noexcept {
+void BookManager::setBookCapacityTier(uint16_t stock_locate,
+                                      astra::symbol::SymbolTier tier) noexcept {
   if (!astra::symbol::isValidStockLocate(stock_locate)) {
     return;
   }
@@ -49,7 +35,7 @@ void BookManager::setBookCapacityTier(
 
 void BookManager::addOrder(uint16_t stock_locate, uint64_t order_id,
                            uint64_t price, uint32_t qty, char side) noexcept {
-  OrderBook *book = getOrCreate(stock_locate);
+  OrderBook *book = find(stock_locate);
   if (book)
     book->addOrder(order_id, price, qty, side);
 }

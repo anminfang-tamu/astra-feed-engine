@@ -20,7 +20,6 @@ public:
   BookManager();
   ~BookManager();
 
-  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
   void setBookCapacityTier(uint16_t stock_locate,
                            astra::symbol::SymbolTier tier) noexcept;
   void addOrder(uint16_t stock_locate, uint64_t order_id, uint64_t price,
@@ -39,7 +38,7 @@ public:
 
 private:
   OrderBook *find(uint16_t stock_locate) const noexcept;
-  size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
+  // size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
 
   std::array<size_t, kMaxStockLocate> order_capacity_by_locate_{};
   std::array<std::unique_ptr<OrderBook>, kMaxStockLocate> books_{};
