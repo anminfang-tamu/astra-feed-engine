@@ -323,6 +323,7 @@ ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
 ASTRA_DPDK_BURST_SIZE=16 \
 ASTRA_DPDK_LATENCY_MODE=packet \
+ASTRA_DPDK_FLOW_FILTER=off \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow 0000:28:00.0" \
 ASTRA_UDP_DROP_METRICS=on \
 ASTRA_STAGE_LATENCY_METRICS=off \
@@ -352,7 +353,7 @@ ASTRA_SS_PAUSE_SECONDS=120 \
 | ----------------------: | -------: | ---------: | ------ | ------------------------------: | -------------------: | -------------: | -------: | -------: | -------: | --------: |
 |          `100000 pkt/s` |   `30 s` |        `8` | `Good` |                     `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `304 ns` | `613 ns` | `819 ns` | `1002 ns` |
 |          `100000 pkt/s` |  `120 s` |        `8` | `Good` |                     `0 / 0 / 0` |       `36836682 / 0` |    `368366635` | `272 ns` | `493 ns` | `704 ns` |  `825 ns` |
-|          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                     `0 / 0 / 0` |       `36836680 / 0` |    `368366635` | `271 ns` | `429 ns` | `693 ns` |  `786 ns` |
+|          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                     `0 / 0 / 0` |       `36836684 / 0` |    `368366635` | `256 ns` | `456 ns` | `690 ns` |  `796 ns` |
 |          `100000 pkt/s` |  `120 s` |       `32` | `Good` |                     `0 / 0 / 0` |       `36836679 / 0` |    `368366635` | `273 ns` | `469 ns` | `708 ns` |  `819 ns` |
 
 For this EC2 host and feed shape, DPDK burst `16` is the best current setting.
@@ -365,14 +366,14 @@ sender next_seq=368366635
 receiver channel_next_seq=368366635
 line_a_packets=18418332
 line_b_packets=18418332
-filtered=16
-malformed=0
+filtered=0
+malformed=20
 imissed=0
 ierrors=0
 rx_nombuf=0
 latency count=368366634
-mean_ns=325.08
-max_ns=944172436
+mean_ns=312.94
+max_ns=970036147
 ```
 
 The `max_ns` value in these runs includes the one-time `SS` book creation and
