@@ -162,7 +162,7 @@ ASTRA_CPU_B=4 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
-ASTRA_SS_PAUSE_SECONDS=30 \
+ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.18 \
@@ -170,7 +170,7 @@ ASTRA_SS_PAUSE_SECONDS=30 \
   9001 \
   20 \
   "ASTRA     " \
-  10000
+  100000
 ```
 
 The final `10000` is the normal packet rate per line outside the timestamp-paced

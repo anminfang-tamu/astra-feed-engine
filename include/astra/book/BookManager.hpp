@@ -18,7 +18,9 @@ class BookManager {
 public:
   static constexpr uint16_t kMaxStockLocate = astra::symbol::kMaxStockLocate;
 
-  BookManager();
+  explicit BookManager(
+      uint64_t max_direct_order_ref =
+          OrderRefDirectory::kDefaultMaxDirectOrderRef);
   ~BookManager();
 
   void setBookCapacityTier(uint16_t stock_locate,

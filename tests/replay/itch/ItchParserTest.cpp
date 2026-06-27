@@ -14,6 +14,7 @@
 namespace {
 
 using Bytes = std::vector<std::byte>;
+constexpr uint64_t kTestMaxDirectOrderRef = 1024;
 
 void appendU8(Bytes &b, uint8_t v) { b.push_back(static_cast<std::byte>(v)); }
 void appendU16(Bytes &b, uint16_t v) {
@@ -125,7 +126,7 @@ auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
   astra::symbol::StockDirectory symbols;
-  BookManager books;
+  BookManager books{kTestMaxDirectOrderRef};
   ItchParser parser{symbols, books, /*channel_id=*/2};
 
   void send(const Bytes &b) { parser.handleMessage(asSpan(b)); }

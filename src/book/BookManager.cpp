@@ -14,7 +14,8 @@ bool isValidAdd(uint16_t stock_locate, uint64_t order_id, uint32_t qty,
 
 } // namespace
 
-BookManager::BookManager() = default;
+BookManager::BookManager(uint64_t max_direct_order_ref)
+    : order_refs_(max_direct_order_ref) {}
 
 BookManager::~BookManager() = default;
 

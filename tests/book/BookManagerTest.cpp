@@ -5,13 +5,19 @@
 
 #include <gtest/gtest.h>
 
+namespace {
+
+constexpr uint64_t kTestMaxDirectOrderRef = 1024;
+
+} // namespace
+
 TEST(BookManagerTest, UnknownLocateReturnsNull) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   EXPECT_EQ(manager.getOrderBook(42), nullptr);
 }
 
 TEST(BookManagerTest, RoutesOrdersByStockLocate) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(7,  1, 100, 10, 'B');
   manager.addOrder(9,  2, 200, 20, 'S');
 
@@ -37,13 +43,13 @@ TEST(BookManagerTest, RoutesOrdersByStockLocate) {
 }
 
 TEST(BookManagerTest, DeleteForUnknownLocateIsIgnored) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.deleteOrder(42, 999); // no book for locate 42 yet — no crash
   EXPECT_EQ(manager.getOrderBook(42), nullptr);
 }
 
 TEST(BookManagerTest, DeleteRemovesOrder) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(1, 10, 50, 100, 'B');
   manager.deleteOrder(1, 10);
 
@@ -53,7 +59,7 @@ TEST(BookManagerTest, DeleteRemovesOrder) {
 }
 
 TEST(BookManagerTest, CancelSharesReducesQuantity) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(1, 10, 50, 100, 'B');
   manager.cancelShares(1, 10, 60); // 100 - 60 = 40 remaining
 
@@ -63,7 +69,7 @@ TEST(BookManagerTest, CancelSharesReducesQuantity) {
 }
 
 TEST(BookManagerTest, TradeReducesQuantity) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(1, 10, 50, 100, 'B');
   EXPECT_TRUE(manager.trade(1, 10, 30));
 
@@ -73,7 +79,7 @@ TEST(BookManagerTest, TradeReducesQuantity) {
 }
 
 TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(1, 10, 50, 100, 'B');
   manager.replaceOrder(1, 10, 20, 60, 75); // old=10 → new=20 at price 60 qty 75
 
@@ -82,10 +88,10 @@ TEST(BookManagerTest, ReplaceOrderUpdatesBook) {
   EXPECT_EQ(top.bid_qty,   75u);
 }
 
-TEST(BookManagerTest, HandlesHighDirectOrderRef) {
-  constexpr uint64_t order_id = 3'600'000'000ULL;
+TEST(BookManagerTest, HandlesDirectOrderRefAtConfiguredLimit) {
+  constexpr uint64_t order_id = kTestMaxDirectOrderRef;
   constexpr uint64_t replacement_id = order_id + 1;
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef + 1);
 
   manager.addOrder(7, order_id, 100, 100, 'B');
   manager.cancelShares(7, order_id, 25);
@@ -104,7 +110,7 @@ TEST(BookManagerTest, HandlesHighDirectOrderRef) {
 
 TEST(BookManagerTest, FallsBackForSparseOrderRefOutsideDirectRange) {
   constexpr uint64_t order_id = 9'000'000'000'000'000'000ULL;
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
 
   manager.addOrder(7, order_id, 100, 100, 'B');
   manager.cancelShares(7, order_id, 25);
@@ -121,13 +127,13 @@ TEST(BookManagerTest, FallsBackForSparseOrderRefOutsideDirectRange) {
 }
 
 TEST(BookManagerTest, ZeroLocateIsIgnored) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.addOrder(0, 1, 100, 50, 'B'); // locate 0 is invalid
   EXPECT_EQ(manager.getOrderBook(0), nullptr);
 }
 
 TEST(BookManagerTest, AppliesConfiguredBookCapacityBeforeBookCreation) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.setBookCapacityTier(7, astra::symbol::SymbolTier::Active);
 
   manager.addOrder(7, 1, 100, 10, 'B');
@@ -138,7 +144,7 @@ TEST(BookManagerTest, AppliesConfiguredBookCapacityBeforeBookCreation) {
 }
 
 TEST(BookManagerTest, GetOrCreateCreatesEmptyBookWithConfiguredCapacity) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
   manager.setBookCapacityTier(7, astra::symbol::SymbolTier::Active);
 
   (void)manager.getOrCreate(7);
@@ -150,7 +156,7 @@ TEST(BookManagerTest, GetOrCreateCreatesEmptyBookWithConfiguredCapacity) {
 }
 
 TEST(BookManagerTest, UsesDefaultCapacityForUntieredSymbols) {
-  BookManager manager;
+  BookManager manager(kTestMaxDirectOrderRef);
 
   manager.addOrder(8, 1, 100, 10, 'B');
 

@@ -100,7 +100,7 @@ ip -br addr
 Set hugepages and locate `dpdk-devbind.py`:
 
 ```bash
-sudo sysctl -w vm.nr_hugepages=1024
+sudo sysctl -w vm.nr_hugepages=2048
 sudo modprobe vfio-pci
 
 DPDK_DEVBIND=$(command -v dpdk-devbind.py || echo /usr/share/dpdk/usertools/dpdk-devbind.py)
@@ -172,9 +172,9 @@ sudo env \
   ASTRA_CPU=2 \
   ASTRA_NUMA_NODE="${FEED_NUMA}" \
   ASTRA_DPDK_PORT_ID=0 \
-  ASTRA_DPDK_BURST_SIZE=8 \
+  ASTRA_DPDK_BURST_SIZE=16 \
   ASTRA_DPDK_LATENCY_MODE=packet \
-  ASTRA_DPDK_FLOW_FILTER=on \
+  ASTRA_DPDK_FLOW_FILTER=off \
   ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
   ASTRA_UDP_DROP_METRICS=on \
   ASTRA_STAGE_LATENCY_METRICS=off \

@@ -1,16 +1,14 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <memory>
-#include <new>
 #include <vector>
 
 class OrderRefDirectory {
 public:
   static constexpr uint32_t kInvalidIdx = std::numeric_limits<uint32_t>::max();
+  // Production default: one pre-touched direct slot for every uint32 order ref.
   static constexpr uint64_t kDefaultMaxDirectOrderRef =
       std::numeric_limits<uint32_t>::max();
 
@@ -26,7 +24,9 @@ public:
   explicit OrderRefDirectory(
       uint64_t max_direct_order_ref = kDefaultMaxDirectOrderRef)
       : max_direct_order_ref_(max_direct_order_ref),
-        direct_pages_(pageCount(max_direct_order_ref)) {}
+        direct_entries_(entryCount(max_direct_order_ref), kEmpty) {
+    touchPages();
+  }
 
   bool canStore(uint64_t order_ref) const noexcept {
     return order_ref <= max_direct_order_ref_;
@@ -39,12 +39,7 @@ public:
       return false;
     }
 
-    Page *page = ensurePage(pageIndex(order_ref));
-    if (page == nullptr) {
-      return false;
-    }
-
-    uint64_t &entry = page->entries[offset(order_ref)];
+    uint64_t &entry = direct_entries_[directIndex(order_ref)];
     if (entry != kEmpty) {
       return false;
     }
@@ -58,12 +53,7 @@ public:
       return {};
     }
 
-    const Page *page = pageFor(pageIndex(order_ref));
-    if (page == nullptr) {
-      return {};
-    }
-
-    return unpack(page->entries[offset(order_ref)]);
+    return unpack(direct_entries_[directIndex(order_ref)]);
   }
 
   void erase(uint64_t order_ref) noexcept {
@@ -71,35 +61,18 @@ public:
       return;
     }
 
-    Page *page = pageFor(pageIndex(order_ref));
-    if (page == nullptr) {
-      return;
-    }
-
-    page->entries[offset(order_ref)] = kEmpty;
+    direct_entries_[directIndex(order_ref)] = kEmpty;
   }
 
 private:
   static constexpr uint64_t kEmpty = 0;
-  static constexpr uint64_t kPageBits = 16;
-  static constexpr uint64_t kPageSize = 1ULL << kPageBits;
-  static constexpr uint64_t kPageMask = kPageSize - 1;
 
-  struct Page {
-    Page() noexcept { entries.fill(kEmpty); }
-    std::array<uint64_t, kPageSize> entries;
-  };
-
-  static size_t pageCount(uint64_t max_direct_order_ref) noexcept {
-    return static_cast<size_t>((max_direct_order_ref >> kPageBits) + 1);
+  static size_t entryCount(uint64_t max_direct_order_ref) noexcept {
+    return static_cast<size_t>(max_direct_order_ref + 1);
   }
 
-  static size_t pageIndex(uint64_t order_ref) noexcept {
-    return static_cast<size_t>(order_ref >> kPageBits);
-  }
-
-  static size_t offset(uint64_t order_ref) noexcept {
-    return static_cast<size_t>(order_ref & kPageMask);
+  static size_t directIndex(uint64_t order_ref) noexcept {
+    return static_cast<size_t>(order_ref);
   }
 
   static uint64_t pack(uint16_t stock_locate, uint32_t pool_index) noexcept {
@@ -116,36 +89,22 @@ private:
             static_cast<uint32_t>((entry & 0xffffffffULL) - 1)};
   }
 
-  Page *pageFor(size_t index) noexcept {
-    if (index >= direct_pages_.size()) {
-      return nullptr;
-    }
-    return direct_pages_[index].get();
-  }
+  void touchPages() noexcept {
+    static constexpr size_t kPageSize = 4096;
+    static constexpr size_t kEntriesPerPage = kPageSize / sizeof(uint64_t);
 
-  const Page *pageFor(size_t index) const noexcept {
-    if (index >= direct_pages_.size()) {
-      return nullptr;
-    }
-    return direct_pages_[index].get();
-  }
-
-  Page *ensurePage(size_t index) noexcept {
-    if (index >= direct_pages_.size()) {
-      return nullptr;
+    if (direct_entries_.empty()) {
+      return;
     }
 
-    if (direct_pages_[index] == nullptr) {
-      Page *page = new (std::nothrow) Page();
-      if (page == nullptr) {
-        return nullptr;
-      }
-      direct_pages_[index].reset(page);
+    volatile uint64_t *entries = direct_entries_.data();
+    for (size_t index = 0; index < direct_entries_.size();
+         index += kEntriesPerPage) {
+      entries[index] = entries[index];
     }
-
-    return direct_pages_[index].get();
+    entries[direct_entries_.size() - 1] = entries[direct_entries_.size() - 1];
   }
 
   uint64_t max_direct_order_ref_;
-  std::vector<std::unique_ptr<Page>> direct_pages_;
+  std::vector<uint64_t> direct_entries_;
 };
