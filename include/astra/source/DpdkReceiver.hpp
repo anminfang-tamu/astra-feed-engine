@@ -28,6 +28,7 @@ public:
   // packet.data points into a DPDK mbuf. It remains valid until the next
   // DpdkReceiver::next() call on this receiver or until receiver destruction.
   bool next(PacketView &packet) override;
+  void setTimestampingEnabled(bool enabled) noexcept override;
 
   uint64_t packetsA() const noexcept;
   uint64_t packetsB() const noexcept;

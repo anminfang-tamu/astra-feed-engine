@@ -37,7 +37,7 @@ ItchMoldUdpSource::ItchMoldUdpSource(const std::string &path,
 
 bool ItchMoldUdpSource::next(PacketView &packet) {
     packet = PacketView{};
-    packet.receive_start_ticks = rdtsc();
+    packet.receive_start_ticks = timestamping_enabled_ ? rdtsc() : 0;
     if (eof_) return false;
 
     const uint64_t first_seq = next_seq_;

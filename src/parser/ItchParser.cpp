@@ -1,15 +1,10 @@
 #include "astra/parser/ItchParser.hpp"
-#include "astra/book/BookCapacity.hpp"
-#include "astra/core/Time.hpp"
 
 #include <cstring>
-#include <iostream>
 #include <string_view>
 
 namespace {
 
-constexpr std::size_t kStockOffset =
-    24; // offset of 8-char ticker in Add messages
 constexpr std::size_t kStockLen = 8;
 constexpr std::size_t kSystemEventLen = 12;
 constexpr std::size_t kSystemEventCodeOffset = 11;
@@ -158,7 +153,6 @@ void ItchParser::handleExecution(std::span<const std::byte> msg,
   if (!books_.trade(locate, order_id, executed_qty)) {
     return (void)skip();
   }
-  // Execution part will be implemented later
 }
 
 // 'X' (23 bytes)
@@ -249,7 +243,9 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
-  books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
+  if (channel_phase_ == ChannelPhase::SystemHours) {
+    createRegisteredBook(locate);
+  }
 }
 
 // 'S' (12 bytes) — System Event
@@ -305,8 +301,9 @@ void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
     return;
   }
 
-  (void)books_.getOrCreate(locate);
-  prepared_book_by_locate_[locate] = true;
+  if (books_.getOrCreate(locate) != nullptr) {
+    prepared_book_by_locate_[locate] = true;
+  }
 }
 
 void ItchParser::createRegisteredBooks() noexcept {
@@ -314,6 +311,7 @@ void ItchParser::createRegisteredBooks() noexcept {
        ++locate) {
     createRegisteredBook(locate);
   }
+  books_.sealBookUniverse();
 }
 
 void ItchParser::reset() {

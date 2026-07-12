@@ -80,6 +80,18 @@ TEST_F(UdpReceiverTest, ReceiveStartTicksAreNonZero) {
   EXPECT_GT(pkt.receive_start_ticks, 0u);
 }
 
+TEST_F(UdpReceiverTest, TimestampingCanBeDisabledForThroughputRuns) {
+  UdpReceiver rx("127.0.0.1", kPort);
+  rx.setTimestampingEnabled(false);
+
+  const char payload[] = "no_ts";
+  send_bytes(payload, sizeof(payload));
+
+  const PacketView pkt = spin_next(rx);
+
+  EXPECT_EQ(pkt.receive_start_ticks, 0u);
+}
+
 TEST_F(UdpReceiverTest, MultiplePacketsReceivedInOrder) {
   UdpReceiver rx("127.0.0.1", kPort);
 

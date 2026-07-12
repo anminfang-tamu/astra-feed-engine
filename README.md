@@ -4,6 +4,49 @@ AstraFeed is a low-latency C++ market data feed handler for MoldUDP64-wrapped
 NASDAQ ITCH 5.0 replay. The primary benchmark setup uses redundant A/B UDP
 sender lines feeding one `md_engine` receiver.
 
+## Order-book architecture
+
+The live book path has one authoritative copy of each kind of state:
+
+- A fixed global `OrderRefDirectory` maps every nonzero 64-bit ITCH order
+  reference to `(stock_locate, order_pool_index)`. It uses a preallocated
+  half-loaded open-addressed table; there is no per-book ID-map fallback.
+- A fixed global `OrderArena` stores 32-byte `Order` records. The record keeps
+  its full order reference, raw ITCH price, quantity, FIFO links, side, and
+  price-level handle. All books share the arena, so quiet symbols do not reserve
+  large per-symbol order pools.
+- Each book has a constant-depth four-byte radix root for the complete
+  `uint32_t` ITCH price domain. Internal nodes, bid/ask leaves, and 64-bit
+  aggregate price levels come from shared fixed pools. Best price and top-ten
+  traversal use the same radix/bitmap state; there is no duplicate ordered
+  index.
+- Stock Directory messages prepare the registered book universe before live
+  flow. At Start of System Hours the universe is sealed; an unexpected late
+  book request is rejected and counted instead of allocating on the hot path.
+
+All directory, order, and price-pool storage is allocated and page-touched at
+startup. Capacity exhaustion never falls back or silently drops into another
+structure: it latches the affected book invalid and increments an explicit
+shutdown counter.
+
+Production defaults and overrides:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `ASTRA_ORDER_DIRECTORY_SLOTS` | `16777216` | Hash slots; maximum live mappings are half this value |
+| `ASTRA_ORDER_POOL_CAPACITY` | directory maximum | Global concurrent live-order capacity |
+| `ASTRA_PRICE_INTERNAL_NODE_CAPACITY` | `163840` | Shared radix internal nodes |
+| `ASTRA_PRICE_LEAF_CAPACITY` | `1048576` | Shared 256-price radix leaves |
+| `ASTRA_PRICE_LEVEL_CAPACITY` | `2097152` | Shared occupied side/price levels |
+
+These are operational envelopes, not assumptions about a particular trading
+day. Price-pool defaults scale down with a smaller configured order pool. Size
+all pools for expected concurrent live state plus headroom, then accept a run
+only when every directory, order-pool, price-pool, and local-invalid counter is
+zero. The production defaults reserve roughly 2.6 GiB for these three core
+structures, excluding the separate fixed sequencing/gap state; smaller
+deployments should lower the explicit capacities together.
+
 ## Linux A/B Replay
 
 This runbook assumes:
@@ -26,8 +69,17 @@ ASTRA_STAGE_LATENCY_METRICS=off \
 ./scripts/run_engine_udp.sh
 ```
 
-`ASTRA_STAGE_LATENCY_METRICS=off` disables the per-stage breakdown. Packet-level
-latency remains enabled unless `ASTRA_LATENCY_METRICS=off` is also set.
+Per-stage timing is not currently wired into `md_engine`; packet-level latency
+is controlled by `ASTRA_LATENCY_METRICS`. With
+`ASTRA_LATENCY_METRICS=off`, receivers skip `rdtsc` capture entirely and the
+decoder performs no timestamp conversion, providing a genuine throughput mode.
+
+The UDP and DPDK engine wrappers reconfigure and incrementally rebuild
+`md_engine` before every launch, default to `Release`, and print the Git SHA,
+worktree state, and build type used for the run. Set `ASTRA_BUILD_TYPE` to
+override the build type. Set `ASTRA_ENABLE_IPO=ON` to request compiler-supported
+interprocedural optimization/LTO; configuration fails explicitly when the
+selected toolchain cannot provide it.
 
 ### NUMA Binding
 
@@ -121,8 +173,8 @@ ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2" \
 ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
 
-DPDK is off by default. The wrapper builds `build-dpdk/md_engine` with
-`-DASTRA_ENABLE_DPDK=ON` and runs it with `ASTRA_RX=dpdk`. Validate the host
+DPDK is off by default. The wrapper incrementally builds `build-dpdk/md_engine`
+with `-DASTRA_ENABLE_DPDK=ON` and runs it with `ASTRA_RX=dpdk`. Validate the host
 first with hugepages, NIC binding, PMD availability, and `testpmd` RX.
 `ASTRA_DPDK_BURST_SIZE` must be divisible by `8`.
 `ASTRA_DPDK_LATENCY_MODE=packet` timestamps each accepted packet before DPDK
@@ -199,8 +251,9 @@ For the sample ITCH file, `SS` is around `04:00:00` and `SQ` is around
 |   `165` |                       2 minutes |
 
 `ASTRA_SS_PAUSE_SECONDS` adds a quiet pause immediately after sending `SS`, so
-the receiver can create and touch registered order books before pre-market order
-flow resumes.
+the receiver can construct and seal all registered book roots before pre-market
+order flow resumes. The large global directory, order arena, and price pools
+are already allocated and page-touched at process startup.
 
 ### Flat Stress Mode
 
@@ -271,6 +324,38 @@ normal. Persistent `GapDetected`, nonzero kernel drops, or a large
 sender/receiver sequence gap means the run should not be used as a clean latency
 baseline.
 
+The final `book_stats` line is also an acceptance gate. In particular, reject a
+run with any nonzero allocation, directory, stale/missing reference, late book,
+price-pool exhaustion, invalid-release, mutation-failure, price-rejection, or
+locally-invalid-book counter. `md_engine` exits nonzero when the final channel,
+gap, or book-state gate is not clean.
+
+### Offline full-file correctness benchmark
+
+`astra_itch_replay_benchmark` replays length-prefixed ITCH records directly
+through `ItchParser` and the order books. It excludes UDP/DPDK and latency
+timestamping, and exits nonzero unless all representation gates are clean.
+
+```bash
+cmake -S . -B build-perf \
+  -DASTRA_BUILD_TESTS=OFF \
+  -DASTRA_BUILD_BENCHMARKS=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-perf --target astra_itch_replay_benchmark -j
+
+ASTRA_ORDER_DIRECTORY_SLOTS=4194304 \
+./build-perf/benchmarks/astra_itch_replay_benchmark \
+  ./data/itch/unzipped/01302019.NASDAQ_ITCH50
+```
+
+On 2026-07-10, a local ARM64 macOS build using Apple Clang 21 and `-O3`
+processed all `368366634` records (`11245883092` bytes) in `86.597 s`, or
+`4.254 million records/s`. All failure counters were zero. Measured concurrent
+high-watermarks were `1742866` orders, `71065` internal price nodes, `587520`
+price leaves, and `707130` occupied side/price levels. This validates the
+implementation against that trace; it is not a UDP latency result and does not
+replace multi-day or live-capacity testing.
+
 ### Latency Measurement Boundary
 
 The latency histogram is recorded by `md_engine` after `MoldUdpDecoder`
@@ -288,6 +373,12 @@ so the reported DPDK latency includes the user-space Ethernet/IPv4/UDP fast-path
 parse in addition to the same MoldUDP/ITCH/book path.
 
 ## Recent Results
+
+The network-latency rows below are historical and were collected across
+different code revisions before the current order-directory, global-order-pool,
+and full-price-radix redesign. Keep them as runbook references only. Rerun every
+transport on one clean Release/IPO binary and one Git SHA before making a
+current performance comparison.
 
 ### Full-Day Flat Replay
 
@@ -356,7 +447,8 @@ ASTRA_SS_PAUSE_SECONDS=120 \
 |          `100000 pkt/s` |  `120 s` |       `16` | `Good` |                     `0 / 0 / 0` |       `36836684 / 0` |    `368366635` | `256 ns` | `456 ns` | `690 ns` |  `796 ns` |
 |          `100000 pkt/s` |  `120 s` |       `32` | `Good` |                     `0 / 0 / 0` |       `36836679 / 0` |    `368366635` | `273 ns` | `469 ns` | `708 ns` |  `819 ns` |
 
-For this EC2 host and feed shape, DPDK burst `16` is the best current setting.
+For the historical EC2 binary and feed shape, DPDK burst `16` was the best
+measured setting.
 Burst `32` was clean but had worse p99 and tail latency than burst `16`.
 
 Latest clean-run details for the `120 s` / burst `16` row:

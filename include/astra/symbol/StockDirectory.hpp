@@ -6,8 +6,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <string_view>
 
 namespace astra::symbol {
 
@@ -26,20 +24,6 @@ public:
       ++count_;
     entries_[locate] = entry;
     entries_[locate].locate = locate;
-  }
-
-  // Lightweight fallback called from Add Order ('A'/'F') when Stock Directory
-  // hasn't been seen yet for this locate. Does nothing if already registered.
-  void setTicker(std::uint16_t locate, std::string_view sym) noexcept {
-    if (!isValidStockLocate(locate))
-      return;
-    if (entries_[locate].ticker[0] != '\0')
-      return;
-    const std::size_t n = sym.size() < 8 ? sym.size() : 8;
-    std::memcpy(entries_[locate].ticker, sym.data(), n);
-    entries_[locate].ticker[n] = '\0';
-    entries_[locate].locate = locate;
-    ++count_;
   }
 
   const StockDirectoryEntry *get(std::uint16_t locate) const noexcept {

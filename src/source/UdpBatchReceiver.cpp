@@ -157,7 +157,7 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
     msgs_[i].msg_hdr.msg_controllen = controls_[i].size();
   }
 
-  const uint64_t receive_start_ticks = rdtsc();
+  const uint64_t receive_start_ticks = timestamping_enabled_ ? rdtsc() : 0;
   const int n =
       ::recvmmsg(fd_, msgs_.data(), static_cast<unsigned int>(batch_size_),
                  MSG_DONTWAIT | MSG_TRUNC, nullptr);

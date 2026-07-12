@@ -29,6 +29,9 @@ public:
   // Compatibility path for the current engine: refill with recvmmsg(), then
   // return one packet per call.
   bool next(PacketView &packet) noexcept override;
+  void setTimestampingEnabled(bool enabled) noexcept override {
+    timestamping_enabled_ = enabled;
+  }
 
   // Batch path for experiments or a future engine loop that can process
   // several UDP datagrams before returning to the socket.
@@ -70,4 +73,5 @@ private:
 #ifdef __linux__
   uint32_t last_kernel_drop_count_{0};
 #endif
+  bool timestamping_enabled_{true};
 };

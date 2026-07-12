@@ -16,7 +16,7 @@
 namespace {
 
 using Bytes = std::vector<std::byte>;
-constexpr uint64_t kTestMaxDirectOrderRef = 1024;
+constexpr size_t kTestDirectorySlots = 1024;
 
 void appendU8(Bytes &b, uint8_t v) { b.push_back(static_cast<std::byte>(v)); }
 void appendU16(Bytes &b, uint16_t v) {
@@ -75,11 +75,27 @@ PacketView view(const Bytes &b) {
   return {b.data(), b.size(), rdtsc()};
 }
 
+void registerSymbol(astra::symbol::StockDirectory &symbols, uint16_t locate,
+                    const char *ticker) {
+  astra::symbol::StockDirectoryEntry entry{};
+  std::size_t i = 0;
+  while (ticker[i] != '\0' && i < 8) {
+    entry.ticker[i] = ticker[i];
+    ++i;
+  }
+  entry.ticker[i] = '\0';
+  entry.locate = locate;
+  symbols.set(locate, entry);
+}
+
 } // namespace
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   astra::symbol::StockDirectory symbols;
-  BookManager books(kTestMaxDirectOrderRef);
+  registerSymbol(symbols, 1, "AAPL");
+  registerSymbol(symbols, 2, "MSFT");
+  registerSymbol(symbols, 3, "NVDA");
+  BookManager books(kTestDirectorySlots);
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -122,7 +138,8 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
 
 TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
   astra::symbol::StockDirectory symbols;
-  BookManager books(kTestMaxDirectOrderRef);
+  registerSymbol(symbols, 1, "AAPL");
+  BookManager books(kTestDirectorySlots);
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);

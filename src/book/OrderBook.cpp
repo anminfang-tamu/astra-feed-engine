@@ -2,271 +2,200 @@
 
 #include <cstddef>
 #include <limits>
-#include <vector>
 
 namespace {
 
-constexpr uint32_t kPriceCenter =
-    static_cast<uint32_t>(OrderBook::kMaxPriceLevels / 2);
 constexpr uint64_t kInvalidOrderId = 0;
-
-constexpr uint64_t nextPowerOfTwo(uint64_t v) noexcept {
-  if (v <= 2)
-    return 2;
-  --v;
-  v |= v >> 1;
-  v |= v >> 2;
-  v |= v >> 4;
-  v |= v >> 8;
-  v |= v >> 16;
-  v |= v >> 32;
-  return ++v;
-}
-
-uint32_t orderIndexCapacity(size_t order_capacity) noexcept {
-  const uint64_t capacity = nextPowerOfTwo(order_capacity * 4);
-  if (capacity > std::numeric_limits<uint32_t>::max())
-    return std::numeric_limits<uint32_t>::max();
-  return static_cast<uint32_t>(capacity);
-}
 
 bool isValidSide(char side) noexcept { return side == 'B' || side == 'S'; }
 
-void touchPages(void *data, size_t bytes) noexcept {
-  if (data == nullptr || bytes == 0) {
-    return;
-  }
-
-  static constexpr size_t kPageSize = 4096;
-  volatile char *p = static_cast<volatile char *>(data);
-  for (size_t offset = 0; offset < bytes; offset += kPageSize) {
-    p[offset] = p[offset];
-  }
-  p[bytes - 1] = p[bytes - 1];
-}
-
-void resetLevel(PriceLevel &level) noexcept {
-  level.head_idx = OrderBook::kInvalidIdx;
-  level.tail_idx = OrderBook::kInvalidIdx;
-  level.total_qty = 0;
-  level.num_orders = 0;
+PriceLevelIndex::Side priceSide(char side) noexcept {
+  return side == 'B' ? PriceLevelIndex::Side::Bid
+                     : PriceLevelIndex::Side::Ask;
 }
 
 void resetOrder(Order &order) noexcept {
+  order.order_id = kInvalidOrderId;
+  order.price = 0;
   order.prev_idx = OrderBook::kInvalidIdx;
   order.next_idx = OrderBook::kInvalidIdx;
   order.qty = 0;
-  order.level_idx = OrderBook::kInvalidIdx;
-  order.price = 0;
-  order.order_id = kInvalidOrderId;
-  order.side = 'B';
+  order.setLevelAndSide(Order::kInvalidLevel, 'B');
 }
 
-uint64_t indexToPrice(uint64_t reference_price, uint64_t tick_size,
-                      uint32_t level_idx) noexcept {
-  if (level_idx >= kPriceCenter) {
-    return reference_price +
-           (static_cast<uint64_t>(level_idx - kPriceCenter) * tick_size);
-  }
-  const uint64_t ticks_below =
-      static_cast<uint64_t>(kPriceCenter - level_idx) * tick_size;
-  return reference_price >= ticks_below ? reference_price - ticks_below : 0;
-}
-
-bool appendOrder(std::vector<Order> &orders, PriceLevel &level,
+bool appendOrder(OrderArena &orders, PooledPriceLevel &level,
                  uint32_t order_idx) noexcept {
-  if (order_idx >= orders.size())
+  Order *order = orders.at(order_idx);
+  if (order == nullptr) {
     return false;
-  Order &order = orders[order_idx];
-  order.prev_idx = level.tail_idx;
-  order.next_idx = OrderBook::kInvalidIdx;
+  }
+
+  order->prev_idx = PooledPriceLevel::kInvalidOrderIndex;
+  order->next_idx = PooledPriceLevel::kInvalidOrderIndex;
+
   if (level.num_orders == 0) {
-    level.head_idx = order_idx;
-  } else {
-    if (level.tail_idx >= orders.size()) {
-      order.prev_idx = OrderBook::kInvalidIdx;
+    if (level.head_idx != PooledPriceLevel::kInvalidOrderIndex ||
+        level.tail_idx != PooledPriceLevel::kInvalidOrderIndex ||
+        level.total_qty != 0) {
       return false;
     }
-    orders[level.tail_idx].next_idx = order_idx;
+    level.head_idx = order_idx;
+    level.tail_idx = order_idx;
+    return true;
   }
+
+  Order *tail = orders.at(level.tail_idx);
+  if (orders.at(level.head_idx) == nullptr || tail == nullptr ||
+      tail->order_id == kInvalidOrderId ||
+      tail->next_idx != PooledPriceLevel::kInvalidOrderIndex) {
+    return false;
+  }
+
+  order->prev_idx = level.tail_idx;
+  tail->next_idx = order_idx;
   level.tail_idx = order_idx;
   return true;
 }
 
-bool unlinkOrder(std::vector<Order> &orders, PriceLevel &level,
+bool unlinkOrder(OrderArena &orders, PooledPriceLevel &level,
                  uint32_t order_idx) noexcept {
-  if (order_idx >= orders.size() || level.num_orders == 0)
-    return false;
-
-  Order &order = orders[order_idx];
-  const bool has_prev = order.prev_idx != OrderBook::kInvalidIdx;
-  const bool has_next = order.next_idx != OrderBook::kInvalidIdx;
-
-  if (has_prev && order.prev_idx >= orders.size())
-    return false;
-  if (has_next && order.next_idx >= orders.size())
-    return false;
-  if (!has_prev && level.head_idx != order_idx)
-    return false;
-  if (!has_next && level.tail_idx != order_idx) {
-    if (level.num_orders == 2 && level.head_idx == order_idx &&
-        level.tail_idx < orders.size()) {
-      Order &remaining = orders[level.tail_idx];
-      remaining.prev_idx = OrderBook::kInvalidIdx;
-      remaining.next_idx = OrderBook::kInvalidIdx;
-      level.head_idx = level.tail_idx;
-      order.prev_idx = OrderBook::kInvalidIdx;
-      order.next_idx = OrderBook::kInvalidIdx;
-      return true;
-    }
-    return false;
-  }
-  if (!has_prev && !has_next && level.num_orders > 1) {
-    if (level.num_orders == 2 && level.tail_idx < orders.size() &&
-        level.tail_idx != order_idx) {
-      Order &remaining = orders[level.tail_idx];
-      remaining.prev_idx = OrderBook::kInvalidIdx;
-      remaining.next_idx = OrderBook::kInvalidIdx;
-      level.head_idx = level.tail_idx;
-      order.prev_idx = OrderBook::kInvalidIdx;
-      order.next_idx = OrderBook::kInvalidIdx;
-      return true;
-    }
+  Order *order = orders.at(order_idx);
+  if (order == nullptr || level.num_orders == 0 ||
+      orders.at(level.head_idx) == nullptr ||
+      orders.at(level.tail_idx) == nullptr) {
     return false;
   }
 
-  if (has_prev)
-    orders[order.prev_idx].next_idx = order.next_idx;
-  else
-    level.head_idx = order.next_idx;
+  const uint32_t prev = order->prev_idx;
+  const uint32_t next = order->next_idx;
+  const bool has_prev = prev != PooledPriceLevel::kInvalidOrderIndex;
+  const bool has_next = next != PooledPriceLevel::kInvalidOrderIndex;
 
-  if (has_next)
-    orders[order.next_idx].prev_idx = order.prev_idx;
-  else
-    level.tail_idx = order.prev_idx;
+  if (level.num_orders == 1) {
+    if (level.head_idx != order_idx || level.tail_idx != order_idx ||
+        has_prev || has_next) {
+      return false;
+    }
+    level.head_idx = PooledPriceLevel::kInvalidOrderIndex;
+    level.tail_idx = PooledPriceLevel::kInvalidOrderIndex;
+    return true;
+  }
 
-  order.prev_idx = OrderBook::kInvalidIdx;
-  order.next_idx = OrderBook::kInvalidIdx;
+  if ((!has_prev && level.head_idx != order_idx) ||
+      (!has_next && level.tail_idx != order_idx) ||
+      (has_prev && orders.at(prev) == nullptr) ||
+      (has_next && orders.at(next) == nullptr) || (!has_prev && !has_next)) {
+    return false;
+  }
+  Order *previous_order = has_prev ? orders.at(prev) : nullptr;
+  Order *next_order = has_next ? orders.at(next) : nullptr;
+  if (has_prev && (previous_order == nullptr ||
+                   previous_order->order_id == kInvalidOrderId ||
+                   previous_order->next_idx != order_idx)) {
+    return false;
+  }
+  if (has_next &&
+      (next_order == nullptr || next_order->order_id == kInvalidOrderId ||
+       next_order->prev_idx != order_idx)) {
+    return false;
+  }
+
+  if (has_prev) {
+    previous_order->next_idx = next;
+  } else {
+    level.head_idx = next;
+  }
+  if (has_next) {
+    next_order->prev_idx = prev;
+  } else {
+    level.tail_idx = prev;
+  }
+  order->prev_idx = PooledPriceLevel::kInvalidOrderIndex;
+  order->next_idx = PooledPriceLevel::kInvalidOrderIndex;
   return true;
 }
 
 } // namespace
 
-OrderBook::OrderBook(uint32_t symbol_id, size_t order_capacity)
-    : symbol_id_(symbol_id), order_capacity_(order_capacity),
-      reference_price_(0), tick_size_(1), order_pool_(order_capacity),
-      free_list_(order_capacity), free_list_size_(0), next_order_idx_(0),
-      bid_levels_(kMaxPriceLevels), ask_levels_(kMaxPriceLevels),
-      order_index_(orderIndexCapacity(order_capacity)),
-      stock_locate_(static_cast<uint16_t>(symbol_id)) {
-  touchPages(order_pool_.data(), order_pool_.size() * sizeof(Order));
-  touchPages(free_list_.data(), free_list_.size() * sizeof(uint32_t));
-  touchPages(bid_levels_.data(), bid_levels_.size() * sizeof(PriceLevel));
-  touchPages(ask_levels_.data(), ask_levels_.size() * sizeof(PriceLevel));
-  order_index_.warmPages();
-}
-
-uint32_t OrderBook::priceToIndex(uint64_t price) const noexcept {
-  if (tick_size_ == 0)
-    return kInvalidIdx;
-  if (price >= reference_price_) {
-    const uint64_t diff = price - reference_price_;
-    if (diff % tick_size_ != 0)
-      return kInvalidIdx;
-    const uint64_t ticks = diff / tick_size_;
-    if (ticks > std::numeric_limits<uint32_t>::max() ||
-        ticks + kPriceCenter >= kMaxPriceLevels)
-      return kInvalidIdx;
-    return kPriceCenter + static_cast<uint32_t>(ticks);
-  }
-  const uint64_t diff = reference_price_ - price;
-  if (diff % tick_size_ != 0)
-    return kInvalidIdx;
-  const uint64_t ticks = diff / tick_size_;
-  if (ticks > kPriceCenter)
-    return kInvalidIdx;
-  return kPriceCenter - static_cast<uint32_t>(ticks);
-}
+OrderBook::OrderBook(uint32_t symbol_id, OrderArena &order_arena,
+                     PriceLevelArena &price_level_arena)
+    : symbol_id_(symbol_id), order_arena_(order_arena),
+      price_level_arena_(price_level_arena),
+      price_level_index_(price_level_arena),
+      stock_locate_(static_cast<uint16_t>(symbol_id)) {}
 
 uint32_t OrderBook::allocateOrder() noexcept {
-  uint32_t idx = kInvalidIdx;
-  if (free_list_size_ != 0) {
-    idx = free_list_[--free_list_size_];
-  } else {
-    if (next_order_idx_ >= order_pool_.size()) {
-      ++allocation_failures_;
-      return kInvalidIdx;
-    }
-    idx = static_cast<uint32_t>(next_order_idx_++);
-  }
-  if (idx >= order_pool_.size())
+  const uint32_t idx = order_arena_.allocate();
+  Order *order = order_arena_.at(idx);
+  if (idx == OrderArena::kInvalidIndex || order == nullptr) {
+    local_invalid_ = true;
     return kInvalidIdx;
-  resetOrder(order_pool_[idx]);
+  }
+  resetOrder(*order);
+  ++live_order_count_;
   return idx;
 }
 
-void OrderBook::freeOrder(uint32_t order_idx, bool erase_from_index) noexcept {
-  if (order_idx >= order_pool_.size())
+void OrderBook::freeOrder(uint32_t order_idx) noexcept {
+  if (!order_arena_.release(order_idx) || live_order_count_ == 0) {
+    local_invalid_ = true;
     return;
-  Order &order = order_pool_[order_idx];
-  if (erase_from_index && order.order_id != kInvalidOrderId)
-    order_index_.erase(order.order_id);
-  resetOrder(order);
-  if (free_list_size_ < free_list_.size())
-    free_list_[free_list_size_++] = order_idx;
+  }
+  --live_order_count_;
 }
 
 bool OrderBook::hasOrderAt(uint32_t order_idx, uint64_t order_id) const
     noexcept {
-  return order_idx < order_pool_.size() &&
-         order_pool_[order_idx].order_id == order_id;
+  const Order *order = order_arena_.at(order_idx);
+  return order != nullptr && order->order_id == order_id;
 }
 
-bool OrderBook::registerOrderIndex(uint64_t order_id,
-                                   uint32_t order_idx) noexcept {
-  if (order_id == kInvalidOrderId || order_idx >= order_pool_.size() ||
-      order_pool_[order_idx].order_id != order_id) {
-    return false;
-  }
-  return order_index_.insert(order_id, order_idx);
+const Order *OrderBook::orderAt(uint32_t order_idx) const noexcept {
+  return order_arena_.at(order_idx);
 }
 
 bool OrderBook::removeFromLevel(uint32_t order_idx) noexcept {
-
-  if (order_idx >= order_pool_.size())
+  Order *order = order_arena_.at(order_idx);
+  if (order == nullptr) {
     return false;
+  }
 
-  Order &order = order_pool_[order_idx];
-  if (order.order_id == kInvalidOrderId || order.level_idx >= kMaxPriceLevels) {
+  const PriceLevelHandle handle{order->levelIndex()};
+  if (order->order_id == kInvalidOrderId || !handle.valid() ||
+      order->price > std::numeric_limits<uint32_t>::max()) {
     local_invalid_ = true;
     return false;
   }
 
-  std::vector<PriceLevel> &levels =
-      order.side == 'B' ? bid_levels_ : ask_levels_;
-  PriceBitmap &bitmap = order.side == 'B' ? bid_bitmap_ : ask_bitmap_;
-  PriceLevel &level = levels[order.level_idx];
-
-  if (level.num_orders == 0 || level.total_qty < order.qty ||
-      level.head_idx >= order_pool_.size() ||
-      level.tail_idx >= order_pool_.size()) {
+  PooledPriceLevel *level = price_level_arena_.level(handle);
+  if (level == nullptr || level->num_orders == 0 ||
+      level->total_qty < order->qty ||
+      order_arena_.at(level->head_idx) == nullptr ||
+      order_arena_.at(level->tail_idx) == nullptr) {
     local_invalid_ = true;
     return false;
   }
 
-  if (!unlinkOrder(order_pool_, level, order_idx)) {
+  if (!unlinkOrder(order_arena_, *level, order_idx)) {
     local_invalid_ = true;
     return false;
   }
-  level.total_qty -= order.qty;
-  --level.num_orders;
-  if (level.num_orders == 0) {
-    resetLevel(level);
-    bitmap.reset(order.level_idx);
-  } else if (level.head_idx >= order_pool_.size() ||
-             level.tail_idx >= order_pool_.size()) {
-    local_invalid_ = true;
 
+  level->total_qty -= order->qty;
+  --level->num_orders;
+  if (level->num_orders == 0) {
+    if (level->total_qty != 0 ||
+        level->head_idx != PooledPriceLevel::kInvalidOrderIndex ||
+        level->tail_idx != PooledPriceLevel::kInvalidOrderIndex ||
+        price_level_index_.eraseEmpty(
+            static_cast<uint32_t>(order->price), priceSide(order->side()),
+            handle) != PriceLevelIndex::EraseStatus::Erased) {
+      local_invalid_ = true;
+      return false;
+    }
+  } else if (order_arena_.at(level->head_idx) == nullptr ||
+             order_arena_.at(level->tail_idx) == nullptr) {
+    local_invalid_ = true;
     return false;
   }
   return true;
@@ -274,294 +203,277 @@ bool OrderBook::removeFromLevel(uint32_t order_idx) noexcept {
 
 uint32_t OrderBook::addOrderIndexed(uint64_t order_id, uint64_t price,
                                     uint32_t qty, char side) noexcept {
-  if (qty == 0 || !isValidSide(side) || order_id == kInvalidOrderId) {
+  if (qty == 0 || !isValidSide(side) || order_id == kInvalidOrderId ||
+      price > std::numeric_limits<uint32_t>::max()) {
+    if (price > std::numeric_limits<uint32_t>::max()) {
+      ++price_rejections_;
+      local_invalid_ = true;
+    }
     return kInvalidIdx;
   }
 
-  if (bid_bitmap_.empty() && ask_bitmap_.empty())
-    reference_price_ = price;
+  const uint32_t raw_price = static_cast<uint32_t>(price);
+  const PriceLevelIndex::Side index_side = priceSide(side);
+  const PriceLevelIndex::EnsureResult ensured =
+      price_level_index_.ensure(raw_price, index_side);
+  if (!ensured.ok()) {
+    ++price_rejections_;
+    local_invalid_ = true;
+    return kInvalidIdx;
+  }
 
-  const uint32_t level_idx = priceToIndex(price);
-  if (level_idx == kInvalidIdx) {
+  PooledPriceLevel *level = price_level_arena_.level(ensured.handle);
+  if (level == nullptr ||
+      level->total_qty > std::numeric_limits<uint64_t>::max() - qty) {
+    (void)price_level_index_.rollbackEnsure(raw_price, index_side, ensured);
+    local_invalid_ = true;
     return kInvalidIdx;
   }
 
   const uint32_t order_idx = allocateOrder();
-  if (order_idx == kInvalidIdx)
-    return kInvalidIdx;
-
-  std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
-  PriceBitmap &bitmap = side == 'B' ? bid_bitmap_ : ask_bitmap_;
-  PriceLevel &level = levels[level_idx];
-  const bool was_empty = level.num_orders == 0;
-
-  Order &order = order_pool_[order_idx];
-  order.qty = qty;
-  order.level_idx = level_idx;
-  order.price = price;
-  order.order_id = order_id;
-  order.side = side;
-
-  if (!appendOrder(order_pool_, level, order_idx)) {
-    local_invalid_ = true;
-    freeOrder(order_idx, false);
-    return kInvalidIdx;
-  }
-
-  level.total_qty += qty;
-  ++level.num_orders;
-  if (was_empty)
-    bitmap.set(level_idx);
-
-  return order_idx;
-}
-
-void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
-                         char side) noexcept {
-  if (order_index_.find(order_id) != kInvalidIdx) {
-    return;
-  }
-
-  const uint32_t order_idx = addOrderIndexed(order_id, price, qty, side);
   if (order_idx == kInvalidIdx) {
-    return;
+    if (ensured.created() &&
+        !price_level_index_.rollbackEnsure(raw_price, index_side, ensured)) {
+      local_invalid_ = true;
+    }
+    return kInvalidIdx;
   }
 
-  if (!registerOrderIndex(order_id, order_idx)) {
-    (void)deleteOrderIndexed(order_idx, order_id, false);
+  Order *order = order_arena_.at(order_idx);
+  if (order == nullptr) {
+    local_invalid_ = true;
+    return kInvalidIdx;
   }
+  order->qty = qty;
+  order->price = price;
+  order->order_id = order_id;
+  order->setLevelAndSide(ensured.handle.value, side);
+
+  if (!appendOrder(order_arena_, *level, order_idx)) {
+    local_invalid_ = true;
+    freeOrder(order_idx);
+    (void)price_level_index_.rollbackEnsure(raw_price, index_side, ensured);
+    return kInvalidIdx;
+  }
+
+  level->total_qty += qty;
+  ++level->num_orders;
+  return order_idx;
 }
 
 OrderBook::MutationResult
 OrderBook::cancelSharesIndexed(uint32_t order_idx, uint64_t order_id,
-                               uint32_t canceled_qty,
-                               bool erase_from_index) noexcept {
-  if (order_idx >= order_pool_.size()) {
+                               uint32_t canceled_qty) noexcept {
+  Order *order = order_arena_.at(order_idx);
+  if (canceled_qty == 0 || order == nullptr) {
     return MutationResult::Ignored;
   }
 
-  Order &order = order_pool_[order_idx];
-  if (order.order_id != order_id) {
+  if (order->order_id != order_id || canceled_qty > order->qty) {
     return MutationResult::Ignored;
   }
-  if (canceled_qty >= order.qty) {
-    return deleteOrderIndexed(order_idx, order_id, erase_from_index)
+  if (canceled_qty == order->qty) {
+    return deleteOrderIndexed(order_idx, order_id)
                ? MutationResult::Removed
                : MutationResult::Ignored;
   }
 
-  std::vector<PriceLevel> &levels =
-      order.side == 'B' ? bid_levels_ : ask_levels_;
-  PriceLevel &level = levels[order.level_idx];
-
-  level.total_qty -= canceled_qty;
-  order.qty -= canceled_qty;
+  PooledPriceLevel *level =
+      price_level_arena_.level(PriceLevelHandle{order->levelIndex()});
+  if (level == nullptr || level->num_orders == 0 ||
+      level->total_qty < canceled_qty) {
+    local_invalid_ = true;
+    return MutationResult::Ignored;
+  }
+  level->total_qty -= canceled_qty;
+  order->qty -= canceled_qty;
   return MutationResult::Updated;
 }
 
-void OrderBook::cancelShares(uint64_t order_id,
-                             uint32_t canceled_qty) noexcept {
-  const uint32_t order_idx = order_index_.find(order_id);
-  (void)cancelSharesIndexed(order_idx, order_id, canceled_qty, true);
-}
-
-bool OrderBook::deleteOrderIndexed(uint32_t order_idx, uint64_t order_id,
-                                   bool erase_from_index) noexcept {
-  if (order_idx >= order_pool_.size()) {
+bool OrderBook::deleteOrderIndexed(uint32_t order_idx,
+                                   uint64_t order_id) noexcept {
+  const Order *order = order_arena_.at(order_idx);
+  if (order == nullptr || order->order_id != order_id) {
     return false;
   }
-
-  Order &order = order_pool_[order_idx];
-  if (order.order_id != order_id) {
+  if (!removeFromLevel(order_idx)) {
     return false;
   }
-  std::vector<PriceLevel> &levels =
-      order.side == 'B' ? bid_levels_ : ask_levels_;
-  PriceLevel &level = levels[order.level_idx];
-
-  if (level.num_orders == 0 || level.total_qty < order.qty) {
-    return false;
-  }
-
-  if (!removeFromLevel(order_idx))
-    return false;
-
-  freeOrder(order_idx, erase_from_index);
+  freeOrder(order_idx);
   return true;
-}
-
-void OrderBook::deleteOrder(uint64_t order_id) noexcept {
-  const uint32_t order_idx = order_index_.find(order_id);
-  (void)deleteOrderIndexed(order_idx, order_id, true);
 }
 
 OrderBook::MutationResult
 OrderBook::tradeIndexed(uint32_t order_idx, uint64_t order_id,
-                        uint32_t executed_qty,
-                        bool erase_from_index) noexcept {
-  if (executed_qty == 0 || order_idx >= order_pool_.size()) {
+                        uint32_t executed_qty) noexcept {
+  Order *order = order_arena_.at(order_idx);
+  if (executed_qty == 0 || order == nullptr) {
     return MutationResult::Ignored;
   }
 
-  Order &order = order_pool_[order_idx];
-  if (order.order_id != order_id) {
+  if (order->order_id != order_id || executed_qty > order->qty) {
     return MutationResult::Ignored;
   }
-  if (executed_qty > order.qty) {
-    return MutationResult::Ignored;
-  }
-
-  std::vector<PriceLevel> &levels =
-      order.side == 'B' ? bid_levels_ : ask_levels_;
-  PriceLevel &level = levels[order.level_idx];
-
-  if (level.num_orders == 0 || level.total_qty < executed_qty) {
-    return MutationResult::Ignored;
-  }
-
-  if (executed_qty == order.qty) {
-    return deleteOrderIndexed(order_idx, order_id, erase_from_index)
+  if (executed_qty == order->qty) {
+    return deleteOrderIndexed(order_idx, order_id)
                ? MutationResult::Removed
                : MutationResult::Ignored;
   }
 
-  level.total_qty -= executed_qty;
-  order.qty -= executed_qty;
+  PooledPriceLevel *level =
+      price_level_arena_.level(PriceLevelHandle{order->levelIndex()});
+  if (level == nullptr || level->num_orders == 0 ||
+      level->total_qty < executed_qty) {
+    local_invalid_ = true;
+    return MutationResult::Ignored;
+  }
+  level->total_qty -= executed_qty;
+  order->qty -= executed_qty;
   return MutationResult::Updated;
-}
-
-bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
-  const uint32_t order_idx = order_index_.find(order_id);
-  return tradeIndexed(order_idx, order_id, executed_qty, true) !=
-         MutationResult::Ignored;
 }
 
 OrderBook::MutationResult OrderBook::replaceOrderIndexed(
     uint32_t order_idx, uint64_t old_id, uint64_t new_id, uint64_t new_price,
-    uint32_t new_qty, bool update_index) noexcept {
+    uint32_t new_qty) noexcept {
   if (new_qty == 0 || new_id == kInvalidOrderId ||
-      order_idx >= order_pool_.size()) {
+      new_price > std::numeric_limits<uint32_t>::max() ||
+      order_arena_.at(order_idx) == nullptr) {
+    if (new_price > std::numeric_limits<uint32_t>::max()) {
+      ++price_rejections_;
+      local_invalid_ = true;
+    }
     return MutationResult::Ignored;
   }
 
-  Order &order = order_pool_[order_idx];
-  if (order.order_id != old_id) {
+  Order *order = order_arena_.at(order_idx);
+  if (order == nullptr || order->order_id != old_id ||
+      order->price > std::numeric_limits<uint32_t>::max()) {
     return MutationResult::Ignored;
   }
-  const char side = order.side;
+
+  const char side = order->side();
+  const PriceLevelIndex::Side index_side = priceSide(side);
+  const uint32_t raw_new_price = static_cast<uint32_t>(new_price);
+
+  if (new_price == order->price) {
+    const PriceLevelHandle existing_handle{order->levelIndex()};
+    PooledPriceLevel *level = price_level_arena_.level(existing_handle);
+    if (level == nullptr || level->num_orders == 0 ||
+        level->total_qty < order->qty) {
+      local_invalid_ = true;
+      return MutationResult::Ignored;
+    }
+    const uint64_t remaining_qty = level->total_qty - order->qty;
+    if (remaining_qty > std::numeric_limits<uint64_t>::max() - new_qty ||
+        !unlinkOrder(order_arena_, *level, order_idx)) {
+      local_invalid_ = true;
+      return MutationResult::Ignored;
+    }
+
+    level->total_qty = remaining_qty;
+    --level->num_orders;
+    resetOrder(*order);
+    order->qty = new_qty;
+    order->price = new_price;
+    order->order_id = new_id;
+    order->setLevelAndSide(existing_handle.value, side);
+    if (!appendOrder(order_arena_, *level, order_idx)) {
+      local_invalid_ = true;
+      if (level->num_orders == 0 && level->total_qty == 0) {
+        (void)price_level_index_.eraseEmpty(raw_new_price, index_side,
+                                            existing_handle);
+      }
+      freeOrder(order_idx);
+      return MutationResult::Removed;
+    }
+    level->total_qty += new_qty;
+    ++level->num_orders;
+    return MutationResult::Updated;
+  }
+
+  const PriceLevelIndex::EnsureResult ensured =
+      price_level_index_.ensure(raw_new_price, index_side);
+  if (!ensured.ok()) {
+    ++price_rejections_;
+    local_invalid_ = true;
+    return MutationResult::Ignored;
+  }
+
+  PooledPriceLevel *new_level = price_level_arena_.level(ensured.handle);
+  if (new_level == nullptr ||
+      new_level->total_qty > std::numeric_limits<uint64_t>::max() - new_qty) {
+    (void)price_level_index_.rollbackEnsure(raw_new_price, index_side, ensured);
+    local_invalid_ = true;
+    return MutationResult::Ignored;
+  }
 
   if (!removeFromLevel(order_idx)) {
+    (void)price_level_index_.rollbackEnsure(raw_new_price, index_side, ensured);
     return MutationResult::Ignored;
   }
 
-  if (update_index) {
-    order_index_.erase(old_id);
-  }
-  order.order_id = kInvalidOrderId;
-
-  const uint32_t new_level_idx = priceToIndex(new_price);
-  if (new_level_idx == kInvalidIdx) {
-    resetOrder(order);
-    if (free_list_size_ < free_list_.size())
-      free_list_[free_list_size_++] = order_idx;
-    return MutationResult::Removed;
-  }
-
-  std::vector<PriceLevel> &levels = side == 'B' ? bid_levels_ : ask_levels_;
-  PriceBitmap &bitmap = side == 'B' ? bid_bitmap_ : ask_bitmap_;
-  PriceLevel &level = levels[new_level_idx];
-  const bool was_empty = level.num_orders == 0;
-
-  resetOrder(order);
-  order.qty = new_qty;
-  order.level_idx = new_level_idx;
-  order.price = new_price;
-  order.order_id = new_id;
-  order.side = side;
-
-  if (update_index && !order_index_.insert(new_id, order_idx)) {
-    resetOrder(order);
-    if (free_list_size_ < free_list_.size())
-      free_list_[free_list_size_++] = order_idx;
-    return MutationResult::Removed;
-  }
-
-  if (!appendOrder(order_pool_, level, order_idx)) {
+  resetOrder(*order);
+  order->qty = new_qty;
+  order->price = new_price;
+  order->order_id = new_id;
+  order->setLevelAndSide(ensured.handle.value, side);
+  if (!appendOrder(order_arena_, *new_level, order_idx)) {
     local_invalid_ = true;
-    if (update_index) {
-      order_index_.erase(order.order_id);
-    }
-    order.order_id = kInvalidOrderId;
-    freeOrder(order_idx, false);
+    freeOrder(order_idx);
+    (void)price_level_index_.rollbackEnsure(raw_new_price, index_side, ensured);
     return MutationResult::Removed;
   }
-  level.total_qty += new_qty;
-  ++level.num_orders;
-  if (was_empty)
-    bitmap.set(new_level_idx);
-
+  new_level->total_qty += new_qty;
+  ++new_level->num_orders;
   return MutationResult::Updated;
-}
-
-void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
-                             uint64_t new_price, uint32_t new_qty) noexcept {
-  const uint32_t order_idx = order_index_.find(old_id);
-  (void)replaceOrderIndexed(order_idx, old_id, new_id, new_price, new_qty,
-                            true);
 }
 
 OrderBook::MutationResult
 OrderBook::restoreSharesIndexed(uint32_t order_idx, uint64_t order_id,
                                 uint32_t qty) noexcept {
-  if (qty == 0 || order_idx >= order_pool_.size()) {
+  Order *order = order_arena_.at(order_idx);
+  if (qty == 0 || order == nullptr) {
     return MutationResult::Ignored;
   }
 
-  Order &order = order_pool_[order_idx];
-  if (order.order_id != order_id) {
+  PooledPriceLevel *level =
+      price_level_arena_.level(PriceLevelHandle{order->levelIndex()});
+  if (order->order_id != order_id || level == nullptr ||
+      qty > std::numeric_limits<uint32_t>::max() - order->qty ||
+      level->total_qty > std::numeric_limits<uint64_t>::max() - qty) {
+    local_invalid_ = true;
     return MutationResult::Ignored;
   }
-
-  std::vector<PriceLevel> &levels =
-      order.side == 'B' ? bid_levels_ : ask_levels_;
-  PriceLevel &level = levels[order.level_idx];
-  order.qty += qty;
-  level.total_qty += qty;
+  order->qty += qty;
+  level->total_qty += qty;
   return MutationResult::Updated;
-}
-
-void OrderBook::reverseExecution(uint64_t order_id, uint64_t price,
-                                 uint32_t qty, char side) noexcept {
-  if (qty == 0)
-    return;
-
-  const uint32_t order_idx = order_index_.find(order_id);
-  if (restoreSharesIndexed(order_idx, order_id, qty) ==
-      MutationResult::Updated) {
-    return;
-  }
-
-  // Order was fully consumed — re-add it
-  addOrder(order_id, price, qty, side);
 }
 
 TopOfBook OrderBook::getTopOfBook() const noexcept {
   TopOfBook top{};
   top.symbol_id = symbol_id_;
 
-  const uint32_t bid_idx =
-      bid_bitmap_.findHighestAtOrBelow(PriceBitmap::kNumBits - 1);
-  if (bid_idx != PriceBitmap::kInvalid) {
-    top.bid_price = indexToPrice(reference_price_, tick_size_, bid_idx);
-    top.bid_qty = bid_levels_[bid_idx].total_qty;
+  const PriceLevelIndex::PricePoint bid =
+      price_level_index_.best(PriceLevelIndex::Side::Bid);
+  if (bid) {
+    const PooledPriceLevel *level = price_level_arena_.level(bid.handle);
+    if (level != nullptr) {
+      top.has_bid = true;
+      top.bid_price = bid.price;
+      top.bid_qty = level->total_qty;
+    }
   }
 
-  const uint32_t ask_idx = ask_bitmap_.findLowestAtOrAbove(0);
-  if (ask_idx != PriceBitmap::kInvalid) {
-    top.ask_price = indexToPrice(reference_price_, tick_size_, ask_idx);
-    top.ask_qty = ask_levels_[ask_idx].total_qty;
+  const PriceLevelIndex::PricePoint ask =
+      price_level_index_.best(PriceLevelIndex::Side::Ask);
+  if (ask) {
+    const PooledPriceLevel *level = price_level_arena_.level(ask.handle);
+    if (level != nullptr) {
+      top.has_ask = true;
+      top.ask_price = ask.price;
+      top.ask_qty = level->total_qty;
+    }
   }
-
   return top;
 }
 
@@ -569,30 +481,30 @@ BookUpdate OrderBook::getBookUpdate() const noexcept {
   BookUpdate update{};
   update.symbol_id = symbol_id_;
 
-  uint32_t bid_idx =
-      bid_bitmap_.findHighestAtOrBelow(PriceBitmap::kNumBits - 1);
-  while (bid_idx != PriceBitmap::kInvalid &&
-         update.bids_depth < update.bids.size()) {
-    const PriceLevel &level = bid_levels_[bid_idx];
-    update.bids[update.bids_depth++] = {
-        indexToPrice(reference_price_, tick_size_, bid_idx), level.total_qty,
-        level.num_orders};
-    if (bid_idx == 0)
+  for (PriceLevelIndex::PricePoint point =
+           price_level_index_.best(PriceLevelIndex::Side::Bid);
+       point && update.bids_depth < update.bids.size();
+       point = price_level_index_.nextWorse(PriceLevelIndex::Side::Bid,
+                                            point.price)) {
+    const PooledPriceLevel *level = price_level_arena_.level(point.handle);
+    if (level == nullptr) {
       break;
-    bid_idx = bid_bitmap_.findHighestAtOrBelow(bid_idx - 1);
+    }
+    update.bids[update.bids_depth++] = {point.price, level->total_qty,
+                                        level->num_orders};
   }
 
-  uint32_t ask_idx = ask_bitmap_.findLowestAtOrAbove(0);
-  while (ask_idx != PriceBitmap::kInvalid &&
-         update.asks_depth < update.asks.size()) {
-    const PriceLevel &level = ask_levels_[ask_idx];
-    update.asks[update.asks_depth++] = {
-        indexToPrice(reference_price_, tick_size_, ask_idx), level.total_qty,
-        level.num_orders};
-    if (ask_idx == PriceBitmap::kNumBits - 1)
+  for (PriceLevelIndex::PricePoint point =
+           price_level_index_.best(PriceLevelIndex::Side::Ask);
+       point && update.asks_depth < update.asks.size();
+       point = price_level_index_.nextWorse(PriceLevelIndex::Side::Ask,
+                                            point.price)) {
+    const PooledPriceLevel *level = price_level_arena_.level(point.handle);
+    if (level == nullptr) {
       break;
-    ask_idx = ask_bitmap_.findLowestAtOrAbove(ask_idx + 1);
+    }
+    update.asks[update.asks_depth++] = {point.price, level->total_qty,
+                                        level->num_orders};
   }
-
   return update;
 }

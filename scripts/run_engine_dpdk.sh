@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${ASTRA_DPDK_BUILD_DIR:-${ROOT_DIR}/build-dpdk}"
 BINARY="${BUILD_DIR}/md_engine"
+BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
 
 NUMA_NODE="${ASTRA_NUMA_NODE:-}"
 NUMA_MEM_POLICY="${ASTRA_NUMA_MEM_POLICY:-membind}"
@@ -30,6 +31,8 @@ Useful environment:
   ASTRA_DPDK_MEMPOOL_SIZE=65535
   ASTRA_DPDK_PROMISCUOUS=off
   ASTRA_DPDK_ALLMULTICAST=on
+  ASTRA_BUILD_TYPE=Release  # default
+  ASTRA_ENABLE_IPO=ON       # optional compiler-supported LTO/IPO
 USAGE
 }
 
@@ -118,13 +121,27 @@ build_numa_command() {
   esac
 }
 
-if [[ ! -x "${BINARY}" ]]; then
-  echo "md_engine DPDK build not found; configuring and building..."
-  cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
-    -DASTRA_BUILD_APPS=ON \
-    -DASTRA_ENABLE_DPDK=ON
-  cmake --build "${BUILD_DIR}" --target md_engine -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+cmake_args=(
+  -S "${ROOT_DIR}"
+  -B "${BUILD_DIR}"
+  -DASTRA_BUILD_APPS=ON
+  -DASTRA_ENABLE_DPDK=ON
+  "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+  "-DASTRA_ENABLE_IPO=${ASTRA_ENABLE_IPO:-OFF}"
+)
+
+echo "Configuring md_engine with DPDK (build_type=${BUILD_TYPE})..."
+cmake "${cmake_args[@]}"
+cmake --build "${BUILD_DIR}" --target md_engine \
+  -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+
+git_sha="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+git_sha="${git_sha:-unknown}"
+worktree_state="clean"
+if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain 2>/dev/null || true)" ]]; then
+  worktree_state="dirty"
 fi
+echo "Build provenance: git_sha=${git_sha} worktree=${worktree_state} build_type=${BUILD_TYPE} ipo=${ASTRA_ENABLE_IPO:-OFF}"
 
 build_numa_command "${ASTRA_CPU:-}"
 export ASTRA_RX=dpdk

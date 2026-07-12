@@ -1,305 +1,192 @@
-# Performance Improvements To Consider
+# Performance Review and Optimization Status
 
-This is a static code-scan summary focused on making the project closer to a real low-latency market data / HFT-style system. The order below is roughly prioritized by expected impact.
+This review treats AstraFeed as a long-running ITCH market-data engine, not as
+an optimizer for one captured trading day. The design target is bounded or
+expected O(1) book mutation, fixed storage after readiness, one authoritative
+copy of each index, and explicit failure when a configured envelope is too
+small.
 
-## Recent Runtime Finding: Order Book Data Structure Needs Redesign
+## Implemented architecture
 
-The latest dual-feed EC2 runs show that gap recovery itself is not the root problem.
+### One authoritative full-64-bit order-reference directory
 
-- At `5000 pkt/s` per line with `20` messages per packet, the receiver stayed healthy:
-  - `channel_status_name=Good`
-  - `line_a_kernel_drops=0`
-  - `line_b_kernel_drops=0`
-- At `10000 pkt/s` per line, both socket queues overflowed:
-  - `line_a_kernel_drops > 0`
-  - `line_b_kernel_drops > 0`
-  - later packets were buffered, but the missing sequence was dropped by both redundant feeds, so the gap could not recover.
-- `OrderBook` creation now touches all owned pages by default. Creating books for the full directory can still get the process killed because about `8713` default-sized books alone are roughly `70 GiB` committed before hot-symbol tiers, parser maps, gap buffer, socket queues, and OS memory.
+`OrderRefDirectory` is now the only `order_ref -> order` index.
 
-The practical conclusion is that the current single-thread path is overloaded by the book-update workload:
+- It accepts every nonzero `uint64_t` ITCH order reference.
+- It is a fixed, pre-touched, half-loaded open-addressed table.
+- Entries are 16 bytes and contain the full reference plus stock-locate/order
+  handle.
+- Backward-shift deletion avoids tombstones.
+- Insert, replace, erase, and probe failures are counted.
+- The old dense-direct/per-book `OrderIdMap` fallback and its tests were
+  removed.
+
+The default 16,777,216 slots consume 256 MiB and allow 8,388,608 concurrent
+live mappings. This is configurable with `ASTRA_ORDER_DIRECTORY_SLOTS`.
+
+### One global fixed order arena
+
+All books share `OrderArena`; there are no per-symbol order pools or liquidity
+tier guesses.
+
+- `Order` is exactly 32 bytes, so two records fit in one 64-byte cache line.
+- The record retains `price` for future strategy use.
+- The arena owns one contiguous order vector, a fixed free-index stack, and a
+  compact one-bit occupancy map.
+- Allocation and release are O(1), never resize, and expose exhaustion,
+  high-watermark, invalid-release, and double-release counters.
+- Global order indices are stable and are used directly by the directory and
+  FIFO price-level links.
+
+The default order capacity equals the directory live-entry limit and can be
+reduced explicitly with `ASTRA_ORDER_POOL_CAPACITY`.
+
+### Complete ITCH price domain without a second ordered index
+
+The old centered 65,536-slot price window was incorrect for a general ITCH
+feed and could silently reject valid far-apart prices. It was replaced by a
+four-byte radix/bitmap index over the complete `uint32_t` raw-price domain.
+
+- Every lookup traverses a fixed four-byte path.
+- Bid and ask occupancy are independent while topology is shared.
+- Existing-order cancel, execute, and delete use the order's direct 32-bit
+  level handle.
+- Best-price and top-ten traversal use the same radix state; there is no tree or
+  duplicate sorted container.
+- Empty levels, leaves, and nodes return to fixed free lists.
+- Pool creation is atomic: an exhausted pool publishes no partial path.
+- Aggregate level quantity, top-of-book quantity, and book-update quantity are
+  64-bit.
+- Price zero and `UINT32_MAX` are both valid; explicit presence bits distinguish
+  an empty side from price zero.
+
+Default shared capacities are 163,840 internal nodes, 1,048,576 leaves, and
+2,097,152 occupied side/price levels. Every pool has usage, high-watermark, and
+exhaustion metrics.
+
+### Readiness and hot-path allocation boundary
+
+The order directory, order arena, price pools, free lists, and occupancy maps
+are allocated and page-touched before packet processing. Stock Directory
+messages identify the book universe; Start of System Hours constructs the
+registered book roots and seals that universe. A late unknown book is rejected
+and counted rather than allocated during live processing.
+
+Capacity failure latches the affected book locally invalid. No operation moves
+to a fallback data structure, and shutdown metrics make the failure visible.
+
+### Decoder and measurement cleanup
+
+- A clean in-sequence packet no longer probes the roughly 2 GiB gap table when
+  it is empty.
+- Repeated stale-gap logging is suppressed.
+- The decoder no longer re-decodes and stores an unused stock-locate list or a
+  duplicate channel-phase copy for every message.
+- `ASTRA_LATENCY_METRICS=off` now disables receiver `rdtsc` capture, including
+  kernel UDP, batched UDP, DPDK, and file replay sources. The decoder therefore
+  performs no TSC conversion in throughput mode.
+- When latency is enabled, TSC calibration completes before engine readiness
+  instead of stalling the first measured packet.
+
+### Reproducible build gate
+
+- Fresh single-config CMake builds default to `Release`.
+- `ASTRA_ENABLE_IPO=ON` enables compiler-checked IPO/LTO.
+- UDP and DPDK wrappers always reconfigure and incrementally rebuild before a
+  run, then print Git SHA, dirty/clean state, build type, and IPO mode.
+- Historical README transport rows are marked as cross-revision references and
+  must not be compared as if they came from one binary.
+
+## Verification completed
+
+Focused sanitizer coverage passes:
+
+- 72 order-arena, order-directory, price-index, manager, and order-book tests
+  under ASan and UBSan.
+- 16 ITCH parser integration tests under ASan and UBSan.
+- Randomized differential tests cover directory insert/erase/replace, arena
+  allocation/release, and sparse price ordering/reclamation.
+- Boundary tests cover order refs through `UINT64_MAX`, prices from zero through
+  `UINT32_MAX`, byte-boundary traversal, same price on both sides, replacement,
+  pool exhaustion, rollback, and aggregate quantity above `UINT32_MAX`.
+
+The full local 2019 trace gate also passes:
 
 ```text
-recv A/B -> duplicate filtering -> MoldUDP decode -> ITCH parse -> order state -> OrderBook update
+records=368366634
+bytes=11245883092
+replay_seconds=86.597
+records_per_second=4253804.594
+order_high_watermark=1742866
+price_internal_node_high_watermark=71065
+price_leaf_high_watermark=587520
+price_level_high_watermark=707130
+all failure counters=0
+final live orders=0
 ```
 
-The parser byte decoding is not the main issue. The expensive part is the data structure work behind each book-relevant ITCH message:
+This trace is a correctness and capacity observation, not a production sizing
+proof. Defaults retain headroom and remain configurable because another day,
+venue, or symbol mix can have a different concurrent shape.
 
-- `ItchParser` keeps parser-side order state in `orders_`.
-- `ItchParser` keeps execution state in `executions_by_match_`.
-- `OrderBook` also keeps an `OrderIdMap`.
-- Each `OrderBook` owns large per-symbol arrays for orders, free list, price levels, and order-id indexing.
-- Many operations touch multiple large hash/index structures, causing random memory access, cache misses, TLB pressure, and large committed memory when warmed.
+## Remaining recommendations
 
-The order-book data model should be changed before expecting `10000 pkt/s` per line to be reliable on one thread.
+### P0: establish a same-binary network baseline
 
-Suggested direction:
+Rerun kernel `recv`, `recvmmsg`, and DPDK on one clean Git SHA with verified
+Release flags, optional IPO held constant, identical replay shape, and these
+acceptance gates:
 
-- Remove duplicated order state between `ItchParser` and `OrderBook` where possible.
-- Consider a single global order-id table mapping `order_id -> symbol/order slot` instead of one large `OrderIdMap` per symbol.
-- Store enough order metadata in one place to support execute/cancel/delete/replace/broken-trade without a second hash lookup.
-- Avoid touching or allocating full worst-case order-book memory for every listed symbol.
-- Use symbol liquidity tiers aggressively, and allocate hot capacity only after evidence that a symbol needs it.
-- Consider sharding book updates by symbol only after the single-thread data structure is leaner; threading will not fix excessive random memory pressure by itself.
+- sender and receiver final sequences match;
+- channel status is `Good`;
+- kernel/DPDK drops are zero;
+- every book/directory/order/price failure counter is zero.
 
-## 1. Remove Hot-Path Virtual Calls
+Collect `perf stat` and `perf record` after readiness: cycles, instructions,
+IPC, branch misses, LLC misses, dTLB misses, page faults, and top call stacks.
+Do not claim a transport winner from the existing cross-revision README rows.
 
-Current path:
+### P1: size the gap-recovery buffer from observed outages
 
-- `MarketDataEngine::run()` calls `source_.next(packet)` through `IMarketDataSource`.
-- It calls `publisher_.publish()` through `IPublisher`.
-- Decoder, sequencing, book routing, and publishing all sit behind small function calls in the per-message loop.
+`GapBuffer` still reserves about 2.03 GiB for 1,048,576 full packet slots.
+Skipping the empty lookup removed normal-path cache pollution, but the storage
+envelope remains large. Measure maximum recoverable gap depth and recovery time
+on real feeds, then make capacity explicit and preallocated. Keep failure
+terminal and counted; do not add dynamic growth.
 
-Relevant files:
+### P1: profile repeated handle validation before weakening it
 
-- `src/engine/MarketDataEngine.cpp`
-- `include/astra/source/IMarketDataSource.hpp`
-- `include/astra/publish/IPublisher.hpp`
+Manager resolution validates the directory handle, and indexed book mutations
+validate the same order again. IPO may remove some overhead, and the second
+check protects against stale/corrupt handles. Measure first. If still material,
+introduce an internal resolved-order token or a distinct stale-handle mutation
+result rather than simply deleting safety checks.
 
-Why it matters:
+### P1: add message-type and operation microbenchmarks
 
-Virtual dispatch is small but paid on every message. In a real feed handler, the live path should be concrete enough for the compiler to inline.
+The full-file benchmark measures aggregate parser/book throughput. Add fixed
+traces for add, cancel, execute, delete, replace-at-same-price, replace-to-new
+path, and last-level reclamation. Report distributions as well as throughput;
+pool reuse paths can have different cache costs from first-use paths.
 
-Suggested direction:
+### P2: process receive batches as batches
 
-- Keep interfaces for tests and apps.
-- Add a concrete or templated live engine path, for example `MarketDataEngine<UdpReceiver, NullPublisher>`.
-- Avoid calling `publisher_.publish()` every message unless there is actual publish work.
+`UdpBatchReceiver` uses `recvmmsg`, but the current engine compatibility path
+returns one saved datagram per virtual `next()` call. A batch-aware engine loop
+can amortize dispatch and loop overhead while preserving packet sequence order.
+Compare it only after the new book path is profiled.
 
-## 2. Replace One-Packet-Per-Syscall UDP Receive
+### P2: residency and NUMA guarantees
 
-Current path:
+Page touching prevents first-touch faults but does not guarantee pages cannot
+be reclaimed. On the Linux deployment host, measure and optionally support
+`mlock`/`mlock2`, transparent or explicit huge pages, and NUMA-local allocation.
+Startup should fail clearly when a requested strict residency policy cannot be
+honored.
 
-- `UdpReceiver::next()` uses one `recv()` syscall per packet.
-- It timestamps with `nowNs()` after receive.
+### P3: specialize the live engine loop only if dispatch remains visible
 
-Relevant file:
-
-- `src/source/UdpReceiver.cpp`
-
-Why it matters:
-
-One syscall per packet will become a bottleneck at high feed rates. Software timestamps from `std::chrono` also add overhead and do not represent true NIC receive time.
-
-Suggested direction:
-
-- Use `recvmmsg()` batching for kernel UDP.
-- Add packet batch APIs such as `nextBatch(PacketView* packets, size_t max)`.
-- Use kernel/NIC timestamping where available.
-- Track receive drops with socket counters such as `SO_RXQ_OVFL`.
-- Fill in the currently empty DPDK path for a true kernel-bypass option.
-
-## 3. Redesign Order Book Memory Layout
-
-Current path:
-
-- `OrderBook` uses a fixed mmap-backed `order_pool_`, vector-backed `free_list_` and bid/ask levels, and a fixed mmap-backed `OrderIdMap`.
-- Default order capacity is `64k` orders per symbol.
-- Hot tiers can grow to `1M` or `4M` orders per symbol.
-- Book creation commits/touches these structures by default and can OOM if done for the full symbol universe.
-
-Relevant files:
-
-- `include/astra/book/OrderBook.hpp`
-- `src/book/OrderBook.cpp`
-- `include/astra/constants/SymbolCapacity.hpp`
-- `include/astra/utils/OrderIdMap.hpp`
-
-Why it matters:
-
-The current structure avoids hot-path allocation, but it does so by reserving very large per-symbol arenas. That is good for a small set of hot symbols and bad for the full NASDAQ universe. Touching all pages can commit tens of GiB. Even without touching all pages, the steady-state update path does random probes into large per-symbol structures.
-
-Suggested direction:
-
-- Keep fixed-capacity structures for hot symbols, but do not give every symbol a large worst-case arena.
-- Split symbol capacity into smaller default tiers and promote only active symbols.
-- Consider compact per-symbol book storage where quiet symbols do not allocate full bid/ask level arrays.
-- Consider a shared/global order-id table to avoid one large hash table per symbol.
-- Keep `touch` targeted to known hot symbols only.
-
-## 4. Decode Message Fields Once
-
-Current path:
-
-- `MarketDataMessageView` loads each field with `memcpy`.
-- Book logic repeatedly calls accessors such as `msg.qty()`, `msg.side()`, `msg.orderId()`, and `msg.price()`.
-
-Relevant files:
-
-- `include/astra/protocol/MarketDataMessageView.hpp`
-- `src/codec/BinaryDecoder.cpp`
-- `src/book/OrderBook.cpp`
-
-Why it matters:
-
-The current view is safe for packed wire data, but repeated field loads add unnecessary work in the hot path.
-
-Suggested direction:
-
-- Decode once into a normalized stack struct.
-- Pass that struct through sequencing, book routing, and book updates.
-
-Example shape:
-
-```cpp
-struct DecodedMessage {
-  uint64_t seq;
-  uint64_t order_id;
-  uint64_t price;
-  uint32_t symbol_id;
-  uint32_t qty;
-  MessageType type;
-  OrderSide side;
-};
-```
-
-## 5. Avoid Duplicate `OrderIdMap` Probes On Add
-
-Current path:
-
-- `OrderBook::addOrder()` calls `order_index_.find(msg.orderId())`.
-- Later the same function calls `order_index_.insert(order.order_id, order_idx)`.
-
-Relevant files:
-
-- `src/book/OrderBook.cpp`
-- `include/astra/utils/OrderIdMap.hpp`
-
-Why it matters:
-
-A valid add currently pays for two hash/probe chains: one to check duplicate order ID, one to insert.
-
-Suggested direction:
-
-- Change `OrderIdMap::insert()` or add a new API that reports duplicate/new in one probe.
-- Use that single insert result in `OrderBook::addOrder()`.
-
-## 6. Make `OrderIdMap` Capacity Match Real Symbol Liquidity
-
-Current path:
-
-- Each `OrderBook` owns an `OrderIdMap`.
-- Capacity is derived from `kOrderPoolSize * 4`.
-- With 16-byte entries, the default `64k` order-capacity book uses about `4 MiB` for the order-id map alone.
-- Hot/ultra-hot symbols use much more.
-
-Relevant files:
-
-- `src/book/OrderBook.cpp`
-- `include/astra/utils/OrderIdMap.hpp`
-- `include/astra/constants/SymbolCapacity.hpp`
-
-Why it matters:
-
-This is acceptable for one or a few active symbols, but it does not scale cleanly to a broad market universe. It also duplicates parser-side order state work.
-
-Suggested direction:
-
-- Make order map capacity configurable per symbol.
-- Use liquidity tiers for active symbols.
-- Consider one global order-reference map that stores `(symbol_id, order_index)` if the feed guarantees globally unique order refs.
-- Keep current low load factor for the most active symbols only.
-- Measure whether `ItchParser::orders_` can be merged with or replaced by `OrderBook` state.
-
-## 7. Prebuild Books From Reference Data
-
-Current path:
-
-- `ItchParser::handleStockDirectory()` registers each stock locate and `SS`-time creation calls `BookManager::getOrCreate()`.
-- `BookManager::getOrCreate()` creates an `OrderBook` for each directory entry, and `OrderBook` creation touches its pages by default.
-
-Relevant file:
-
-- `src/book/BookManager.cpp`
-- `src/replay/itch/ItchParser.cpp`
-
-Why it matters:
-
-Real feed handlers usually know the instrument universe from reference data before live processing starts. Preparing books from Stock Directory is the right direction, but touching every book is too memory-heavy with the current structure.
-
-Suggested direction:
-
-- Load symbol/reference data before starting the engine.
-- Build compact symbol IDs.
-- Allocate metadata for all expected books during startup.
-- Allocate or touch full order storage only for hot symbols.
-- Keep full `getOrCreate()` behavior for replay/dev mode only.
-
-## 8. Remove Duplicate Parser/Book Order State
-
-Current path:
-
-- `ItchParser` stores order state in `FixedHashMap<OrderState> orders_`.
-- `ItchParser` stores execution state in `FixedHashMap<MatchEntry> executions_by_match_`.
-- `OrderBook` stores order id to pool index in `OrderIdMap`.
-- Add/execute/replace/delete can touch parser-side state and book-side state for the same logical order.
-
-Relevant files:
-
-- `src/replay/itch/ItchParser.cpp`
-- `include/replay/itch/ItchParser.hpp`
-- `src/book/OrderBook.cpp`
-- `include/astra/utils/FixedHashMap.hpp`
-- `include/astra/utils/OrderIdMap.hpp`
-
-Why it matters:
-
-The byte parser is simple. The expensive part is repeated random access to large order-state maps. Keeping the same order state in two places increases cache/TLB pressure and makes one-thread throughput worse.
-
-Suggested direction:
-
-- Decide which component owns order state.
-- Let `OrderBook` expose enough metadata for executions and broken-trade reversal, or move book indexing into one shared order table.
-- Avoid parser-side `orders_` lookup when the same order must be found again inside `OrderBook`.
-- Keep `executions_by_match_` only if broken-trade correctness requires it; otherwise make it optional for performance runs.
-
-## 9. Add Real Benchmarks
-
-Current path:
-
-- Benchmark files exist but are empty.
-
-Relevant files:
-
-- `benchmarks/OrderBookBenchmark.cpp`
-- `benchmarks/EndToEndBenchmark.cpp`
-- `benchmarks/DecoderBenchmark.cpp`
-- `benchmarks/UdpReceiverBenchmark.cpp`
-
-Why it matters:
-
-Performance work needs baselines. Without benchmarks, changes can improve style while hurting throughput or tail latency.
-
-Suggested direction:
-
-- Add order book microbenchmarks for add/modify/delete/trade.
-- Add decoder benchmarks for packed wire messages.
-- Add end-to-end replay benchmark from packet bytes to book update.
-- Track p50, p99, p99.9, max latency, and messages/sec.
-
-## 10. Add A Release/Perf Build Profile
-
-Current path:
-
-- CMake sets warnings but no explicit perf-oriented release options.
-
-Relevant file:
-
-- `CMakeLists.txt`
-
-Suggested direction:
-
-- Use `-O3`, `-DNDEBUG`, and `-march=native` for local performance builds.
-- Consider LTO for release binaries.
-- Consider PGO after stable benchmark workloads exist.
-
-## Suggested Implementation Order
-
-1. Redesign order-book/order-state storage so each order is indexed once.
-2. Reduce default per-symbol memory and make full warm touch targeted to hot symbols only.
-3. Remove duplicate `OrderIdMap` probing in `addOrder()`.
-4. Add benchmark coverage for book and decoder paths.
-5. Increase `SO_RCVBUF` and kernel `rmem_max` to absorb bursts.
-6. Add a concrete/inlined live engine path.
-7. Add batched UDP receive or a dedicated receive thread.
-8. Consider symbol-sharded book-update workers after the single-thread data structure is leaner.
-9. Fill in DPDK or another kernel-bypass receive path only after kernel UDP limits are measured.
+The source and processor interfaces still use virtual dispatch once per packet.
+Keep them for tests and configuration. Add a concrete or templated live loop
+only if profiles show dispatch is material after book, receive, and memory
+costs are addressed.

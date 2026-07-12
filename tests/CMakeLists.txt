@@ -17,16 +17,17 @@ endif()
 
 add_executable(astra_tests
     book/BookManagerTest.cpp
+    book/OrderArenaTest.cpp
     book/OrderBookTest.cpp
+    book/PriceLevelIndexTest.cpp
+    book/OrderRefDirectoryTest.cpp
     codec/MoldUdpDecoderTest.cpp
     engine/MarketDataEngineTest.cpp
     metrics/LatencyRecorderTest.cpp
     replay/itch/ItchParserTest.cpp
     sequencing/SequenceTrackerTest.cpp
     source/UdpReceiverTest.cpp
-    utils/BitmapTest.cpp
     utils/CpuAffinityTest.cpp
-    utils/OrderIdMapTest.cpp
 )
 
 target_link_libraries(astra_tests

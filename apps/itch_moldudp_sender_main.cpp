@@ -329,6 +329,7 @@ int main(int argc, char *argv[]) {
              premarket.durationNs() > 0 && premarket_speedup > 0.0);
 
         ItchMoldUdpSource source(path, session, msgs_per_packet);
+        source.setTimestampingEnabled(false);
         if (!source.isOpen()) {
             std::cerr << source.lastError() << "\n";
             return EXIT_FAILURE;

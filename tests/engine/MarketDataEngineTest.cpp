@@ -14,11 +14,21 @@ namespace {
 
 class ScriptedSource : public IMarketDataSource {
 public:
+  void setTimestampingEnabled(bool enabled) noexcept override {
+    timestamping_enabled_ = enabled;
+    ++timestamp_configuration_calls_;
+  }
+
   bool next(PacketView &packet) override {
     if (index_ >= packets_.size())
       return false;
     packet = packets_[index_++];
     return true;
+  }
+
+  bool timestampingEnabled() const noexcept { return timestamping_enabled_; }
+  int timestampConfigurationCalls() const noexcept {
+    return timestamp_configuration_calls_;
   }
 
 private:
@@ -27,6 +37,8 @@ private:
       PacketView{nullptr, 0, 1},
   };
   std::size_t index_{0};
+  bool timestamping_enabled_{true};
+  int timestamp_configuration_calls_{0};
 };
 
 class ScriptedProcessor : public IPacketProcessor {
@@ -106,6 +118,21 @@ TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
   EXPECT_EQ(processor.processCalls(), 2);
   EXPECT_EQ(latency_recorder.count(), 2u);
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
+  EXPECT_TRUE(source.timestampingEnabled());
+  EXPECT_EQ(source.timestampConfigurationCalls(), 1);
+}
+
+TEST(MarketDataEngineTest, ThroughputModeDisablesSourceTimestamping) {
+  ScriptedSource source;
+  ScriptedProcessor processor;
+  LatencyRecorder latency_recorder;
+  EngineConfig config;
+  config.enable_latency_metrics = false;
+
+  MarketDataEngine engine(source, processor, latency_recorder, config);
+
+  EXPECT_FALSE(source.timestampingEnabled());
+  EXPECT_EQ(source.timestampConfigurationCalls(), 1);
 }
 
 TEST(MarketDataEngineTest, PacketLatencySkipsProcessorNoOps) {

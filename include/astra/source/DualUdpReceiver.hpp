@@ -16,6 +16,10 @@ public:
   DualUdpReceiver &operator=(DualUdpReceiver &&) = delete;
 
   bool next(PacketView &packet) noexcept override;
+  void setTimestampingEnabled(bool enabled) noexcept override {
+    receiver_a_.setTimestampingEnabled(enabled);
+    receiver_b_.setTimestampingEnabled(enabled);
+  }
 
   uint64_t packetsA() const noexcept { return packets_a_; }
   uint64_t packetsB() const noexcept { return packets_b_; }

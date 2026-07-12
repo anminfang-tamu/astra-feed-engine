@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/md_engine"
+BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
 
 NUMA_NODE="${ASTRA_NUMA_NODE:-}"
 NUMA_MEM_POLICY="${ASTRA_NUMA_MEM_POLICY:-membind}"
@@ -19,6 +20,10 @@ Usage:
   ./scripts/run_engine_udp.sh <ip_a> <port_a> <ip_b> <port_b> [channel_id]
 
 Default: dual-feed A/B receiver on 0.0.0.0:9000 and 0.0.0.0:9001.
+
+Build environment:
+  ASTRA_BUILD_TYPE=Release  # default
+  ASTRA_ENABLE_IPO=ON       # optional compiler-supported LTO/IPO
 USAGE
 }
 
@@ -107,11 +112,26 @@ build_numa_command() {
   esac
 }
 
-if [[ ! -x "${BINARY}" ]]; then
-  echo "md_engine not found — configuring and building..."
-  cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DASTRA_BUILD_APPS=ON
-  cmake --build "${BUILD_DIR}" --target md_engine -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+cmake_args=(
+  -S "${ROOT_DIR}"
+  -B "${BUILD_DIR}"
+  -DASTRA_BUILD_APPS=ON
+  "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+  "-DASTRA_ENABLE_IPO=${ASTRA_ENABLE_IPO:-OFF}"
+)
+
+echo "Configuring md_engine (build_type=${BUILD_TYPE})..."
+cmake "${cmake_args[@]}"
+cmake --build "${BUILD_DIR}" --target md_engine \
+  -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+
+git_sha="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+git_sha="${git_sha:-unknown}"
+worktree_state="clean"
+if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain 2>/dev/null || true)" ]]; then
+  worktree_state="dirty"
 fi
+echo "Build provenance: git_sha=${git_sha} worktree=${worktree_state} build_type=${BUILD_TYPE} ipo=${ASTRA_ENABLE_IPO:-OFF}"
 
 build_numa_command "${ASTRA_CPU:-}"
 

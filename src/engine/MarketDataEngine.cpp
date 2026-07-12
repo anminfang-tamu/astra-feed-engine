@@ -1,12 +1,29 @@
 #include "astra/engine/MarketDataEngine.hpp"
+#include "astra/core/Time.hpp"
 #include "astra/source/PacketView.hpp"
+
+namespace {
+
+void configureTiming(IMarketDataSource &source,
+                     const EngineConfig &config) {
+  source.setTimestampingEnabled(config.enable_latency_metrics);
+  if (config.enable_latency_metrics) {
+    // Complete the one-time calibration before the engine advertises
+    // readiness and before the first packet timestamp is captured.
+    (void)timeCalibration();
+  }
+}
+
+} // namespace
 
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    IPacketProcessor &processor,
                                    LatencyRecorder &latency_recorder,
                                    EngineConfig &config)
     : source_(source), processor_(processor),
-      latency_recorder_(latency_recorder), config_(config) {}
+      latency_recorder_(latency_recorder), config_(config) {
+  configureTiming(source_, config_);
+}
 
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    IPacketProcessor &processor,
@@ -16,6 +33,7 @@ MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
     : source_(source), processor_(processor),
       latency_recorder_(latency_recorder), config_(config) {
   (void)stage_latency_recorder;
+  configureTiming(source_, config_);
 }
 
 bool MarketDataEngine::stop() { return running_.exchange(false); }

@@ -23,6 +23,9 @@ public:
   UdpReceiver &operator=(UdpReceiver &&) = delete;
 
   bool next(PacketView &packet) noexcept override;
+  void setTimestampingEnabled(bool enabled) noexcept override {
+    timestamping_enabled_ = enabled;
+  }
 
   uint64_t errors() const noexcept { return error_count_; }
   uint64_t truncated() const noexcept { return truncated_count_; }
@@ -53,4 +56,5 @@ private:
   uint32_t last_kernel_drop_count_{0};
 #endif
   bool drop_metrics_enabled_{false};
+  bool timestamping_enabled_{true};
 };

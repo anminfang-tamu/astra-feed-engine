@@ -5,7 +5,7 @@
 
 struct BookLevelUpdate {
   uint64_t price;
-  uint32_t qty;
+  uint64_t qty;
   uint32_t num_orders;
 };
 

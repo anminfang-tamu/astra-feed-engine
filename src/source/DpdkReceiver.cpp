@@ -274,9 +274,12 @@ struct DpdkReceiver::Impl {
       }
 
       struct rte_mbuf *mbuf = burst_[burst_index_++];
-      const uint64_t packet_receive_start_ticks =
-          latency_mode_ == LatencyMode::Burst ? burst_receive_start_ticks_
-                                              : rdtsc();
+      uint64_t packet_receive_start_ticks = 0;
+      if (timestamping_enabled_) {
+        packet_receive_start_ticks =
+            latency_mode_ == LatencyMode::Burst ? burst_receive_start_ticks_
+                                                : rdtsc();
+      }
       ParsedPacket parsed = parse(mbuf);
       if (parsed.fast_path) {
         ++fast_path_count_;
@@ -335,6 +338,7 @@ struct DpdkReceiver::Impl {
   std::size_t burst_size_{DpdkReceiver::kDefaultBurstSize};
   std::vector<struct rte_mbuf *> burst_;
   LatencyMode latency_mode_{LatencyMode::Packet};
+  bool timestamping_enabled_{true};
   std::size_t burst_index_{0};
   std::size_t burst_count_{0};
   uint64_t burst_receive_start_ticks_{0};
@@ -535,7 +539,9 @@ private:
   bool receiveBurst() noexcept {
     burst_index_ = 0;
     burst_count_ = 0;
-    burst_receive_start_ticks_ = rdtsc();
+    burst_receive_start_ticks_ =
+        timestamping_enabled_ && latency_mode_ == LatencyMode::Burst ? rdtsc()
+                                                                     : 0;
 
     const uint16_t received = rte_eth_rx_burst(
         port_id_, queue_id_, burst_.data(), static_cast<uint16_t>(burst_size_));
@@ -733,6 +739,10 @@ DpdkReceiver::DpdkReceiver(const char *ip_a, uint16_t port_a, const char *ip_b,
 DpdkReceiver::~DpdkReceiver() = default;
 
 bool DpdkReceiver::next(PacketView &packet) { return impl_->next(packet); }
+
+void DpdkReceiver::setTimestampingEnabled(bool enabled) noexcept {
+  impl_->timestamping_enabled_ = enabled;
+}
 
 uint64_t DpdkReceiver::packetsA() const noexcept { return impl_->packets_a_; }
 

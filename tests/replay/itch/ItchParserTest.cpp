@@ -14,7 +14,7 @@
 namespace {
 
 using Bytes = std::vector<std::byte>;
-constexpr uint64_t kTestMaxDirectOrderRef = 1024;
+constexpr size_t kTestDirectorySlots = 1024;
 
 void appendU8(Bytes &b, uint8_t v) { b.push_back(static_cast<std::byte>(v)); }
 void appendU16(Bytes &b, uint16_t v) {
@@ -126,10 +126,18 @@ auto asSpan(const Bytes &b) { return std::span<const std::byte>(b); }
 
 struct Fixture {
   astra::symbol::StockDirectory symbols;
-  BookManager books{kTestMaxDirectOrderRef};
+  BookManager books{kTestDirectorySlots};
   ItchParser parser{symbols, books, /*channel_id=*/2};
 
   void send(const Bytes &b) { parser.handleMessage(asSpan(b)); }
+
+  void sendAdd(uint64_t oid, char side, uint32_t qty, std::string_view sym,
+               uint32_t price, uint16_t locate = 1) {
+    if (!symbols.isRegistered(locate)) {
+      send(msgStockDirectory(sym, locate));
+    }
+    send(msgAdd(oid, side, qty, sym, price, locate));
+  }
 
   TopOfBook top(uint16_t locate = 1) const {
     const OrderBook *book = books.getOrderBook(locate);
@@ -141,7 +149,7 @@ struct Fixture {
 
 TEST(ItchParserTest, AddOrderUpdatesBook) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
+  f.sendAdd(555, 'B', 100, "AAPL", 1905900);
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 1905900u);
@@ -155,7 +163,7 @@ TEST(ItchParserTest, AddOrderUpdatesBook) {
 
 TEST(ItchParserTest, ExecutionReducesOrderQuantity) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "MSFT", 4102500));
+  f.sendAdd(555, 'S', 100, "MSFT", 4102500);
   f.send(msgExecute(555, 40));
 
   const TopOfBook t = f.top();
@@ -165,7 +173,7 @@ TEST(ItchParserTest, ExecutionReducesOrderQuantity) {
 
 TEST(ItchParserTest, FullExecutionRemovesOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "MSFT", 4102500));
+  f.sendAdd(555, 'S', 100, "MSFT", 4102500);
   f.send(msgExecute(555, 100));
 
   const TopOfBook t = f.top();
@@ -175,7 +183,7 @@ TEST(ItchParserTest, FullExecutionRemovesOrder) {
 
 TEST(ItchParserTest, CancelSharesReducesQuantity) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "NVDA", 9231250));
+  f.sendAdd(555, 'B', 100, "NVDA", 9231250);
   f.send(msgCancel(555, 25));
 
   const TopOfBook t = f.top();
@@ -185,7 +193,7 @@ TEST(ItchParserTest, CancelSharesReducesQuantity) {
 
 TEST(ItchParserTest, CancelAllSharesRemovesOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "NVDA", 9231250));
+  f.sendAdd(555, 'B', 100, "NVDA", 9231250);
   f.send(msgCancel(555, 100));
 
   const TopOfBook t = f.top();
@@ -195,7 +203,7 @@ TEST(ItchParserTest, CancelAllSharesRemovesOrder) {
 
 TEST(ItchParserTest, DeleteRemovesOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "TSLA", 2510000));
+  f.sendAdd(555, 'B', 100, "TSLA", 2510000);
   f.send(msgDelete(555));
 
   const TopOfBook t = f.top();
@@ -205,7 +213,7 @@ TEST(ItchParserTest, DeleteRemovesOrder) {
 
 TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "AMZN", 1873400));
+  f.sendAdd(555, 'S', 100, "AMZN", 1873400);
   f.send(msgReplace(555, 556, 25, 1873600));
 
   const TopOfBook t = f.top();
@@ -219,7 +227,7 @@ TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
 
 TEST(ItchParserTest, BrokenTradeIsSkippedWithoutMatchHistory) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
+  f.sendAdd(555, 'B', 100, "AAPL", 1905900);
   f.send(msgExecute(555, 40, 9001));
   f.send(msgBrokenTrade(9001));
 
@@ -231,7 +239,7 @@ TEST(ItchParserTest, BrokenTradeIsSkippedWithoutMatchHistory) {
 
 TEST(ItchParserTest, BrokenTradeDoesNotRecreateFullyExecutedOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "AAPL", 1905900));
+  f.sendAdd(555, 'S', 100, "AAPL", 1905900);
   f.send(msgExecute(555, 100, 9001));
   f.send(msgBrokenTrade(9001));
 
@@ -250,8 +258,8 @@ TEST(ItchParserTest, UnknownExecutionIsSkipped) {
 
 TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   Fixture f;
-  f.send(msgAdd(1, 'B', 100, "AAPL", 500, /*locate=*/1));
-  f.send(msgAdd(2, 'S', 50, "MSFT", 400, /*locate=*/2));
+  f.sendAdd(1, 'B', 100, "AAPL", 500, /*locate=*/1);
+  f.sendAdd(2, 'S', 50, "MSFT", 400, /*locate=*/2);
 
   EXPECT_EQ(f.top(1).bid_price, 500u);
   EXPECT_EQ(f.top(2).ask_price, 400u);
@@ -296,7 +304,7 @@ TEST(ItchParserTest, SystemHoursStartCreatesDirectoryBooks) {
   EXPECT_EQ(book->liveOrderCount(), 0u);
 }
 
-TEST(ItchParserTest, StockDirectoryDuringSystemHoursCreatesBookImmediately) {
+TEST(ItchParserTest, StockDirectoryAfterReadinessDoesNotAllocateNewBook) {
   Fixture f;
   f.send(msgSystemEvent('O'));
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
@@ -304,9 +312,10 @@ TEST(ItchParserTest, StockDirectoryDuringSystemHoursCreatesBookImmediately) {
   ASSERT_NE(f.books.getOrderBook(7), nullptr);
 
   f.send(msgStockDirectory("MSFT", /*locate=*/8));
-  ASSERT_NE(f.books.getOrderBook(8), nullptr);
+  EXPECT_EQ(f.books.getOrderBook(8), nullptr);
   EXPECT_TRUE(f.symbols.isRegistered(8));
   EXPECT_STREQ(f.symbols.ticker(8), "MSFT");
+  EXPECT_EQ(f.books.stats().late_book_creation_attempts, 1u);
 
   f.send(msgSystemEvent('Q'));
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
@@ -314,7 +323,7 @@ TEST(ItchParserTest, StockDirectoryDuringSystemHoursCreatesBookImmediately) {
 
 TEST(ItchParserTest, ResetClearsState) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
+  f.sendAdd(555, 'B', 100, "AAPL", 1905900);
   f.parser.reset();
   // Parser reset does not own order-book state; execution still routes there.
   f.send(msgExecute(555, 100, 9001));

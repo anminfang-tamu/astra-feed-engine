@@ -30,6 +30,9 @@ public:
                       uint16_t           msgs_per_packet = kDefaultMsgsPerPacket);
 
     bool next(PacketView &packet) override;
+    void setTimestampingEnabled(bool enabled) noexcept override {
+        timestamping_enabled_ = enabled;
+    }
 
     bool               isOpen()     const;
     const std::string &lastError()  const;
@@ -41,6 +44,7 @@ private:
     uint64_t      next_seq_{1};     // MoldUDP64 sequence number (1-based, per message)
     std::string   last_error_;
     bool          eof_{false};
+    bool          timestamping_enabled_{true};
 
     std::array<std::byte, kMaxPacketBytes> packet_buf_{};
 };
