@@ -181,7 +181,12 @@ sudo env \
   ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
 
-The sender command stays the same as the `recv()` test. It should target:
+Use `scripts/run_itch_ab_senders.sh` for both the `recv()` and DPDK tests. The
+wrapper uses one replay source and clock plus two line threads pinned with
+`ASTRA_CPU_A` and `ASTRA_CPU_B`. The feeder dispatches A first, then B after
+`ASTRA_LINE_B_DELAY_NS` (default `1000` ns; `0` disables the intentional skew).
+Both threads send the same generated MoldUDP64 packet before the replay
+advances. It should target:
 
 ```text
 172.31.32.18
@@ -203,6 +208,12 @@ latency comparison point; larger bursts can be useful for throughput tests.
 Clean DPDK acceptance requires:
 
 ```text
+channel_first_received_seq=1
+line_a_first_received_seq=1
+line_b_first_received_seq=1
+session_initialized=1
+session_mismatch_packets=0
+gap_buffer_remaining=0
 channel_status_name=Good
 imissed=0
 ierrors=0

@@ -105,11 +105,17 @@ if(ASTRA_ENABLE_DPDK)
 endif()
 
 if(ASTRA_BUILD_APPS)
+    find_package(Threads REQUIRED)
+
     add_executable(md_engine            apps/md_engine_main.cpp)
     target_link_libraries(md_engine     PRIVATE astra::feed_engine)
 
     add_executable(itch_moldudp_sender  apps/itch_moldudp_sender_main.cpp)
-    target_link_libraries(itch_moldudp_sender PRIVATE astra::feed_engine)
+    target_link_libraries(itch_moldudp_sender
+        PRIVATE
+            astra::feed_engine
+            Threads::Threads
+    )
 endif()
 
 if(ASTRA_BUILD_TESTS)

@@ -126,6 +126,16 @@ static bool bookStatsClean(const BookManagerStats &stats) noexcept {
          stats.orders.in_use == stats.live_orders;
 }
 
+static bool channelStatsClean(const ChannelState &channel,
+                              bool dual_feed) noexcept {
+  return channel.status == ChannelHealth::Good &&
+         channel.gap_buffer.empty() && channel.session_initialized &&
+         channel.first_received_seq == 1 &&
+         channel.first_received_seq_by_line[0] == 1 &&
+         (!dual_feed || channel.first_received_seq_by_line[1] == 1) &&
+         channel.session_mismatch_packets == 0;
+}
+
 int main(int argc, char *argv[]) {
   if (argc != 3 && argc != 4 && argc != 5 && argc != 6) {
     std::cerr
@@ -341,6 +351,17 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
     std::cout << "engine_stats channel_next_seq=" << channel.next_expected_seq
+              << " channel_first_received_seq="
+              << channel.first_received_seq
+              << " line_a_first_received_seq="
+              << channel.first_received_seq_by_line[0]
+              << " line_b_first_received_seq="
+              << channel.first_received_seq_by_line[1]
+              << " session_initialized="
+              << (channel.session_initialized ? 1 : 0)
+              << " session_mismatch_packets="
+              << channel.session_mismatch_packets
+              << " gap_buffer_remaining=" << channel.gap_buffer.size()
               << " channel_status=" << static_cast<int>(channel.status)
               << " channel_status_name=" << channelHealthName(channel.status)
               << "\n";
@@ -468,7 +489,7 @@ int main(int argc, char *argv[]) {
       //   stage_latency_recorder.report();
     }
 
-    if (channel.status != ChannelHealth::Good || !channel.gap_buffer.empty() ||
+    if (!channelStatsClean(channel, dual_feed) ||
         !bookStatsClean(book_stats)) {
       return EXIT_FAILURE;
     }

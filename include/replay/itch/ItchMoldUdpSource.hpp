@@ -35,6 +35,7 @@ public:
     }
 
     bool               isOpen()     const;
+    bool               completed()  const noexcept;
     const std::string &lastError()  const;
 
 private:
@@ -44,6 +45,7 @@ private:
     uint64_t      next_seq_{1};     // MoldUDP64 sequence number (1-based, per message)
     std::string   last_error_;
     bool          eof_{false};
+    bool          completed_{false};
     bool          timestamping_enabled_{true};
 
     std::array<std::byte, kMaxPacketBytes> packet_buf_{};

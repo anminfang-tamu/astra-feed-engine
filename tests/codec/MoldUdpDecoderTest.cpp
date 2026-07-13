@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -57,11 +58,12 @@ Bytes addMessage(uint16_t locate, uint64_t order_id, char side, uint32_t qty,
   return b;
 }
 
-Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages) {
+Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages,
+                 std::string_view session = "ASTRA     ") {
   Bytes b;
-  constexpr char kSession[10] = {'A', 'S', 'T', 'R', 'A',
-                                 ' ', ' ', ' ', ' ', ' '};
-  for (char c : kSession) appendU8(b, static_cast<uint8_t>(c));
+  for (std::size_t i = 0; i < ChannelState::kSessionBytes; ++i) {
+    appendU8(b, i < session.size() ? static_cast<uint8_t>(session[i]) : ' ');
+  }
   appendU64(b, first_seq);
   appendU16(b, static_cast<uint16_t>(messages.size()));
   for (const Bytes &message : messages) {
@@ -71,8 +73,19 @@ Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages) {
   return b;
 }
 
-PacketView view(const Bytes &b) {
-  return {b.data(), b.size(), rdtsc()};
+Bytes moldControlPacket(uint64_t first_seq, uint16_t message_count,
+                        std::string_view session = "ASTRA     ") {
+  Bytes b;
+  for (std::size_t i = 0; i < ChannelState::kSessionBytes; ++i) {
+    appendU8(b, i < session.size() ? static_cast<uint8_t>(session[i]) : ' ');
+  }
+  appendU64(b, first_seq);
+  appendU16(b, message_count);
+  return b;
+}
+
+PacketView view(const Bytes &b, uint8_t line_index = 0) {
+  return {b.data(), b.size(), rdtsc(), line_index};
 }
 
 void registerSymbol(astra::symbol::StockDirectory &symbols, uint16_t locate,
@@ -152,4 +165,199 @@ TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
   const DecodeResult duplicate_result = decoder.processPacket(view(pkt1));
   EXPECT_EQ(duplicate_result.status, DecodeStatus::Ok);
   EXPECT_EQ(duplicate_result.latency_sample_count, 0u);
+}
+
+TEST(MoldUdpDecoderTest, FirstFuturePacketWaitsForSequenceOneAndThenDrains) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  registerSymbol(symbols, 2, "MSFT");
+  registerSymbol(symbols, 3, "NVDA");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes msg2 = addMessage(2, 102, 'S', 200, "MSFT", 2000);
+  const Bytes msg3 = addMessage(3, 103, 'B', 300, "NVDA", 3000);
+  const Bytes first_messages[] = {msg1, msg2};
+
+  const Bytes future = moldPacket(3, std::span<const Bytes>(&msg3, 1));
+  const Bytes stream_head = moldPacket(1, first_messages);
+
+  const DecodeResult future_result = decoder.processPacket(view(future, 1));
+  EXPECT_EQ(future_result.status, DecodeStatus::Ok);
+  EXPECT_TRUE(future_result.had_gap);
+  EXPECT_EQ(future_result.latency_sample_count, 0u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::GapDetected);
+  EXPECT_FALSE(decoder.channelState().session_initialized);
+  EXPECT_EQ(decoder.channelState().first_received_seq, 3u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[0], 0u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[1], 3u);
+  EXPECT_EQ(decoder.channelState().gap_buffer.size(), 1u);
+  EXPECT_EQ(books.getOrderBook(3), nullptr);
+
+  const DecodeResult recovered = decoder.processPacket(view(stream_head, 0));
+  EXPECT_EQ(recovered.status, DecodeStatus::Ok);
+  EXPECT_EQ(recovered.latency_sample_count, 3u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 4u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  EXPECT_TRUE(decoder.channelState().session_initialized);
+  EXPECT_EQ(decoder.channelState().first_received_seq, 3u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[0], 1u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[1], 3u);
+  EXPECT_TRUE(decoder.channelState().gap_buffer.empty());
+
+  ASSERT_NE(books.getOrderBook(1), nullptr);
+  ASSERT_NE(books.getOrderBook(2), nullptr);
+  ASSERT_NE(books.getOrderBook(3), nullptr);
+}
+
+TEST(MoldUdpDecoderTest, SessionMismatchDoesNotAdvanceSequence) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  registerSymbol(symbols, 2, "MSFT");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes msg2 = addMessage(2, 102, 'S', 200, "MSFT", 2000);
+  const Bytes pkt1 =
+      moldPacket(1, std::span<const Bytes>(&msg1, 1), "SESSION-A ");
+  const Bytes wrong_session =
+      moldPacket(2, std::span<const Bytes>(&msg2, 1), "SESSION-B ");
+  const Bytes matching_session =
+      moldPacket(2, std::span<const Bytes>(&msg2, 1), "SESSION-A ");
+
+  EXPECT_EQ(decoder.processPacket(view(pkt1)).status, DecodeStatus::Ok);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 2u);
+
+  const DecodeResult mismatch = decoder.processPacket(view(wrong_session, 1));
+  EXPECT_EQ(mismatch.status, DecodeStatus::InvalidSequence);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 2u);
+  EXPECT_EQ(decoder.channelState().session_mismatch_packets, 1u);
+  EXPECT_EQ(books.getOrderBook(2), nullptr);
+
+  const DecodeResult recovered =
+      decoder.processPacket(view(matching_session, 0));
+  EXPECT_EQ(recovered.status, DecodeStatus::Ok);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 3u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  ASSERT_NE(books.getOrderBook(2), nullptr);
+}
+
+TEST(MoldUdpDecoderTest, MalformedStreamHeadDoesNotBindSession) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  Bytes malformed =
+      moldPacket(1, std::span<const Bytes>(&msg1, 1), "SESSION-A ");
+  malformed.pop_back();
+  const Bytes valid =
+      moldPacket(1, std::span<const Bytes>(&msg1, 1), "SESSION-B ");
+
+  EXPECT_EQ(decoder.processPacket(view(malformed)).status,
+            DecodeStatus::InvalidSize);
+  EXPECT_FALSE(decoder.channelState().session_initialized);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+
+  EXPECT_EQ(decoder.processPacket(view(valid, 1)).status, DecodeStatus::Ok);
+  EXPECT_TRUE(decoder.channelState().session_initialized);
+  EXPECT_TRUE(decoder.channelState().sessionMatches("SESSION-B "));
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 2u);
+}
+
+TEST(MoldUdpDecoderTest, RejectsSequenceRangeOverflow) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+  decoder.channelState().next_expected_seq =
+      std::numeric_limits<uint64_t>::max();
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes packet = moldPacket(std::numeric_limits<uint64_t>::max(),
+                                  std::span<const Bytes>(&msg1, 1));
+
+  EXPECT_EQ(decoder.processPacket(view(packet)).status,
+            DecodeStatus::InvalidSequence);
+  EXPECT_EQ(decoder.channelState().next_expected_seq,
+            std::numeric_limits<uint64_t>::max());
+  EXPECT_FALSE(decoder.channelState().session_initialized);
+  EXPECT_TRUE(decoder.channelState().gap_buffer.empty());
+}
+
+TEST(MoldUdpDecoderTest, FutureEndOfSessionDoesNotStopColdDecoder) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes future_end = moldControlPacket(
+      4401, MoldUdpPacketHeader::kEndOfSessionMessageCount);
+
+  EXPECT_EQ(decoder.processPacket(view(future_end, 1)).status,
+            DecodeStatus::InvalidSequence);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_FALSE(decoder.channelState().session_initialized);
+}
+
+TEST(MoldUdpDecoderTest, RedundantFutureCopyKeepsEarliestReceiveTimestamp) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes packet = moldPacket(3, std::span<const Bytes>(&msg, 1));
+  const PacketView line_a{packet.data(), packet.size(), 111, 0};
+  const PacketView line_b{packet.data(), packet.size(), 222, 1};
+
+  EXPECT_EQ(decoder.processPacket(line_a).status, DecodeStatus::Ok);
+  EXPECT_EQ(decoder.processPacket(line_b).status, DecodeStatus::Ok);
+
+  const SequencedPacket *buffered = decoder.channelState().gap_buffer.find(3);
+  ASSERT_NE(buffered, nullptr);
+  EXPECT_EQ(buffered->receive_start_ticks, 111u);
+  EXPECT_EQ(decoder.channelState().gap_buffer.size(), 1u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[0], 3u);
+  EXPECT_EQ(decoder.channelState().first_received_seq_by_line[1], 3u);
+}
+
+TEST(MoldUdpDecoderTest,
+     BufferedSessionMismatchPreservesRecoveredPacketLatency) {
+  astra::symbol::StockDirectory symbols;
+  registerSymbol(symbols, 1, "AAPL");
+  registerSymbol(symbols, 2, "MSFT");
+  registerSymbol(symbols, 3, "NVDA");
+  BookManager books(kTestDirectorySlots);
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes msg2 = addMessage(2, 102, 'S', 200, "MSFT", 2000);
+  const Bytes msg3 = addMessage(3, 103, 'B', 300, "NVDA", 3000);
+  const Bytes head_messages[] = {msg1, msg2};
+  const Bytes stale_future =
+      moldPacket(3, std::span<const Bytes>(&msg3, 1), "SESSION-A ");
+  const Bytes valid_head = moldPacket(1, head_messages, "SESSION-B ");
+  const Bytes valid_future =
+      moldPacket(3, std::span<const Bytes>(&msg3, 1), "SESSION-B ");
+
+  EXPECT_EQ(decoder.processPacket(view(stale_future, 1)).status,
+            DecodeStatus::Ok);
+  const DecodeResult head_result = decoder.processPacket(view(valid_head, 0));
+  EXPECT_EQ(head_result.status, DecodeStatus::Ok);
+  EXPECT_EQ(head_result.latency_sample_count, 2u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 3u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Recovering);
+  EXPECT_EQ(decoder.channelState().session_mismatch_packets, 1u);
+  EXPECT_TRUE(decoder.channelState().gap_buffer.empty());
+
+  const DecodeResult future_result =
+      decoder.processPacket(view(valid_future, 0));
+  EXPECT_EQ(future_result.status, DecodeStatus::Ok);
+  EXPECT_EQ(future_result.latency_sample_count, 1u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 4u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
 }

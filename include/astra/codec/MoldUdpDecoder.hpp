@@ -36,8 +36,8 @@ private:
                                       uint64_t start_seq,
                                       uint64_t receive_start_ticks);
   DecodeResult drainGapBuffer();
+  void recordFirstReceived(uint64_t first_seq, uint8_t line_index) noexcept;
 
-  bool first_packet_seen_{false};
   // bool stage_timing_enabled_{false};
   // DecodeStageTiming last_timing_;
   ChannelState channel_;

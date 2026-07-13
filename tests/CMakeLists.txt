@@ -25,6 +25,7 @@ add_executable(astra_tests
     engine/MarketDataEngineTest.cpp
     metrics/LatencyRecorderTest.cpp
     replay/itch/ItchParserTest.cpp
+    replay/itch/ItchMoldUdpSourceTest.cpp
     sequencing/SequenceTrackerTest.cpp
     source/UdpReceiverTest.cpp
     utils/CpuAffinityTest.cpp

@@ -52,10 +52,15 @@ deployments should lower the explicit capacities together.
 This runbook assumes:
 
 - engine host: runs `md_engine`
-- sender host: runs two `itch_moldudp_sender` processes through
-  `scripts/run_itch_ab_senders.sh`
+- sender host: runs one synchronized redundant `itch_moldudp_sender` process
+  through `scripts/run_itch_ab_senders.sh`; it uses one replay source and clock
+  plus separately pinned A/B line threads
 - ITCH file: `data/itch/unzipped/01302019.NASDAQ_ITCH50`
 - packet shape: `20` ITCH messages per MoldUDP64 packet
+
+Wait for the `Engine started` line before launching the sender. A clean
+dual-feed replay must observe sequence `1` as the first packet overall and on
+both configured A/B paths.
 
 ### Receiver
 
@@ -104,8 +109,10 @@ ASTRA_STAGE_LATENCY_METRICS=off \
 `ASTRA_NUMA_MEM_POLICY=membind` is the strict benchmark default. Use
 `localalloc` for a softer policy, `preferred` to prefer the selected node, or
 `none` to apply only CPU binding. `scripts/run_itch_ab_senders.sh` honors the
-same `ASTRA_NUMA_NODE` and `ASTRA_NUMA_MEM_POLICY` variables; pick
-`ASTRA_CPU_A` and `ASTRA_CPU_B` from that node when binding the sender host.
+same `ASTRA_NUMA_NODE` and `ASTRA_NUMA_MEM_POLICY` variables. Choose
+`ASTRA_CPU_A` and `ASTRA_CPU_B` from that node. The wrapper gives the process a
+CPU mask containing both CPUs, and each A/B line thread pins itself to its
+assigned CPU.
 
 Automatic NUMA balancing is not changed by default. If you want the EC2 setup
 script to disable it for benchmark determinism during the current boot, run with
@@ -189,10 +196,9 @@ For the full AWS EC2 setup flow, including secondary-ENI binding, VFIO
 no-IOMMU mode, and restoring the NIC to Linux, see
 `docs/dpdk-aws-ec2-setup.md`.
 
-Clean DPDK acceptance requires:
+Clean DPDK acceptance requires all common [Validation](#validation) gates plus:
 
 ```text
-channel_status_name=Good
 imissed=0
 ierrors=0
 rx_nombuf=0
@@ -211,6 +217,7 @@ scaled by `ASTRA_PREMARKET_SPEEDUP`.
 ```bash
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
+ASTRA_LINE_B_DELAY_NS=1000 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
@@ -225,10 +232,35 @@ ASTRA_SS_PAUSE_SECONDS=120 \
   100000
 ```
 
-The final `10000` is the normal packet rate per line outside the timestamp-paced
-pre-market window.
+The feeder reads and packetizes the ITCH file once, then its two pinned line
+threads send identical bytes, session, and sequence numbers to A and B under
+one replay clock. It dispatches A first and B after the configured line delay;
+both line sends complete before the replay advances. The final `100000` is the
+normal packet rate on each line outside the timestamp-paced pre-market window.
+
+At natural EOF, the final `sender_stats` line must report
+`completion=complete` and zero A/B send failures. `completion=interrupted` or
+`completion=source_error` identifies an incomplete replay and returns a
+nonzero exit status.
 
 ## Replay Modes
+
+### Redundant A/B Skew
+
+`ASTRA_LINE_B_DELAY_NS` controls the deterministic dispatch skew between the
+redundant paths. It defaults to `1000` ns: line A is dispatched first and line B
+is released 1 microsecond later. Set it to `0` to disable the intentional skew.
+Values up to `1000000000` ns (1 second) are accepted.
+This is a deterministic test model, not a Nasdaq protocol guarantee: real
+redundant-path skew varies and either path can lead. The OS and NIC can also
+introduce additional variation in observed arrival times.
+
+The B-line worker busy-polls its preallocated handoff to avoid scheduler wakeup
+jitter, so `ASTRA_CPU_B` must be treated as a dedicated sender CPU during a
+benchmark.
+`line_b_delay_overruns` counts packets for which B observed the handoff only
+after the configured deadline; those packets still remain A-first, but their
+actual software dispatch skew was larger than requested.
 
 ### Timestamp Mode
 
@@ -263,6 +295,7 @@ ITCH burst shape.
 ```bash
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
+ASTRA_LINE_B_DELAY_NS=1000 \
 ASTRA_PREMARKET_SECONDS=600 \
 ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
@@ -295,6 +328,7 @@ Timestamp-mode example using only positional arguments:
 ```bash
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
+ASTRA_LINE_B_DELAY_NS=1000 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=120 \
@@ -313,22 +347,33 @@ ASTRA_SS_PAUSE_SECONDS=120 \
 A clean run should end with:
 
 ```text
+sender_stats completion=complete first_seq=1
+line_a_send_failures=0
+line_b_send_failures=0
+channel_first_received_seq=1
+line_a_first_received_seq=1
+line_b_first_received_seq=1
+session_initialized=1
+session_mismatch_packets=0
+gap_buffer_remaining=0
 channel_status_name=Good
 line_a_kernel_drops=0
 line_b_kernel_drops=0
 ```
 
-For a completed sender stream, `sender next_seq` should match receiver
-`channel_next_seq`. If the sender is interrupted first, a small tail delta is
-normal. Persistent `GapDetected`, nonzero kernel drops, or a large
-sender/receiver sequence gap means the run should not be used as a clean latency
-baseline.
+For DPDK, use `imissed=0`, `ierrors=0`, and `rx_nombuf=0` in place of the
+kernel-drop fields. After sender completion, wait until receiver
+`channel_next_seq` equals sender `next_seq`, then stop the engine. Exact
+equality is mandatory for a clean full-stream result. An interrupted sender or
+any remaining sequence delta is incomplete and must not be recorded as a clean
+latency baseline. Persistent `GapDetected`, a nonzero session mismatch, or any
+drop/failure counter also invalidates the run.
 
 The final `book_stats` line is also an acceptance gate. In particular, reject a
 run with any nonzero allocation, directory, stale/missing reference, late book,
 price-pool exhaustion, invalid-release, mutation-failure, price-rejection, or
-locally-invalid-book counter. `md_engine` exits nonzero when the final channel,
-gap, or book-state gate is not clean.
+locally-invalid-book counter. `md_engine` exits nonzero when the final startup,
+session, channel, gap, or book-state gate is not clean.
 
 ### Offline full-file correctness benchmark
 
@@ -426,6 +471,7 @@ Sender settings:
 ```bash
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
+ASTRA_LINE_B_DELAY_NS=1000 \
 ASTRA_NUMA_NODE=0 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \

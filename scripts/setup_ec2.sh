@@ -249,9 +249,10 @@ NUMA runtime knobs:
   ASTRA_NUMA_NODE=<node>       Enable numactl in repo run scripts.
   ASTRA_NUMA_MEM_POLICY=...    membind (default), localalloc, preferred, or none.
   ASTRA_CPU=<cpu>              Pin md_engine to a CPU from the selected node.
-  ASTRA_CPU_A/B=<cpu>          Pin A/B senders to CPUs from the selected node.
+  ASTRA_CPU_A/B=<cpu>          Pin the synchronized A/B line threads separately.
+  ASTRA_LINE_B_DELAY_NS=<ns>   Dispatch B after A (default 1000; 0 disables).
 
-Pick a CPU from the same NUMA node as the receiving network interface.
+Pick both sender CPUs from the same NUMA node as the sending network interface.
 EOF
 }
 

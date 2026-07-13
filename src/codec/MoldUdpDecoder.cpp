@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <span>
 
 namespace {
@@ -41,21 +42,37 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   const uint16_t msg_count = readU16BE(packet.data + 18);
   const uint64_t first_seq = readU64BE(packet.data + 10);
+  const char *packet_session = reinterpret_cast<const char *>(packet.data);
 
-  if (!first_packet_seen_) {
-    first_packet_seen_ = true;
-    channel_.setSession(reinterpret_cast<const char *>(packet.data));
-    channel_.next_expected_seq = first_seq;
+  recordFirstReceived(first_seq, packet.line_index);
+
+  if (channel_.session_initialized &&
+      !channel_.sessionMatches(packet_session)) {
+    ++channel_.session_mismatch_packets;
+    return {DecodeStatus::InvalidSequence};
   }
 
   if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
+    // A future/stale end marker must not terminate a cold decoder before the
+    // missing stream head has had a chance to arrive on the redundant line.
+    if (first_seq != channel_.next_expected_seq)
+      return {DecodeStatus::InvalidSequence};
+    if (!channel_.session_initialized)
+      channel_.setSession(packet_session);
     return {DecodeStatus::EndOfStream};
   }
 
   // heartbeat or empty packet, just update status and return
   if (msg_count == 0) {
+    if (!channel_.session_initialized &&
+        first_seq == channel_.next_expected_seq) {
+      channel_.setSession(packet_session);
+    }
     return {DecodeStatus::Ok, false, false};
   }
+
+  if (first_seq > std::numeric_limits<uint64_t>::max() - msg_count)
+    return {DecodeStatus::InvalidSequence};
 
   const uint64_t expected = channel_.next_expected_seq;
   const uint64_t packet_end = first_seq + msg_count;
@@ -86,9 +103,25 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
       channel_.status = ChannelHealth::Stale;
       return {DecodeStatus::Ok, true, false};
     }
-    if (!channel_.gap_buffer.insert(
-            packet.data, static_cast<uint16_t>(packet.size), first_seq,
-            msg_count, packet.receive_start_ticks)) {
+    SequencedPacket *buffered = channel_.gap_buffer.find(first_seq);
+    bool should_insert = buffered == nullptr;
+    if (buffered != nullptr && channel_.session_initialized) {
+      const char *buffered_session =
+          reinterpret_cast<const char *>(buffered->data.data());
+      if (!channel_.sessionMatches(buffered_session)) {
+        ++channel_.session_mismatch_packets;
+        should_insert = true;
+      }
+    }
+
+    // Keep the first redundant copy (and its earlier receive timestamp). Once
+    // the active session is known, a matching packet may replace a stale
+    // pre-bind copy at the same sequence.
+    if (should_insert &&
+        (packet.size > SequencedPacket::kMaxPacketSize ||
+         !channel_.gap_buffer.insert(
+             packet.data, static_cast<uint16_t>(packet.size), first_seq,
+             msg_count, packet.receive_start_ticks))) {
       channel_.status = ChannelHealth::Stale;
     }
 
@@ -104,6 +137,14 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (result.status != DecodeStatus::Ok)
     return result;
 
+  // Bind only after the first in-sequence packet has been structurally
+  // validated. A malformed sequence-1 packet must not lock the decoder to a
+  // stale session and prevent the redundant copy from recovering it.
+  if (!channel_.session_initialized && first_seq <= expected &&
+      packet_end > expected) {
+    channel_.setSession(packet_session);
+  }
+
   if (channel_.status == ChannelHealth::GapDetected)
     channel_.status = ChannelHealth::Recovering;
   channel_.next_expected_seq = packet_end;
@@ -111,17 +152,22 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   const bool had_gap = channel_.status == ChannelHealth::GapDetected ||
                        channel_.status == ChannelHealth::Recovering;
 
+  bool rejected_buffered_session = false;
   if (!channel_.gap_buffer.empty()) {
+    const uint64_t mismatch_count_before = channel_.session_mismatch_packets;
     DecodeResult drained = drainGapBuffer();
+    rejected_buffered_session =
+        channel_.session_mismatch_packets != mismatch_count_before;
     mergeLatency(result, drained);
     if (drained.status != DecodeStatus::Ok)
       return drained;
   }
   if (channel_.status != ChannelHealth::Invalid &&
       channel_.status != ChannelHealth::Stale) {
-    const bool resolved = channel_.gap_buffer.empty();
-    channel_.status = channel_.gap_buffer.empty() ? ChannelHealth::Good
-                                                  : ChannelHealth::Recovering;
+    const bool resolved =
+        channel_.gap_buffer.empty() && !rejected_buffered_session;
+    channel_.status = resolved ? ChannelHealth::Good
+                               : ChannelHealth::Recovering;
 
     if (had_gap && resolved) {
       std::cout << "Gap resolve channel_next_seq=" << channel_.next_expected_seq
@@ -138,6 +184,16 @@ const DecodeStageTiming *MoldUdpDecoder::lastStageTiming() const noexcept {
 
 void MoldUdpDecoder::setStageTimingEnabled(bool enabled) noexcept {
   (void)enabled;
+}
+
+void MoldUdpDecoder::recordFirstReceived(uint64_t first_seq,
+                                         uint8_t line_index) noexcept {
+  if (channel_.first_received_seq == 0)
+    channel_.first_received_seq = first_seq;
+  if (line_index < ChannelState::kLineCount &&
+      channel_.first_received_seq_by_line[line_index] == 0) {
+    channel_.first_received_seq_by_line[line_index] = first_seq;
+  }
 }
 
 DecodeResult MoldUdpDecoder::processSequencedPacket(
@@ -200,6 +256,19 @@ DecodeResult MoldUdpDecoder::drainGapBuffer() {
     const uint64_t receive_start_ticks = packet->receive_start_ticks;
     const uint16_t msg_count = packet->msg_count;
     const uint64_t packet_end = first_seq + msg_count;
+
+    const char *packet_session =
+        reinterpret_cast<const char *>(packet->data.data());
+    if (channel_.session_initialized &&
+        !channel_.sessionMatches(packet_session)) {
+      ++channel_.session_mismatch_packets;
+      channel_.gap_buffer.erase(first_seq);
+      channel_.status = ChannelHealth::Recovering;
+      // The in-sequence packet that triggered this drain was valid and must
+      // retain its latency samples. Drop the stale buffered copy and wait for
+      // the matching redundant packet at the still-expected sequence.
+      return aggregate;
+    }
 
     DecodeResult result = processSequencedPacket(
         packet->data.data(), packet->len, first_seq, msg_count,
