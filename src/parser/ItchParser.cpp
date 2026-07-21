@@ -247,12 +247,23 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   if (sym.empty() || !astra::symbol::isValidStockLocate(locate)) {
     return (void)fail("invalid stock directory identity");
   }
-  if (books_.bookUniverseSealed()) {
+  const bool book_universe_sealed = books_.bookUniverseSealed();
+  const astra::symbol::StockDirectoryEntry *existing = symbols_.get(locate);
+  // SS seals book allocation, not directory metadata. Nasdaq may reannounce
+  // an existing locate, but it must retain the same symbol identity.
+  if (existing != nullptr && sym != std::string_view{existing->ticker}) {
     book_universe_ready_ = false;
     return (void)fail(
-        "stock directory arrived after the book universe was sealed");
+        "stock directory ticker conflicts with the registered stock locate");
   }
-  if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
+  if (book_universe_sealed && existing == nullptr) {
+    book_universe_ready_ = false;
+    return (void)fail(
+        "stock directory introduced a new stock locate after the book "
+        "universe was sealed");
+  }
+  if (!book_universe_sealed &&
+      channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
   }
 
@@ -269,8 +280,10 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
-  books_.setBookCapacityTier(locate,
-                             astra::book_capacity::tierForTicker(sym));
+  if (!book_universe_sealed) {
+    books_.setBookCapacityTier(locate,
+                               astra::book_capacity::tierForTicker(sym));
+  }
 }
 
 // 'S' (12 bytes) — System Event

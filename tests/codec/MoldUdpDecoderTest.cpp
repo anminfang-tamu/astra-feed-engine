@@ -69,6 +69,27 @@ Bytes systemEventMessage(char event_code) {
   return b;
 }
 
+Bytes stockDirectoryMessage(uint16_t locate, std::string_view sym,
+                            uint64_t timestamp) {
+  Bytes b;
+  appendU8(b, 'R');
+  appendU16(b, locate);
+  appendU16(b, 7);
+  appendU48(b, timestamp);
+  appendStock(b, sym);
+  appendU8(b, 'Q'); // market category
+  appendU8(b, 'N'); // financial status
+  appendU32(b, 100);
+  appendU8(b, 'N'); // round lots only
+  appendU8(b, 'C'); // issue classification
+  appendU8(b, ' ');
+  appendU8(b, ' ');
+  appendU8(b, 'P'); // authenticity
+  while (b.size() < 39)
+    appendU8(b, ' ');
+  return b;
+}
+
 Bytes moldPacket(uint64_t first_seq, std::span<const Bytes> messages,
                  std::string_view session = "ASTRA     ") {
   Bytes b;
@@ -154,6 +175,30 @@ TEST(MoldUdpDecoderTest, ParserReadinessFailureInvalidatesChannel) {
   EXPECT_EQ(decoder.processPacket(view(retry)).status,
             DecodeStatus::InvalidItchMessage);
   EXPECT_EQ(books.getOrderBook(1), nullptr);
+}
+
+TEST(MoldUdpDecoderTest,
+     RepeatedStockDirectoryAfterSystemHoursKeepsChannelHealthy) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  MoldUdpDecoder decoder(symbols, books, 3);
+  const Bytes messages[] = {
+      stockDirectoryMessage(/*locate=*/7, "AAPL", 11'314'276'730'568ULL),
+      systemEventMessage('S'),
+      stockDirectoryMessage(/*locate=*/7, "AAPL", 18'961'380'945'030ULL)};
+  const Bytes packet = moldPacket(1, messages);
+
+  const DecodeResult result = decoder.processPacket(view(packet));
+
+  EXPECT_EQ(result.status, DecodeStatus::Ok);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 4u);
+  EXPECT_TRUE(decoder.channelState().session_initialized);
+  EXPECT_EQ(symbols.size(), 1u);
+  EXPECT_STREQ(symbols.ticker(7), "AAPL");
+  ASSERT_NE(books.getOrderBook(7), nullptr);
+  EXPECT_EQ(books.stats().books, 1u);
+  EXPECT_EQ(books.stats().late_book_creation_attempts, 0u);
 }
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {

@@ -101,12 +101,14 @@ Bytes msgBrokenTrade(uint64_t match = 9001, uint16_t locate = 1) {
   return b;
 }
 
-Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1) {
+Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1,
+                        uint32_t round_lot_size = 100,
+                        char financial_status = 'N') {
   Bytes b = commonMsg('R', locate);
   appendStock(b, sym);
   appendU8(b, 'Q'); // market category
-  appendU8(b, 'N'); // financial status
-  appendU32(b, 100);
+  appendU8(b, static_cast<uint8_t>(financial_status));
+  appendU32(b, round_lot_size);
   appendU8(b, 'N'); // round lots only
   appendU8(b, 'C'); // issue classification
   appendU8(b, ' ');
@@ -379,6 +381,66 @@ TEST(ItchParserTest, SystemHoursStartCreatesDirectoryBooks) {
   EXPECT_TRUE(f.parser.bookUniverseReady());
 }
 
+TEST(ItchParserTest, RepeatedStockDirectoryAfterSystemHoursIsIdempotent) {
+  Fixture f;
+  const Bytes directory = msgStockDirectory("AAPL", /*locate=*/7);
+  f.send(msgSystemEvent('O'));
+  f.send(directory);
+  f.send(msgSystemEvent('S'));
+
+  const OrderBook *prepared = f.books.getOrderBook(7);
+  ASSERT_NE(prepared, nullptr);
+  ASSERT_TRUE(f.parser.bookUniverseReady());
+  const BookManagerStats before = f.books.stats();
+
+  f.send(directory);
+
+  const BookManagerStats after = f.books.stats();
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_TRUE(f.parser.bookUniverseReady());
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::SystemHours);
+  EXPECT_EQ(f.books.getOrderBook(7), prepared);
+  EXPECT_EQ(f.symbols.size(), 1u);
+  EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
+  EXPECT_EQ(after.books, before.books);
+  EXPECT_EQ(after.orders.capacity, before.orders.capacity);
+  EXPECT_EQ(after.price_levels.internal_nodes_in_use,
+            before.price_levels.internal_nodes_in_use);
+  EXPECT_EQ(after.price_levels.leaves_in_use,
+            before.price_levels.leaves_in_use);
+  EXPECT_EQ(after.price_levels.levels_in_use,
+            before.price_levels.levels_in_use);
+  EXPECT_EQ(after.late_book_creation_attempts,
+            before.late_book_creation_attempts);
+
+  f.send(msgAdd(1, 'B', 100, "AAPL", 500, /*locate=*/7));
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_EQ(f.top(7).bid_price, 500u);
+}
+
+TEST(ItchParserTest, RepeatedStockDirectoryRefreshesMetadataInPlace) {
+  Fixture f;
+  f.send(msgSystemEvent('O'));
+  f.send(msgStockDirectory("AAPL", /*locate=*/7));
+  f.send(msgSystemEvent('S'));
+
+  const OrderBook *prepared = f.books.getOrderBook(7);
+  ASSERT_NE(prepared, nullptr);
+
+  f.send(msgStockDirectory("AAPL", /*locate=*/7,
+                           /*round_lot_size=*/50,
+                           /*financial_status=*/'D'));
+
+  const astra::symbol::StockDirectoryEntry *entry = f.symbols.get(7);
+  ASSERT_NE(entry, nullptr);
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_TRUE(f.parser.bookUniverseReady());
+  EXPECT_EQ(f.books.getOrderBook(7), prepared);
+  EXPECT_EQ(entry->round_lot_size, 50u);
+  EXPECT_EQ(entry->fin_status, 'D');
+  EXPECT_EQ(f.books.stats().late_book_creation_attempts, 0u);
+}
+
 TEST(ItchParserTest, StockDirectoryAfterReadinessInvalidatesReadiness) {
   Fixture f;
   f.send(msgSystemEvent('O'));
@@ -399,7 +461,7 @@ TEST(ItchParserTest, StockDirectoryAfterReadinessInvalidatesReadiness) {
   EXPECT_FALSE(f.parser.lastError().empty());
 }
 
-TEST(ItchParserTest, StockDirectoryDuringMarketHoursIsRejected) {
+TEST(ItchParserTest, NewStockDirectoryDuringMarketHoursIsRejected) {
   Fixture f;
   f.send(msgSystemEvent('O'));
   f.send(msgStockDirectory("AAPL", /*locate=*/7));
