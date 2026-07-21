@@ -172,13 +172,26 @@ sudo env \
   ASTRA_CPU=2 \
   ASTRA_NUMA_NODE="${FEED_NUMA}" \
   ASTRA_DPDK_PORT_ID=0 \
-  ASTRA_DPDK_BURST_SIZE=16 \
+  ASTRA_DPDK_QUEUE_ID=0 \
+  ASTRA_DPDK_BURST_SIZE=64 \
+  ASTRA_DPDK_RX_DESC=8192 \
   ASTRA_DPDK_LATENCY_MODE=packet \
   ASTRA_DPDK_FLOW_FILTER=off \
-  ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
-  ASTRA_UDP_DROP_METRICS=on \
+  ASTRA_LATENCY_METRICS=off \
   ASTRA_STAGE_LATENCY_METRICS=off \
+  ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
   ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
+```
+
+```bash
+ASTRA_CPU_A=3 \
+ASTRA_CPU_B=4 \
+ASTRA_LINE_B_DELAY_NS=10000 \
+ASTRA_PREMARKET_REPLAY_MODE=off \
+ASTRA_SS_PAUSE_SECONDS=120 \
+./scripts/run_itch_ab_senders.sh \
+  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  172.31.32.18 9000 9001 20 "ASTRA     " 50000
 ```
 
 Use `scripts/run_itch_ab_senders.sh` for both the `recv()` and DPDK tests. The

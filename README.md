@@ -60,13 +60,13 @@ can reserve more. A roughly 8,700-symbol universe with the built-in tier list is
 about 56 GiB of local book storage, before the shared price pools' approximately
 2.3 GiB and the decoder's other fixed buffers.
 
-| Environment variable                 |                                        Default |
-| ------------------------------------ | ---------------------------------------------: |
-| `ASTRA_BOOK_ORDER_CAPACITY`           | `65536` for symbols without a higher tier       |
-| `ASTRA_PRICE_INTERNAL_NODE_CAPACITY` |                                       `163840` |
-| `ASTRA_PRICE_LEAF_CAPACITY`          |                                      `1048576` |
-| `ASTRA_PRICE_LEVEL_CAPACITY`         |                                      `2097152` |
-| `ASTRA_STOP_ON_DECODE_ERROR`         |                                           `true` |
+| Environment variable                 |                                   Default |
+| ------------------------------------ | ----------------------------------------: |
+| `ASTRA_BOOK_ORDER_CAPACITY`          | `65536` for symbols without a higher tier |
+| `ASTRA_PRICE_INTERNAL_NODE_CAPACITY` |                                  `163840` |
+| `ASTRA_PRICE_LEAF_CAPACITY`          |                                 `1048576` |
+| `ASTRA_PRICE_LEVEL_CAPACITY`         |                                 `2097152` |
+| `ASTRA_STOP_ON_DECODE_ERROR`         |                                    `true` |
 
 Active/Hot/UltraHot ticker membership is currently compiled in
 `BookCapacity.hpp`. Library callers can set an explicit per-locate capacity
@@ -117,7 +117,6 @@ the ITCH pre-market timing shape at 33x speed and sends `100000` packets/second
 per line after the opening transition:
 
 ```bash
-RECEIVER_IP=172.31.32.18  # replace with the receiver feed-interface IP
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
 ASTRA_LINE_B_DELAY_NS=1000 \
@@ -126,7 +125,7 @@ ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  "${RECEIVER_IP}" 9000 9001 20 "ASTRA     " 100000
+  172.31.32.18 9000 9001 20 "ASTRA     " 100000
 ```
 
 The sender reads and packetizes the ITCH file once, then sends identical

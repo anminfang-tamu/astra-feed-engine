@@ -353,6 +353,43 @@ TEST(ItchParserTest, SystemEventAdvancesChannelPhase) {
 
   f.send(msgSystemEvent('Q'));
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+
+  f.send(msgSystemEvent('M'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::SystemHours);
+  EXPECT_TRUE(f.parser.bookUniverseReady());
+
+  f.send(msgSystemEvent('E'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_TRUE(f.parser.bookUniverseReady());
+
+  f.send(msgSystemEvent('C'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::WaitingStartOfMessages);
+  EXPECT_FALSE(f.parser.bookUniverseReady());
+}
+
+TEST(ItchParserTest, DeleteAfterEndOfSystemHoursUsesPreparedBookUniverse) {
+  Fixture f;
+  f.sendAdd(555, 'B', 100, "AAPL", 1905900);
+
+  f.send(msgSystemEvent('E'));
+  ASSERT_TRUE(f.parser.lastError().empty());
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  ASSERT_TRUE(f.parser.bookUniverseReady());
+
+  f.send(msgDelete(555));
+
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_TRUE(f.parser.bookUniverseReady());
+  EXPECT_EQ(f.top().bid_price, 0u);
+  EXPECT_EQ(f.top().bid_qty, 0u);
+
+  f.send(msgSystemEvent('C'));
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::WaitingStartOfMessages);
+  EXPECT_FALSE(f.parser.bookUniverseReady());
+
+  f.send(msgDelete(555));
+  EXPECT_FALSE(f.parser.lastError().empty());
 }
 
 TEST(ItchParserTest, EmptyDirectoryCannotBecomeReady) {

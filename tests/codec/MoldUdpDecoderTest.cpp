@@ -59,6 +59,16 @@ Bytes addMessage(uint16_t locate, uint64_t order_id, char side, uint32_t qty,
   return b;
 }
 
+Bytes deleteMessage(uint16_t locate, uint64_t order_id) {
+  Bytes b;
+  appendU8(b, 'D');
+  appendU16(b, locate);
+  appendU16(b, 7);
+  appendU48(b, 34200123456789ULL);
+  appendU64(b, order_id);
+  return b;
+}
+
 Bytes systemEventMessage(char event_code) {
   Bytes b;
   appendU8(b, 'S');
@@ -199,6 +209,30 @@ TEST(MoldUdpDecoderTest,
   ASSERT_NE(books.getOrderBook(7), nullptr);
   EXPECT_EQ(books.stats().books, 1u);
   EXPECT_EQ(books.stats().late_book_creation_attempts, 0u);
+}
+
+TEST(MoldUdpDecoderTest,
+     DeleteAfterEndOfSystemHoursKeepsChannelHealthyAndAdvancesSequence) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  MoldUdpDecoder decoder(symbols, books, 3);
+  const Bytes messages[] = {
+      stockDirectoryMessage(/*locate=*/7, "AAPL", 11'314'276'730'568ULL),
+      systemEventMessage('S'),
+      addMessage(/*locate=*/7, /*order_id=*/101, 'B', 100, "AAPL", 1000),
+      systemEventMessage('E'),
+      deleteMessage(/*locate=*/7, /*order_id=*/101),
+      systemEventMessage('C')};
+  const Bytes packet = moldPacket(1, messages);
+
+  const DecodeResult result = decoder.processPacket(view(packet));
+
+  EXPECT_EQ(result.status, DecodeStatus::Ok);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 7u);
+  EXPECT_TRUE(decoder.channelState().session_initialized);
+  ASSERT_NE(books.getOrderBook(7), nullptr);
+  EXPECT_EQ(books.getOrderBook(7)->liveOrderCount(), 0u);
 }
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {

@@ -319,6 +319,11 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
     channel_phase_ = ChannelPhase::SystemHours;
     break;
   case 'E':
+    // End of System Hours does not end the ITCH stream. Nasdaq may continue
+    // sending Order Delete and Broken Trade messages until End of Messages,
+    // so the sealed book universe must remain available for cleanup.
+    channel_phase_ = ChannelPhase::PostSystemHours;
+    break;
   case 'C':
     channel_phase_ = ChannelPhase::WaitingStartOfMessages;
     book_universe_ready_ = false;
