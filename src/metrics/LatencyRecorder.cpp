@@ -100,6 +100,17 @@ void LatencyRecorder::report(std::ostream &out) const {
       << " p99.99_ns=" << stats.p9999_ns << '\n';
 }
 
+void LatencyRecorder::reportPercentiles() const {
+  reportPercentiles(std::cout);
+}
+
+void LatencyRecorder::reportPercentiles(std::ostream &out) const {
+  const Snapshot stats = snapshot();
+  out << "latency p50_ns=" << stats.p50_ns << " p90_ns=" << stats.p90_ns
+      << " p99_ns=" << stats.p99_ns << " p99.9_ns=" << stats.p999_ns
+      << " p99.99_ns=" << stats.p9999_ns << '\n';
+}
+
 std::size_t LatencyRecorder::bucketIndex(std::uint64_t latency_ns) {
   if (latency_ns < kExactBucketCount) {
     return static_cast<std::size_t>(latency_ns);

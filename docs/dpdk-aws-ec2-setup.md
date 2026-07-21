@@ -177,11 +177,20 @@ sudo env \
   ASTRA_DPDK_RX_DESC=8192 \
   ASTRA_DPDK_LATENCY_MODE=packet \
   ASTRA_DPDK_FLOW_FILTER=off \
-  ASTRA_LATENCY_METRICS=off \
+  ASTRA_LATENCY_METRICS=on \
+  ASTRA_LATENCY_PERCENTILES_ONLY=on \
+  ASTRA_BOOK_STATS=off \
   ASTRA_STAGE_LATENCY_METRICS=off \
   ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
   ./scripts/run_engine_dpdk.sh 0.0.0.0 9000 0.0.0.0 9001
 ```
+
+`ASTRA_BOOK_STATS=off` suppresses the verbose book, local-index, and price-pool
+shutdown report and skips its full index probe-layout scan. Lightweight book
+validation still runs and still makes the process fail when book state is not
+clean. `ASTRA_LATENCY_PERCENTILES_ONLY=on` prints only p50 through p99.99 from
+the latency recorder. Keep the short `engine_stats` and `rx_stats` lines: they
+prove the percentile run had no sequence or transport loss.
 
 ```bash
 ASTRA_CPU_A=3 \

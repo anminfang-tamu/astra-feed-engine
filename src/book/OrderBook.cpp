@@ -742,6 +742,10 @@ const Order *OrderBook::getOrder(uint64_t order_id) const noexcept {
 }
 
 OrderBookStats OrderBook::stats() const noexcept {
+  return stats(BookStatsDetail::Full);
+}
+
+OrderBookStats OrderBook::stats(BookStatsDetail detail) const noexcept {
   OrderBookStats result{};
   result.invalid_adds = invalid_adds_;
   result.duplicate_order_refs = duplicate_order_refs_;
@@ -758,6 +762,8 @@ OrderBookStats OrderBook::stats() const noexcept {
   result.index_capacity = order_refs_.capacity();
   result.index_max_entries = order_refs_.maxEntries();
   result.index_failures = order_refs_.failureCounters();
-  result.index_probes = order_refs_.probeStats();
+  if (detail == BookStatsDetail::Full) {
+    result.index_probes = order_refs_.probeStats();
+  }
   return result;
 }

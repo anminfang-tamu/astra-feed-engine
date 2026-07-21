@@ -157,6 +157,9 @@ ASTRA_NUMA_NODE=0 \
 ASTRA_DPDK_PORT_ID=0 \
 ASTRA_DPDK_BURST_SIZE=16 \
 ASTRA_DPDK_LATENCY_MODE=packet \
+ASTRA_LATENCY_METRICS=on \
+ASTRA_LATENCY_PERCENTILES_ONLY=on \
+ASTRA_BOOK_STATS=off \
 ASTRA_DPDK_EAL_ARGS="--main-lcore 2 -l 2 --allow ${FEED_PCI}" \
 ./scripts/run_engine_dpdk.sh
 ```
@@ -166,6 +169,9 @@ use `ASTRA_DPDK_FLOW_FILTER=off` if the active PMD rejects isolated
 IPv4/UDP `rte_flow` rules. See
 [DPDK Setup on AWS EC2 Linux](docs/dpdk-aws-ec2-setup.md) for hugepages,
 secondary-ENI binding, VFIO no-IOMMU mode, validation, and NIC restoration.
+With `ASTRA_BOOK_STATS=off`, shutdown skips the verbose book/pool report and
+its full index probe scan while preserving book validation. Set
+`ASTRA_LATENCY_PERCENTILES_ONLY=on` to print only p50 through p99.99.
 
 ## Validation
 

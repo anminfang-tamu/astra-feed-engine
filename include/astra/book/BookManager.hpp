@@ -79,6 +79,9 @@ public:
   // current probe layout. This is a shutdown/offline diagnostic, not a hot-
   // path or periodic metrics call.
   BookManagerStats stats() const noexcept;
+  // ValidationOnly preserves every correctness field while skipping the
+  // full local-index probe-layout scan used only by verbose diagnostics.
+  BookManagerStats stats(BookStatsDetail detail) const noexcept;
 
 private:
   OrderBook *find(uint16_t stock_locate) const noexcept;

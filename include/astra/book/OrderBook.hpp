@@ -11,6 +11,11 @@
 #include <cstddef>
 #include <cstdint>
 
+enum class BookStatsDetail : uint8_t {
+  ValidationOnly,
+  Full,
+};
+
 struct OrderBookStats {
   uint64_t invalid_adds{0};
   uint64_t duplicate_order_refs{0};
@@ -51,6 +56,7 @@ public:
   BookUpdate getBookUpdate() const noexcept;
   const Order *getOrder(uint64_t order_id) const noexcept;
   OrderBookStats stats() const noexcept;
+  OrderBookStats stats(BookStatsDetail detail) const noexcept;
 
   uint32_t symbolId() const noexcept { return symbol_id_; }
   size_t liveOrderCount() const noexcept { return live_order_count_; }

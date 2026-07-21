@@ -246,6 +246,10 @@ const Order *BookManager::getOrder(uint16_t stock_locate,
 }
 
 BookManagerStats BookManager::stats() const noexcept {
+  return stats(BookStatsDetail::Full);
+}
+
+BookManagerStats BookManager::stats(BookStatsDetail detail) const noexcept {
   BookManagerStats result{};
   result.invalid_adds = invalid_adds_;
   result.missing_order_refs = missing_order_refs_;
@@ -261,7 +265,7 @@ BookManagerStats BookManager::stats() const noexcept {
       continue;
     }
     ++result.books;
-    const OrderBookStats book_stats = book->stats();
+    const OrderBookStats book_stats = book->stats(detail);
     result.invalid_adds += book_stats.invalid_adds;
     result.duplicate_order_refs += book_stats.duplicate_order_refs;
     result.missing_order_refs += book_stats.missing_order_refs;

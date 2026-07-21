@@ -240,6 +240,10 @@ int main(int argc, char *argv[]) {
         std::getenv("ASTRA_LATENCY_METRICS"), config.enable_latency_metrics);
     config.stop_on_decode_error = envBool(
         std::getenv("ASTRA_STOP_ON_DECODE_ERROR"), true);
+    const bool report_book_stats =
+        envBool(std::getenv("ASTRA_BOOK_STATS"), true);
+    const bool latency_percentiles_only = envBool(
+        std::getenv("ASTRA_LATENCY_PERCENTILES_ONLY"), false);
     // config.enable_stage_latency_metrics =
     //     config.enable_latency_metrics &&
     //     envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
@@ -274,6 +278,9 @@ int main(int argc, char *argv[]) {
 #endif
       std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
+                << "  latency_report="
+                << (latency_percentiles_only ? "percentiles" : "full")
+                << "  book_stats=" << (report_book_stats ? "on" : "off")
                 << "  stop_on_decode_error="
                 << (config.stop_on_decode_error ? "on" : "off")
                 << "  default_book_order_capacity="
@@ -299,6 +306,9 @@ int main(int argc, char *argv[]) {
 #endif
       std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
+                << "  latency_report="
+                << (latency_percentiles_only ? "percentiles" : "full")
+                << "  book_stats=" << (report_book_stats ? "on" : "off")
                 << "  stop_on_decode_error="
                 << (config.stop_on_decode_error ? "on" : "off")
                 << "  default_book_order_capacity="
@@ -335,63 +345,74 @@ int main(int argc, char *argv[]) {
               << " channel_status_name=" << channelHealthName(channel.status)
               << "\n";
 
-    const BookManagerStats book_stats = book_manager.stats();
-    std::cout << "book_stats books=" << book_stats.books
-              << " live_orders=" << book_stats.live_orders
-              << " local_index_size=" << book_stats.order_ref_index_size
-              << " local_index_slots=" << book_stats.order_ref_index_capacity
-              << " local_index_max_entries="
-              << book_stats.order_ref_index_max_entries
-              << " local_index_max_probe="
-              << book_stats.order_ref_index_max_probe_length
-              << " invalid_adds=" << book_stats.invalid_adds
-              << " duplicate_order_refs="
-              << book_stats.duplicate_order_refs
-              << " missing_order_refs=" << book_stats.missing_order_refs
-              << " stale_order_refs=" << book_stats.stale_order_refs
-              << " mutation_failures=" << book_stats.mutation_failures
-              << " order_ref_index_insert_failures="
-              << book_stats.order_ref_index_insert_failures
-              << " order_ref_index_replace_failures="
-              << book_stats.order_ref_index_replace_failures
-              << " order_ref_index_erase_failures="
-              << book_stats.order_ref_index_erase_failures
-              << " late_book_creation_attempts="
-              << book_stats.late_book_creation_attempts
-              << " book_creation_failures="
-              << book_stats.book_creation_failures
-              << " allocation_failures=" << book_stats.allocation_failures
-              << " local_order_arenas_in_use=" << book_stats.orders.in_use
-              << " local_order_arenas_capacity="
-              << book_stats.orders.capacity
-              << " live_order_high_watermark="
-              << book_stats.orders.high_watermark
-              << " local_order_arena_invalid_releases="
-              << book_stats.orders.invalid_releases
-              << " local_order_arena_double_releases="
-              << book_stats.orders.double_releases
-              << " price_rejections=" << book_stats.price_rejections
-              << " locally_invalid_books="
-              << book_stats.locally_invalid_books
-              << " inconsistent_books=" << book_stats.inconsistent_books
-              << " price_internal_nodes_in_use="
-              << book_stats.price_levels.internal_nodes_in_use
-              << " price_internal_nodes_high_watermark="
-              << book_stats.price_levels.internal_node_high_watermark
-              << " price_leaves_in_use="
-              << book_stats.price_levels.leaves_in_use
-              << " price_leaf_high_watermark="
-              << book_stats.price_levels.leaf_high_watermark
-              << " price_levels_in_use="
-              << book_stats.price_levels.levels_in_use
-              << " price_level_high_watermark="
-              << book_stats.price_levels.level_high_watermark
-              << " price_internal_node_exhaustions="
-              << book_stats.price_levels.internal_node_exhaustions
-              << " price_leaf_exhaustions="
-              << book_stats.price_levels.leaf_exhaustions
-              << " price_level_exhaustions="
-              << book_stats.price_levels.level_exhaustions << "\n";
+    const BookStatsDetail book_stats_detail =
+        report_book_stats ? BookStatsDetail::Full
+                          : BookStatsDetail::ValidationOnly;
+    const BookManagerStats book_stats =
+        book_manager.stats(book_stats_detail);
+    const bool books_clean = bookStatsClean(book_stats);
+    if (report_book_stats) {
+      std::cout << "book_stats books=" << book_stats.books
+                << " live_orders=" << book_stats.live_orders
+                << " local_index_size=" << book_stats.order_ref_index_size
+                << " local_index_slots="
+                << book_stats.order_ref_index_capacity
+                << " local_index_max_entries="
+                << book_stats.order_ref_index_max_entries
+                << " local_index_max_probe="
+                << book_stats.order_ref_index_max_probe_length
+                << " invalid_adds=" << book_stats.invalid_adds
+                << " duplicate_order_refs="
+                << book_stats.duplicate_order_refs
+                << " missing_order_refs=" << book_stats.missing_order_refs
+                << " stale_order_refs=" << book_stats.stale_order_refs
+                << " mutation_failures=" << book_stats.mutation_failures
+                << " order_ref_index_insert_failures="
+                << book_stats.order_ref_index_insert_failures
+                << " order_ref_index_replace_failures="
+                << book_stats.order_ref_index_replace_failures
+                << " order_ref_index_erase_failures="
+                << book_stats.order_ref_index_erase_failures
+                << " late_book_creation_attempts="
+                << book_stats.late_book_creation_attempts
+                << " book_creation_failures="
+                << book_stats.book_creation_failures
+                << " allocation_failures=" << book_stats.allocation_failures
+                << " local_order_arenas_in_use=" << book_stats.orders.in_use
+                << " local_order_arenas_capacity="
+                << book_stats.orders.capacity
+                << " live_order_high_watermark="
+                << book_stats.orders.high_watermark
+                << " local_order_arena_invalid_releases="
+                << book_stats.orders.invalid_releases
+                << " local_order_arena_double_releases="
+                << book_stats.orders.double_releases
+                << " price_rejections=" << book_stats.price_rejections
+                << " locally_invalid_books="
+                << book_stats.locally_invalid_books
+                << " inconsistent_books=" << book_stats.inconsistent_books
+                << " price_internal_nodes_in_use="
+                << book_stats.price_levels.internal_nodes_in_use
+                << " price_internal_nodes_high_watermark="
+                << book_stats.price_levels.internal_node_high_watermark
+                << " price_leaves_in_use="
+                << book_stats.price_levels.leaves_in_use
+                << " price_leaf_high_watermark="
+                << book_stats.price_levels.leaf_high_watermark
+                << " price_levels_in_use="
+                << book_stats.price_levels.levels_in_use
+                << " price_level_high_watermark="
+                << book_stats.price_levels.level_high_watermark
+                << " price_internal_node_exhaustions="
+                << book_stats.price_levels.internal_node_exhaustions
+                << " price_leaf_exhaustions="
+                << book_stats.price_levels.leaf_exhaustions
+                << " price_level_exhaustions="
+                << book_stats.price_levels.level_exhaustions << "\n";
+    } else if (!books_clean) {
+      std::cout << "book_validation status=failed"
+                   " rerun_with_ASTRA_BOOK_STATS=on\n";
+    }
 
     if (channel.status != ChannelHealth::Good || !channel.gap_buffer.empty()) {
       const auto gap_stats = channel.gap_buffer.stats(channel.next_expected_seq);
@@ -458,13 +479,16 @@ int main(int argc, char *argv[]) {
     }
 #endif
     if (config.enable_latency_metrics) {
-      latency_recorder.report();
+      if (latency_percentiles_only) {
+        latency_recorder.reportPercentiles();
+      } else {
+        latency_recorder.report();
+      }
       // if (config.enable_stage_latency_metrics)
       //   stage_latency_recorder.report();
     }
 
-    if (!channelStatsClean(channel, dual_feed) ||
-        !bookStatsClean(book_stats)) {
+    if (!channelStatsClean(channel, dual_feed) || !books_clean) {
       return EXIT_FAILURE;
     }
 

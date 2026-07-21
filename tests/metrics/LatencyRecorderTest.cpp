@@ -60,6 +60,20 @@ TEST(LatencyRecorderTest, ReportsEmptyRecorder) {
   EXPECT_EQ(out.str(), "latency count=0 invalid=0\n");
 }
 
+TEST(LatencyRecorderTest, ReportsOnlyRequestedPercentiles) {
+  LatencyRecorder recorder;
+  recorder.recordDuration(10);
+  recorder.recordDuration(20);
+  recorder.recordDuration(30);
+  std::ostringstream out;
+
+  recorder.reportPercentiles(out);
+
+  EXPECT_EQ(out.str(),
+            "latency p50_ns=20 p90_ns=30 p99_ns=30 p99.9_ns=30 "
+            "p99.99_ns=30\n");
+}
+
 TEST(LatencyRecorderTest, ResetClearsAllState) {
   LatencyRecorder recorder;
 

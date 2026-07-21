@@ -32,6 +32,9 @@ Useful environment:
   ASTRA_DPDK_PROMISCUOUS=off
   ASTRA_DPDK_ALLMULTICAST=on
   ASTRA_BOOK_ORDER_CAPACITY=65536  # default-tier symbols
+  ASTRA_LATENCY_METRICS=on
+  ASTRA_LATENCY_PERCENTILES_ONLY=on
+  ASTRA_BOOK_STATS=off  # suppress verbose shutdown book/pool diagnostics
   ASTRA_BUILD_TYPE=Release  # default
   ASTRA_ENABLE_IPO=ON       # optional compiler-supported LTO/IPO
 USAGE

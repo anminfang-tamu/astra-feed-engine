@@ -37,6 +37,8 @@ public:
 
   void report() const;
   void report(std::ostream &out) const;
+  void reportPercentiles() const;
+  void reportPercentiles(std::ostream &out) const;
 
 private:
   static constexpr std::size_t kExactBucketCount = 1024;

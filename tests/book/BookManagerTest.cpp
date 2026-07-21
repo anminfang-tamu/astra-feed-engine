@@ -132,6 +132,22 @@ TEST(BookManagerTest, PrepareBookConstructsEmptyLocalStorage) {
   EXPECT_EQ(stats.inconsistent_books, 0u);
 }
 
+TEST(BookManagerTest, ValidationStatsSkipDetailedIndexProbeScan) {
+  BookManager manager(kTestOrderCapacity, kTestPriceLevelConfig);
+  manager.addOrder(7, 1, 100, 10, 'B');
+
+  const BookManagerStats validation =
+      manager.stats(BookStatsDetail::ValidationOnly);
+  const BookManagerStats full = manager.stats();
+
+  EXPECT_EQ(validation.live_orders, full.live_orders);
+  EXPECT_EQ(validation.order_ref_index_size, full.order_ref_index_size);
+  EXPECT_EQ(validation.orders.in_use, full.orders.in_use);
+  EXPECT_EQ(validation.inconsistent_books, full.inconsistent_books);
+  EXPECT_EQ(validation.order_ref_index_max_probe_length, 0u);
+  EXPECT_GE(full.order_ref_index_max_probe_length, 1u);
+}
+
 TEST(BookManagerTest, ExhaustedBookCanDeleteAndReuseLocalCapacity) {
   BookManager manager(2, {32, 16, 16});
   manager.addOrder(7, 1, 100, 10, 'B');
