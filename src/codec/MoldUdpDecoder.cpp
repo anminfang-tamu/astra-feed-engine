@@ -35,6 +35,9 @@ uint64_t MoldUdpDecoder::readU64BE(const std::byte *p) noexcept {
 }
 
 DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
+  if (channel_.status == ChannelHealth::Invalid) {
+    return {DecodeStatus::InvalidItchMessage};
+  }
   if (packet.data == nullptr ||
       packet.size < MoldUdpPacketHeader::kHeaderSize) {
     return {DecodeStatus::PacketTooSmall};
@@ -222,7 +225,12 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(
     }
 
     if (message_seq >= start_seq) {
-      parser_.handleMessage(std::span<const std::byte>(data + offset, msg_len));
+      (void)parser_.handleMessage(
+          std::span<const std::byte>(data + offset, msg_len));
+      if (!parser_.lastError().empty()) {
+        channel_.status = ChannelHealth::Invalid;
+        return {DecodeStatus::InvalidItchMessage};
+      }
       ++processed_messages;
     }
 

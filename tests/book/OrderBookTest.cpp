@@ -1,4 +1,4 @@
-#include "astra/book/BookManager.hpp"
+#include "astra/book/OrderBook.hpp"
 #include "astra/book/TopOfBook.hpp"
 
 #include <gtest/gtest.h>
@@ -7,57 +7,56 @@
 
 namespace {
 
-class ManagerBackedBook {
+class DirectBook {
 public:
-  explicit ManagerBackedBook(uint16_t stock_locate)
-      : stock_locate_(stock_locate), manager_(128) {
-    (void)manager_.getOrCreate(stock_locate_);
-  }
+  explicit DirectBook(uint16_t stock_locate)
+      : price_levels_({256, 128, 256}),
+        book_(stock_locate, 128, price_levels_) {}
 
   void addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
                 char side) noexcept {
-    manager_.addOrder(stock_locate_, order_id, price, qty, side);
+    book_.addOrder(order_id, price, qty, side);
   }
 
   void cancelShares(uint64_t order_id, uint32_t canceled_qty) noexcept {
-    manager_.cancelShares(stock_locate_, order_id, canceled_qty);
+    book_.cancelShares(order_id, canceled_qty);
   }
 
   void deleteOrder(uint64_t order_id) noexcept {
-    manager_.deleteOrder(stock_locate_, order_id);
+    book_.deleteOrder(order_id);
   }
 
   bool trade(uint64_t order_id, uint32_t executed_qty) noexcept {
-    return manager_.trade(stock_locate_, order_id, executed_qty);
+    return book_.trade(order_id, executed_qty);
   }
 
   void replaceOrder(uint64_t old_id, uint64_t new_id, uint64_t new_price,
                     uint32_t new_qty) noexcept {
-    manager_.replaceOrder(stock_locate_, old_id, new_id, new_price, new_qty);
+    book_.replaceOrder(old_id, new_id, new_price, new_qty);
   }
 
   void reverseExecution(uint64_t order_id, uint64_t price, uint32_t qty,
                         char side) noexcept {
-    manager_.reverseExecution(stock_locate_, order_id, price, qty, side);
+    book_.reverseExecution(order_id, price, qty, side);
   }
 
   TopOfBook getTopOfBook() const noexcept {
-    return manager_.getOrderBook(stock_locate_)->getTopOfBook();
+    return book_.getTopOfBook();
   }
 
   BookUpdate getBookUpdate() const noexcept {
-    return manager_.getOrderBook(stock_locate_)->getBookUpdate();
+    return book_.getBookUpdate();
   }
 
 private:
-  uint16_t stock_locate_;
-  BookManager manager_;
+  PriceLevelArena price_levels_;
+  OrderBook book_;
 };
 
 } // namespace
 
 TEST(OrderBookTest, StartsWithEmptyTopOfBook) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.symbol_id, 42u);
   EXPECT_EQ(top.bid_price, 0u);
@@ -69,7 +68,7 @@ TEST(OrderBookTest, StartsWithEmptyTopOfBook) {
 }
 
 TEST(OrderBookTest, AddOrdersUpdatesTopOfBook) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 11,  50, 'B');
   book.addOrder(3, 13,  75, 'S');
@@ -83,7 +82,7 @@ TEST(OrderBookTest, AddOrdersUpdatesTopOfBook) {
 }
 
 TEST(OrderBookTest, CancelSharesReducesBestLevelQuantity) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.cancelShares(1, 60); // 100 - 60 = 40 remaining
 
@@ -93,7 +92,7 @@ TEST(OrderBookTest, CancelSharesReducesBestLevelQuantity) {
 }
 
 TEST(OrderBookTest, DeleteOrderFallsBackToNextBestBid) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 11,  50, 'B');
   book.deleteOrder(2);
@@ -106,7 +105,7 @@ TEST(OrderBookTest, DeleteOrderFallsBackToNextBestBid) {
 }
 
 TEST(OrderBookTest, DeleteOrderFallsBackToNextBestAsk) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 12, 100, 'S');
   book.addOrder(2, 13,  50, 'S');
   book.deleteOrder(1);
@@ -119,7 +118,7 @@ TEST(OrderBookTest, DeleteOrderFallsBackToNextBestAsk) {
 }
 
 TEST(OrderBookTest, ReplaceOrderMovesToNewPrice) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.replaceOrder(1, 2, 12, 75); // old id=1 → new id=2 at price 12 qty 75
 
@@ -129,7 +128,7 @@ TEST(OrderBookTest, ReplaceOrderMovesToNewPrice) {
 }
 
 TEST(OrderBookTest, ReplaceAtSamePriceRequeuesWithoutLosingLevel) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 10, 50, 'B');
 
@@ -147,7 +146,7 @@ TEST(OrderBookTest, ReplaceAtSamePriceRequeuesWithoutLosingLevel) {
 }
 
 TEST(OrderBookTest, CancelAllSharesRemovesOrder) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.cancelShares(1, 100); // fully cancel → book should be empty
 
@@ -158,7 +157,7 @@ TEST(OrderBookTest, CancelAllSharesRemovesOrder) {
 
 TEST(OrderBookTest, HandlesSparseLargeOrderIdWithoutDenseAllocation) {
   constexpr uint64_t large_id = 9'000'000'000'000'000'000ULL;
-  ManagerBackedBook book(42);
+  DirectBook book(42);
 
   book.addOrder(large_id, 10, 100, 'B');
   TopOfBook top = book.getTopOfBook();
@@ -177,7 +176,7 @@ TEST(OrderBookTest, HandlesSparseLargeOrderIdWithoutDenseAllocation) {
 }
 
 TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 11,  50, 'B');
   book.addOrder(3, 12,  75, 'S');
@@ -198,7 +197,7 @@ TEST(OrderBookTest, BookUpdateAfterAddingOrders) {
 }
 
 TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 10,  40, 'B');
 
@@ -213,7 +212,7 @@ TEST(OrderBookTest, MultipleOrdersAtSamePriceAggregateQuantity) {
 }
 
 TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   EXPECT_TRUE(book.trade(1, 25));
 
@@ -223,7 +222,7 @@ TEST(OrderBookTest, PartialTradeReducesBestLevelQuantity) {
 }
 
 TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 11,  50, 'B');
   EXPECT_TRUE(book.trade(2, 50));
@@ -234,7 +233,7 @@ TEST(OrderBookTest, FullTradeFallsBackToNextBestBid) {
 }
 
 TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(2, 10, 100, 'B');
   EXPECT_FALSE(book.trade(1, 150)); // exceeds order qty — ignored
@@ -245,7 +244,7 @@ TEST(OrderBookTest, TradeLargerThanOrderQuantityIsIgnored) {
 }
 
 TEST(OrderBookTest, DuplicateOrderIdIsIgnored) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.addOrder(1, 11,  50, 'B'); // duplicate id — ignored
 
@@ -260,7 +259,7 @@ TEST(OrderBookTest, DuplicateOrderIdIsIgnored) {
 }
 
 TEST(OrderBookTest, ZeroQuantityAddIsIgnored) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 0, 'B');
 
   const TopOfBook top = book.getTopOfBook();
@@ -269,7 +268,7 @@ TEST(OrderBookTest, ZeroQuantityAddIsIgnored) {
 }
 
 TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
 
   book.cancelShares(99, 50);   // unknown id — ignored
@@ -282,7 +281,7 @@ TEST(OrderBookTest, MissingOrderOperationsDoNotChangeBook) {
 }
 
 TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   for (uint32_t i = 0; i < 12; ++i) {
     book.addOrder(100 + i, 10 + i, 10 + i, 'B');
     book.addOrder(200 + i, 20 + i, 20 + i, 'S');
@@ -298,7 +297,7 @@ TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
 }
 
 TEST(OrderBookTest, ReverseExecutionRestoresPartialQuantity) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.trade(1, 40);
   book.reverseExecution(1, 10, 40, 'B');
@@ -309,7 +308,7 @@ TEST(OrderBookTest, ReverseExecutionRestoresPartialQuantity) {
 }
 
 TEST(OrderBookTest, ReverseExecutionReAddsFullyTradedOrder) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 10, 100, 'B');
   book.trade(1, 100); // fully consumed
   book.reverseExecution(1, 10, 100, 'B');
@@ -320,7 +319,7 @@ TEST(OrderBookTest, ReverseExecutionReAddsFullyTradedOrder) {
 }
 
 TEST(OrderBookTest, CoversFullUint32PriceDomainWithoutCenteredWindow) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   constexpr uint64_t max_price = std::numeric_limits<uint32_t>::max();
 
   book.addOrder(1, 0, 10, 'B');
@@ -346,7 +345,7 @@ TEST(OrderBookTest, CoversFullUint32PriceDomainWithoutCenteredWindow) {
 }
 
 TEST(OrderBookTest, KeepsFarApartPricesDistinctAndOrdered) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 100, 10, 'B');
   book.addOrder(2, 10'000'000, 20, 'B');
   book.addOrder(3, 200, 30, 'S');
@@ -362,7 +361,7 @@ TEST(OrderBookTest, KeepsFarApartPricesDistinctAndOrdered) {
 }
 
 TEST(OrderBookTest, SameRawPriceIsIndependentOnBidAndAskSides) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   book.addOrder(1, 123'456, 10, 'B');
   book.addOrder(2, 123'456, 20, 'S');
 
@@ -380,7 +379,7 @@ TEST(OrderBookTest, SameRawPriceIsIndependentOnBidAndAskSides) {
 }
 
 TEST(OrderBookTest, AggregateQuantityUsesUint64) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   constexpr uint32_t max_qty = std::numeric_limits<uint32_t>::max();
   book.addOrder(1, 100, max_qty, 'B');
   book.addOrder(2, 100, max_qty, 'B');
@@ -395,7 +394,7 @@ TEST(OrderBookTest, AggregateQuantityUsesUint64) {
 }
 
 TEST(OrderBookTest, TopTenTraversesAcrossRadixByteBoundaries) {
-  ManagerBackedBook book(42);
+  DirectBook book(42);
   constexpr uint32_t prices[] = {
       0x00000000u, 0x000000ffu, 0x00000100u, 0x0000ffffu,
       0x00010000u, 0x00ffffffu, 0x01000000u, 0x7fffffffu,

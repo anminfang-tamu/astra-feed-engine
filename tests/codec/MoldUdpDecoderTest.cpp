@@ -17,7 +17,8 @@
 namespace {
 
 using Bytes = std::vector<std::byte>;
-constexpr size_t kTestDirectorySlots = 1024;
+constexpr size_t kTestOrderCapacity = 1024;
+constexpr PriceLevelArenaConfig kTestPriceLevelConfig{256, 128, 128};
 
 void appendU8(Bytes &b, uint8_t v) { b.push_back(static_cast<std::byte>(v)); }
 void appendU16(Bytes &b, uint16_t v) {
@@ -55,6 +56,16 @@ Bytes addMessage(uint16_t locate, uint64_t order_id, char side, uint32_t qty,
   appendU32(b, qty);
   appendStock(b, sym);
   appendU32(b, price);
+  return b;
+}
+
+Bytes systemEventMessage(char event_code) {
+  Bytes b;
+  appendU8(b, 'S');
+  appendU16(b, 0);
+  appendU16(b, 7);
+  appendU48(b, 34200123456789ULL);
+  appendU8(b, static_cast<uint8_t>(event_code));
   return b;
 }
 
@@ -101,14 +112,57 @@ void registerSymbol(astra::symbol::StockDirectory &symbols, uint16_t locate,
   symbols.set(locate, entry);
 }
 
+bool prepareRegisteredBooks(const astra::symbol::StockDirectory &symbols,
+                            BookManager &books) {
+  bool found_registered_symbol = false;
+  for (uint16_t locate = 1;
+       locate < astra::symbol::StockDirectory::kMaxLocate; ++locate) {
+    if (!symbols.isRegistered(locate)) {
+      continue;
+    }
+    found_registered_symbol = true;
+    if (!books.prepareBook(locate)) {
+      return false;
+    }
+  }
+  if (!found_registered_symbol) {
+    return false;
+  }
+  books.sealBookUniverse();
+  return true;
+}
+
 } // namespace
+
+TEST(MoldUdpDecoderTest, ParserReadinessFailureInvalidatesChannel) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  MoldUdpDecoder decoder(symbols, books, 3);
+  const Bytes market_hours = systemEventMessage('S');
+  const Bytes packet =
+      moldPacket(1, std::span<const Bytes>(&market_hours, 1));
+
+  const DecodeResult result = decoder.processPacket(view(packet));
+
+  EXPECT_EQ(result.status, DecodeStatus::InvalidItchMessage);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Invalid);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_FALSE(decoder.channelState().session_initialized);
+
+  const Bytes add = addMessage(1, 101, 'B', 100, "AAPL", 1000);
+  const Bytes retry = moldPacket(1, std::span<const Bytes>(&add, 1));
+  EXPECT_EQ(decoder.processPacket(view(retry)).status,
+            DecodeStatus::InvalidItchMessage);
+  EXPECT_EQ(books.getOrderBook(1), nullptr);
+}
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
   registerSymbol(symbols, 2, "MSFT");
   registerSymbol(symbols, 3, "NVDA");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -135,7 +189,8 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   EXPECT_EQ(gap_stats.min_seq, 3u);
   EXPECT_EQ(gap_stats.max_seq, 3u);
   EXPECT_EQ(gap_stats.next_seq_at_or_after, 3u);
-  EXPECT_EQ(books.getOrderBook(3), nullptr);
+  ASSERT_NE(books.getOrderBook(3), nullptr);
+  EXPECT_EQ(books.getOrderBook(3)->liveOrderCount(), 0u);
 
   const DecodeResult recovery_result = decoder.processPacket(view(pkt2));
   EXPECT_EQ(recovery_result.status, DecodeStatus::Ok);
@@ -152,7 +207,8 @@ TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
 TEST(MoldUdpDecoderTest, DuplicatePacketDoesNotContributeToLatency) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -172,7 +228,8 @@ TEST(MoldUdpDecoderTest, FirstFuturePacketWaitsForSequenceOneAndThenDrains) {
   registerSymbol(symbols, 1, "AAPL");
   registerSymbol(symbols, 2, "MSFT");
   registerSymbol(symbols, 3, "NVDA");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -194,7 +251,8 @@ TEST(MoldUdpDecoderTest, FirstFuturePacketWaitsForSequenceOneAndThenDrains) {
   EXPECT_EQ(decoder.channelState().first_received_seq_by_line[0], 0u);
   EXPECT_EQ(decoder.channelState().first_received_seq_by_line[1], 3u);
   EXPECT_EQ(decoder.channelState().gap_buffer.size(), 1u);
-  EXPECT_EQ(books.getOrderBook(3), nullptr);
+  ASSERT_NE(books.getOrderBook(3), nullptr);
+  EXPECT_EQ(books.getOrderBook(3)->liveOrderCount(), 0u);
 
   const DecodeResult recovered = decoder.processPacket(view(stream_head, 0));
   EXPECT_EQ(recovered.status, DecodeStatus::Ok);
@@ -216,7 +274,8 @@ TEST(MoldUdpDecoderTest, SessionMismatchDoesNotAdvanceSequence) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
   registerSymbol(symbols, 2, "MSFT");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -235,7 +294,8 @@ TEST(MoldUdpDecoderTest, SessionMismatchDoesNotAdvanceSequence) {
   EXPECT_EQ(mismatch.status, DecodeStatus::InvalidSequence);
   EXPECT_EQ(decoder.channelState().next_expected_seq, 2u);
   EXPECT_EQ(decoder.channelState().session_mismatch_packets, 1u);
-  EXPECT_EQ(books.getOrderBook(2), nullptr);
+  ASSERT_NE(books.getOrderBook(2), nullptr);
+  EXPECT_EQ(books.getOrderBook(2)->liveOrderCount(), 0u);
 
   const DecodeResult recovered =
       decoder.processPacket(view(matching_session, 0));
@@ -248,7 +308,8 @@ TEST(MoldUdpDecoderTest, SessionMismatchDoesNotAdvanceSequence) {
 TEST(MoldUdpDecoderTest, MalformedStreamHeadDoesNotBindSession) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -272,7 +333,8 @@ TEST(MoldUdpDecoderTest, MalformedStreamHeadDoesNotBindSession) {
 TEST(MoldUdpDecoderTest, RejectsSequenceRangeOverflow) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
   decoder.channelState().next_expected_seq =
       std::numeric_limits<uint64_t>::max();
@@ -291,7 +353,7 @@ TEST(MoldUdpDecoderTest, RejectsSequenceRangeOverflow) {
 
 TEST(MoldUdpDecoderTest, FutureEndOfSessionDoesNotStopColdDecoder) {
   astra::symbol::StockDirectory symbols;
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes future_end = moldControlPacket(
@@ -306,7 +368,8 @@ TEST(MoldUdpDecoderTest, FutureEndOfSessionDoesNotStopColdDecoder) {
 TEST(MoldUdpDecoderTest, RedundantFutureCopyKeepsEarliestReceiveTimestamp) {
   astra::symbol::StockDirectory symbols;
   registerSymbol(symbols, 1, "AAPL");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg = addMessage(1, 101, 'B', 100, "AAPL", 1000);
@@ -331,7 +394,8 @@ TEST(MoldUdpDecoderTest,
   registerSymbol(symbols, 1, "AAPL");
   registerSymbol(symbols, 2, "MSFT");
   registerSymbol(symbols, 3, "NVDA");
-  BookManager books(kTestDirectorySlots);
+  BookManager books(kTestOrderCapacity, kTestPriceLevelConfig);
+  ASSERT_TRUE(prepareRegisteredBooks(symbols, books));
   MoldUdpDecoder decoder(symbols, books, 3);
 
   const Bytes msg1 = addMessage(1, 101, 'B', 100, "AAPL", 1000);

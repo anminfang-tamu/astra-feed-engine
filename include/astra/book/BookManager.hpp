@@ -1,8 +1,9 @@
 #pragma once
 
+#include "astra/book/BookCapacity.hpp"
 #include "astra/book/OrderBook.hpp"
-#include "astra/book/OrderRefDirectory.hpp"
 #include "astra/symbol/StockLocate.hpp"
+#include "astra/symbol/SymbolTier.hpp"
 
 #include <array>
 #include <cstddef>
@@ -15,19 +16,22 @@ struct BookManagerStats {
   uint64_t missing_order_refs{0};
   uint64_t stale_order_refs{0};
   uint64_t mutation_failures{0};
-  uint64_t directory_insert_failures{0};
-  uint64_t directory_replace_failures{0};
-  uint64_t directory_erase_failures{0};
+  uint64_t order_ref_index_insert_failures{0};
+  uint64_t order_ref_index_replace_failures{0};
+  uint64_t order_ref_index_erase_failures{0};
   uint64_t late_book_creation_attempts{0};
+  uint64_t book_creation_failures{0};
   uint64_t allocation_failures{0};
   uint64_t price_rejections{0};
   uint64_t locally_invalid_books{0};
+  uint64_t inconsistent_books{0};
   size_t books{0};
   size_t live_orders{0};
-  size_t directory_size{0};
-  size_t directory_capacity{0};
-  size_t directory_max_entries{0};
-  size_t directory_max_probe_length{0};
+  size_t live_order_high_watermark{0};
+  size_t order_ref_index_size{0};
+  size_t order_ref_index_capacity{0};
+  size_t order_ref_index_max_entries{0};
+  size_t order_ref_index_max_probe_length{0};
   OrderArenaStats orders{};
   PriceLevelArenaStats price_levels{};
 };
@@ -42,18 +46,10 @@ public:
   static constexpr size_t kDefaultPriceLeafCapacity = 1'048'576;
   static constexpr size_t kDefaultPriceLevelCapacity = 2'097'152;
 
-  explicit BookManager(
-      size_t order_directory_slots =
-          OrderRefDirectory::kDefaultSlotCapacity);
-  BookManager(size_t order_directory_slots,
+  BookManager();
+  BookManager(size_t default_order_capacity,
               PriceLevelArenaConfig price_level_config);
-  BookManager(size_t order_directory_slots,
-              PriceLevelArenaConfig price_level_config,
-              size_t order_pool_capacity);
   ~BookManager();
-
-  static PriceLevelArenaConfig
-  defaultPriceLevelArenaConfig(size_t order_pool_capacity) noexcept;
 
   void addOrder(uint16_t stock_locate, uint64_t order_id, uint64_t price,
                 uint32_t qty, char side) noexcept;
@@ -66,36 +62,41 @@ public:
                     uint64_t new_price, uint32_t new_qty) noexcept;
   void reverseExecution(uint16_t stock_locate, uint64_t order_id,
                         uint64_t price, uint32_t qty, char side) noexcept;
+  bool prepareBook(uint16_t stock_locate) noexcept;
   void sealBookUniverse() noexcept { book_universe_sealed_ = true; }
   bool bookUniverseSealed() const noexcept { return book_universe_sealed_; }
 
-  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
+  void setBookCapacityTier(uint16_t stock_locate,
+                           astra::symbol::SymbolTier tier) noexcept;
+  void setBookOrderCapacity(uint16_t stock_locate,
+                            size_t order_capacity) noexcept;
+  size_t orderCapacityForLocate(uint16_t stock_locate) const noexcept;
+
   const OrderBook *getOrderBook(uint16_t stock_locate) const noexcept;
-  const Order *getOrder(uint64_t order_id) const noexcept;
+  const Order *getOrder(uint16_t stock_locate,
+                        uint64_t order_id) const noexcept;
+  // Aggregates every book and scans each local reference table to report its
+  // current probe layout. This is a shutdown/offline diagnostic, not a hot-
+  // path or periodic metrics call.
   BookManagerStats stats() const noexcept;
 
 private:
   OrderBook *find(uint16_t stock_locate) const noexcept;
-  OrderBook *resolveOrderRef(uint16_t stock_locate, uint64_t order_id,
-                             OrderRefDirectory::Handle &handle) noexcept;
-  bool eraseStaleOrderRef(uint64_t order_id,
-                          OrderRefDirectory::Handle handle) noexcept;
-  bool eraseOrderRef(uint64_t order_id, OrderBook &book) noexcept;
-  void recordMutationFailure(OrderBook &book) noexcept;
+  OrderBook *getOrCreate(uint16_t stock_locate) noexcept;
+  void observeLiveOrderChange(size_t before, size_t after) noexcept;
 
-  OrderRefDirectory order_refs_;
-  OrderArena orders_;
+  size_t default_order_capacity_;
   PriceLevelArena price_levels_;
   std::array<std::unique_ptr<OrderBook>, kMaxStockLocate> books_{};
+  std::array<size_t, kMaxStockLocate> order_capacity_by_locate_{};
+  std::array<bool, kMaxStockLocate> explicit_order_capacity_by_locate_{};
+  size_t live_orders_{0};
+  size_t live_order_high_watermark_{0};
 
   uint64_t invalid_adds_{0};
-  uint64_t duplicate_order_refs_{0};
   uint64_t missing_order_refs_{0};
-  uint64_t stale_order_refs_{0};
   uint64_t mutation_failures_{0};
-  uint64_t directory_insert_failures_{0};
-  uint64_t directory_replace_failures_{0};
-  uint64_t directory_erase_failures_{0};
   uint64_t late_book_creation_attempts_{0};
+  uint64_t book_creation_failures_{0};
   bool book_universe_sealed_{false};
 };

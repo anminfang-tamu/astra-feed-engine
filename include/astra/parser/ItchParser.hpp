@@ -31,6 +31,7 @@ public:
   // void    setStageTiming(DecodeStageTiming *timing) noexcept;
   uint8_t channelId() const;
   ChannelPhase channelPhase() const noexcept;
+  bool bookUniverseReady() const noexcept { return book_universe_ready_; }
   bool lastMessageSkipped() const;
   const std::string &lastError() const;
 
@@ -45,10 +46,10 @@ private:
   void handleBrokenTrade(std::span<const std::byte> msg, uint16_t locate);
   void handleStockDirectory(std::span<const std::byte> msg);
   void handleSystemEvent(std::span<const std::byte> msg);
-  void handleSystemHoursStart() noexcept;
+  bool handleSystemHoursStart() noexcept;
   void markStartupAdminMessage(char type) noexcept;
-  void createRegisteredBook(uint16_t locate) noexcept;
-  void createRegisteredBooks() noexcept;
+  bool createRegisteredBook(uint16_t locate) noexcept;
+  bool createRegisteredBooks() noexcept;
 
   bool skip();
   bool fail(std::string error);
@@ -63,6 +64,7 @@ private:
   BookManager &books_;
   uint8_t channel_id_{0};
   ChannelPhase channel_phase_{ChannelPhase::WaitingStartOfMessages};
+  bool book_universe_ready_{false};
   bool last_message_skipped_{false};
   std::string last_error_;
   std::array<bool, astra::symbol::StockDirectory::kMaxLocate>

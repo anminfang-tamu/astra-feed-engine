@@ -7,32 +7,16 @@
 #include <stdexcept>
 #include <vector>
 
-// Fixed-capacity, process-wide order-reference index.
+// Fixed-capacity order-reference index owned by one OrderBook.
 //
-// The directory is the authoritative mapping from the full 64-bit ITCH order
-// reference space to an order pool slot. All storage is allocated and
-// pre-touched by the constructor. Hot-path operations neither allocate nor
-// resize the table.
-class OrderRefDirectory {
+// The map stores the full non-zero ITCH order reference and resolves it to an
+// index in that book's local order pool. Construction allocates and pre-touches
+// all storage. Insert, find, erase, and replaceKey never allocate or resize.
+// The map is intentionally single-writer.
+class LocalOrderRefMap {
 public:
-  static constexpr uint32_t kInvalidIdx = std::numeric_limits<uint32_t>::max();
-
-  // 16,777,216 slots = 256 MiB of directory storage and at most 8,388,608
-  // concurrently live orders. Deployments can select another power-of-two
-  // slot count explicitly at construction.
-  static constexpr size_t kDefaultSlotCapacity = size_t{1} << 24;
-  static constexpr size_t kDefaultMaxEntries = kDefaultSlotCapacity / 2;
-
-  struct Handle {
-    uint16_t stock_locate{0};
-    uint32_t pool_index{kInvalidIdx};
-
-    constexpr bool valid() const noexcept {
-      return stock_locate != 0 && pool_index != kInvalidIdx;
-    }
-
-    friend constexpr bool operator==(Handle, Handle) noexcept = default;
-  };
+  static constexpr uint32_t kInvalidIndex =
+      std::numeric_limits<uint32_t>::max();
 
   enum class InsertResult : uint8_t {
     Inserted,
@@ -52,6 +36,7 @@ public:
     uint64_t invalid_inserts{0};
     uint64_t duplicate_inserts{0};
     uint64_t full_inserts{0};
+    uint64_t invalid_erases{0};
     uint64_t erase_misses{0};
     uint64_t invalid_replacements{0};
     uint64_t missing_replacements{0};
@@ -61,32 +46,45 @@ public:
                                      FailureCounters) noexcept = default;
   };
 
-  explicit OrderRefDirectory(size_t slot_capacity = kDefaultSlotCapacity)
+  // Snapshot of the current table layout. It is computed only when requested,
+  // so normal insert/find/erase operations do not update telemetry counters in
+  // the hot path.
+  struct ProbeStats {
+    uint64_t searches{0};
+    uint64_t slots_examined{0};
+    size_t max_length{0};
+
+    double averageLength() const noexcept {
+      return searches == 0
+                 ? 0.0
+                 : static_cast<double>(slots_examined) /
+                       static_cast<double>(searches);
+    }
+
+    friend constexpr bool operator==(ProbeStats, ProbeStats) noexcept = default;
+  };
+
+  explicit LocalOrderRefMap(size_t slot_capacity)
       : entries_(validateSlotCapacity(slot_capacity)) {
     touchPages();
   }
 
-  OrderRefDirectory(const OrderRefDirectory &) = delete;
-  OrderRefDirectory &operator=(const OrderRefDirectory &) = delete;
-  OrderRefDirectory(OrderRefDirectory &&) noexcept = default;
-  OrderRefDirectory &operator=(OrderRefDirectory &&) noexcept = default;
+  LocalOrderRefMap(const LocalOrderRefMap &) = delete;
+  LocalOrderRefMap &operator=(const LocalOrderRefMap &) = delete;
+  LocalOrderRefMap(LocalOrderRefMap &&) noexcept = default;
+  LocalOrderRefMap &operator=(LocalOrderRefMap &&) noexcept = default;
 
-  // A non-zero uint64_t is representable regardless of its magnitude. This
-  // predicate does not reserve capacity; callers must inspect insert().
   constexpr bool canStore(uint64_t order_ref) const noexcept {
     return order_ref != kEmptyKey;
   }
 
-  InsertResult insert(uint64_t order_ref, uint16_t stock_locate,
-                      uint32_t pool_index) noexcept {
-    const Handle handle{stock_locate, pool_index};
-    if (!canStore(order_ref) || !handle.valid()) {
+  InsertResult insert(uint64_t order_ref, uint32_t pool_index) noexcept {
+    if (!canStore(order_ref) || pool_index == kInvalidIndex) {
       ++failures_.invalid_inserts;
       return InsertResult::Invalid;
     }
 
     const ProbeResult probe = probeFor(order_ref);
-    observeProbeLength(probe.length);
     if (probe.found) {
       ++failures_.duplicate_inserts;
       return InsertResult::Duplicate;
@@ -96,23 +94,27 @@ public:
       return InsertResult::Full;
     }
 
-    entries_[probe.index] = Entry{order_ref, pack(handle)};
+    entries_[probe.index] = Entry{order_ref, pool_index, 0};
     ++size_;
     return InsertResult::Inserted;
   }
 
-  Handle find(uint64_t order_ref) const noexcept {
+  uint32_t find(uint64_t order_ref) const noexcept {
     if (!canStore(order_ref)) {
-      return {};
+      return kInvalidIndex;
     }
 
     const ProbeResult probe = probeFor(order_ref);
-    return probe.found ? unpack(entries_[probe.index].packed_handle) : Handle{};
+    return probe.found ? entries_[probe.index].pool_index : kInvalidIndex;
+  }
+
+  bool contains(uint64_t order_ref) const noexcept {
+    return find(order_ref) != kInvalidIndex;
   }
 
   bool erase(uint64_t order_ref) noexcept {
     if (!canStore(order_ref)) {
-      ++failures_.erase_misses;
+      ++failures_.invalid_erases;
       return false;
     }
 
@@ -127,9 +129,8 @@ public:
     return true;
   }
 
-  // Atomically changes an order reference while preserving its Handle. This
-  // remains possible at maxEntries() because the operation does not increase
-  // table occupancy.
+  // Changes an order reference while preserving its local pool index. The
+  // operation remains available at maxEntries() because occupancy is unchanged.
   ReplaceResult replaceKey(uint64_t old_order_ref,
                            uint64_t new_order_ref) noexcept {
     if (!canStore(old_order_ref) || !canStore(new_order_ref)) {
@@ -138,7 +139,6 @@ public:
     }
 
     const ProbeResult old_probe = probeFor(old_order_ref);
-    observeProbeLength(old_probe.length);
     if (!old_probe.found) {
       ++failures_.missing_replacements;
       return ReplaceResult::NotFound;
@@ -148,20 +148,19 @@ public:
     }
 
     const ProbeResult new_probe = probeFor(new_order_ref);
-    observeProbeLength(new_probe.length);
     if (new_probe.found) {
       ++failures_.duplicate_replacements;
       return ReplaceResult::Duplicate;
     }
 
-    const uint64_t packed_handle = entries_[old_probe.index].packed_handle;
+    const uint32_t pool_index = entries_[old_probe.index].pool_index;
     eraseAt(old_probe.index);
     --size_;
 
-    // eraseAt() can move entries, so locate the new key's insertion slot again.
+    // eraseAt() can move entries, so the new key's insertion slot must be
+    // resolved again after the probe chain changes.
     const ProbeResult insert_probe = probeFor(new_order_ref);
-    observeProbeLength(insert_probe.length);
-    entries_[insert_probe.index] = Entry{new_order_ref, packed_handle};
+    entries_[insert_probe.index] = Entry{new_order_ref, pool_index, 0};
     ++size_;
     return ReplaceResult::Replaced;
   }
@@ -175,22 +174,35 @@ public:
     return static_cast<double>(size_) / static_cast<double>(capacity());
   }
 
-  // One means the key's home slot was examined; values above one indicate a
-  // collision chain. This is the maximum observed by mutating operations.
-  size_t maxProbeLength() const noexcept { return max_probe_length_; }
-
   const FailureCounters &failureCounters() const noexcept { return failures_; }
+  ProbeStats probeStats() const noexcept {
+    ProbeStats result{};
+    for (size_t slot = 0; slot < capacity(); ++slot) {
+      const Entry &entry = entries_[slot];
+      if (entry.key == kEmptyKey) {
+        continue;
+      }
+      const size_t length = probeDistance(homeIndex(entry.key), slot) + 1;
+      ++result.searches;
+      result.slots_examined += length;
+      if (length > result.max_length) {
+        result.max_length = length;
+      }
+    }
+    return result;
+  }
 
 private:
   static constexpr uint64_t kEmptyKey = 0;
 
   struct Entry {
     uint64_t key{0};
-    uint64_t packed_handle{0};
+    uint32_t pool_index{kInvalidIndex};
+    uint32_t reserved{0};
   };
 
   static_assert(sizeof(Entry) == 16,
-                "OrderRefDirectory entries must remain cache compact");
+                "LocalOrderRefMap entries must remain cache compact");
 
   struct ProbeResult {
     size_t index{0};
@@ -201,13 +213,13 @@ private:
   static size_t validateSlotCapacity(size_t slot_capacity) {
     if (slot_capacity < 2 || !std::has_single_bit(slot_capacity)) {
       throw std::invalid_argument(
-          "OrderRefDirectory slot capacity must be a power of two >= 2");
+          "LocalOrderRefMap slot capacity must be a power of two >= 2");
     }
     return slot_capacity;
   }
 
-  // SplitMix64's finalizer gives stable, high-quality avalanche across sparse
-  // and sequential 64-bit ITCH order references.
+  // SplitMix64's finalizer gives stable avalanche for sparse and sequential
+  // exchange-assigned order references.
   static constexpr uint64_t hash(uint64_t value) noexcept {
     value += 0x9e3779b97f4a7c15ULL;
     value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -232,19 +244,8 @@ private:
       index = (index + 1) & (capacity() - 1);
     }
 
-    // The <= 0.5 load invariant guarantees an empty slot. Keep a defensive
-    // return to make the hot operation total even if memory is corrupted.
+    // The half-load invariant guarantees an empty slot in valid state.
     return {index, capacity(), false};
-  }
-
-  static constexpr uint64_t pack(Handle handle) noexcept {
-    return (static_cast<uint64_t>(handle.stock_locate) << 32) |
-           static_cast<uint64_t>(handle.pool_index);
-  }
-
-  static constexpr Handle unpack(uint64_t packed_handle) noexcept {
-    return {static_cast<uint16_t>(packed_handle >> 32),
-            static_cast<uint32_t>(packed_handle)};
   }
 
   size_t probeDistance(size_t home, size_t slot) const noexcept {
@@ -252,6 +253,11 @@ private:
   }
 
   void eraseAt(size_t hole) noexcept {
+    // Compact only the affected probe cluster. These are 16-byte Entry
+    // assignments inside the already allocated vector; no heap allocation or
+    // resize is possible here. Keeping a real Empty terminator avoids the
+    // full-table probe degradation that permanent tombstones develop under a
+    // full day of add/delete churn.
     size_t scan = (hole + 1) & (capacity() - 1);
     while (entries_[scan].key != kEmptyKey) {
       const size_t home = homeIndex(entries_[scan].key);
@@ -262,12 +268,6 @@ private:
       scan = (scan + 1) & (capacity() - 1);
     }
     entries_[hole] = {};
-  }
-
-  void observeProbeLength(size_t length) noexcept {
-    if (length > max_probe_length_) {
-      max_probe_length_ = length;
-    }
   }
 
   void touchPages() noexcept {
@@ -283,6 +283,5 @@ private:
 
   std::vector<Entry> entries_;
   size_t size_{0};
-  size_t max_probe_length_{0};
   FailureCounters failures_{};
 };

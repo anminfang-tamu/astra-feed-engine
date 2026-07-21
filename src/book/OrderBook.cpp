@@ -1,7 +1,9 @@
 #include "astra/book/OrderBook.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 
@@ -117,12 +119,233 @@ bool unlinkOrder(OrderArena &orders, PooledPriceLevel &level,
 
 } // namespace
 
-OrderBook::OrderBook(uint32_t symbol_id, OrderArena &order_arena,
+size_t OrderBook::indexCapacityForOrders(size_t order_capacity) {
+  if (order_capacity == 0 ||
+      order_capacity > static_cast<size_t>(OrderArena::kInvalidIndex) ||
+      order_capacity > std::numeric_limits<size_t>::max() / 4) {
+    throw std::invalid_argument(
+        "per-book order capacity is outside the supported index domain");
+  }
+  const size_t requested_slots = order_capacity * 4;
+  if (requested_slots >
+      std::bit_floor(std::numeric_limits<size_t>::max())) {
+    throw std::length_error("per-book order-reference map is too large");
+  }
+  const size_t slots = std::bit_ceil(requested_slots);
+  return slots;
+}
+
+OrderBook::OrderBook(uint32_t symbol_id, size_t order_capacity,
                      PriceLevelArena &price_level_arena)
-    : symbol_id_(symbol_id), order_arena_(order_arena),
-      price_level_arena_(price_level_arena),
+    : symbol_id_(symbol_id),
+      order_refs_(indexCapacityForOrders(order_capacity)),
+      order_arena_(order_capacity), price_level_arena_(price_level_arena),
       price_level_index_(price_level_arena),
       stock_locate_(static_cast<uint16_t>(symbol_id)) {}
+
+void OrderBook::recordMutationFailure() noexcept {
+  ++mutation_failures_;
+  local_invalid_ = true;
+}
+
+bool OrderBook::resolveOrderRef(uint64_t order_id,
+                                uint32_t &order_idx) noexcept {
+  order_idx = order_refs_.find(order_id);
+  if (order_idx == LocalOrderRefMap::kInvalidIndex) {
+    ++missing_order_refs_;
+    recordMutationFailure();
+    return false;
+  }
+  if (!hasOrderAt(order_idx, order_id)) {
+    if (!order_refs_.erase(order_id)) {
+      ++index_erase_failures_;
+    }
+    ++stale_order_refs_;
+    ++missing_order_refs_;
+    recordMutationFailure();
+    order_idx = kInvalidIdx;
+    return false;
+  }
+  return true;
+}
+
+bool OrderBook::eraseOrderRef(uint64_t order_id) noexcept {
+  if (order_refs_.erase(order_id)) {
+    return true;
+  }
+  ++index_erase_failures_;
+  recordMutationFailure();
+  return false;
+}
+
+void OrderBook::addOrder(uint64_t order_id, uint64_t price, uint32_t qty,
+                         char side) noexcept {
+  if (qty == 0 || !isValidSide(side) || order_id == kInvalidOrderId) {
+    ++invalid_adds_;
+    return;
+  }
+
+  const uint32_t existing = order_refs_.find(order_id);
+  if (existing != LocalOrderRefMap::kInvalidIndex) {
+    if (!hasOrderAt(existing, order_id)) {
+      if (!order_refs_.erase(order_id)) {
+        ++index_erase_failures_;
+      }
+      ++stale_order_refs_;
+    } else {
+      ++duplicate_order_refs_;
+    }
+    recordMutationFailure();
+    return;
+  }
+
+  if (order_refs_.size() >= order_refs_.maxEntries()) {
+    ++index_insert_failures_;
+    recordMutationFailure();
+    return;
+  }
+
+  const uint32_t order_idx = addOrderIndexed(order_id, price, qty, side);
+  if (order_idx == kInvalidIdx) {
+    return;
+  }
+
+  const LocalOrderRefMap::InsertResult inserted =
+      order_refs_.insert(order_id, order_idx);
+  if (inserted == LocalOrderRefMap::InsertResult::Inserted) {
+    return;
+  }
+
+  ++index_insert_failures_;
+  if (inserted == LocalOrderRefMap::InsertResult::Duplicate) {
+    ++duplicate_order_refs_;
+  }
+  (void)deleteOrderIndexed(order_idx, order_id);
+  recordMutationFailure();
+}
+
+void OrderBook::cancelShares(uint64_t order_id,
+                             uint32_t canceled_qty) noexcept {
+  uint32_t order_idx = kInvalidIdx;
+  if (!resolveOrderRef(order_id, order_idx)) {
+    return;
+  }
+  const MutationResult result =
+      cancelSharesIndexed(order_idx, order_id, canceled_qty);
+  if (result == MutationResult::Removed) {
+    (void)eraseOrderRef(order_id);
+  } else if (result == MutationResult::Ignored) {
+    recordMutationFailure();
+  }
+}
+
+void OrderBook::deleteOrder(uint64_t order_id) noexcept {
+  uint32_t order_idx = kInvalidIdx;
+  if (!resolveOrderRef(order_id, order_idx)) {
+    return;
+  }
+  if (deleteOrderIndexed(order_idx, order_id)) {
+    (void)eraseOrderRef(order_id);
+  } else {
+    recordMutationFailure();
+  }
+}
+
+bool OrderBook::trade(uint64_t order_id, uint32_t executed_qty) noexcept {
+  uint32_t order_idx = kInvalidIdx;
+  if (!resolveOrderRef(order_id, order_idx)) {
+    return false;
+  }
+  const MutationResult result =
+      tradeIndexed(order_idx, order_id, executed_qty);
+  if (result == MutationResult::Removed) {
+    (void)eraseOrderRef(order_id);
+  } else if (result == MutationResult::Ignored) {
+    recordMutationFailure();
+  }
+  return result != MutationResult::Ignored;
+}
+
+void OrderBook::replaceOrder(uint64_t old_id, uint64_t new_id,
+                             uint64_t new_price, uint32_t new_qty) noexcept {
+  uint32_t order_idx = kInvalidIdx;
+  if (!resolveOrderRef(old_id, order_idx)) {
+    return;
+  }
+
+  if (new_id != old_id) {
+    const uint32_t existing = order_refs_.find(new_id);
+    if (existing != LocalOrderRefMap::kInvalidIndex) {
+      if (!hasOrderAt(existing, new_id)) {
+        if (!order_refs_.erase(new_id)) {
+          ++index_erase_failures_;
+        }
+        ++stale_order_refs_;
+      } else {
+        ++duplicate_order_refs_;
+      }
+      recordMutationFailure();
+      return;
+    }
+  }
+
+  const MutationResult result = replaceOrderIndexed(
+      order_idx, old_id, new_id, new_price, new_qty);
+  if (result == MutationResult::Ignored) {
+    recordMutationFailure();
+    return;
+  }
+  if (result == MutationResult::Removed) {
+    (void)eraseOrderRef(old_id);
+    return;
+  }
+
+  const LocalOrderRefMap::ReplaceResult replaced =
+      order_refs_.replaceKey(old_id, new_id);
+  if (replaced == LocalOrderRefMap::ReplaceResult::Replaced) {
+    return;
+  }
+
+  ++index_replace_failures_;
+  (void)deleteOrderIndexed(order_idx, new_id);
+  if (!order_refs_.erase(old_id)) {
+    ++index_erase_failures_;
+  }
+  recordMutationFailure();
+}
+
+void OrderBook::reverseExecution(uint64_t order_id, uint64_t price,
+                                 uint32_t qty, char side) noexcept {
+  if (qty == 0) {
+    return;
+  }
+
+  const uint32_t order_idx = order_refs_.find(order_id);
+  if (order_idx != LocalOrderRefMap::kInvalidIndex) {
+    const Order *order = orderAt(order_idx);
+    if (order == nullptr || order->order_id != order_id) {
+      if (!order_refs_.erase(order_id)) {
+        ++index_erase_failures_;
+      }
+      ++stale_order_refs_;
+      ++missing_order_refs_;
+      recordMutationFailure();
+      return;
+    }
+    if (!isValidSide(side) || order->price != price ||
+        order->side() != side) {
+      recordMutationFailure();
+      return;
+    }
+    if (restoreSharesIndexed(order_idx, order_id, qty) ==
+        MutationResult::Updated) {
+      return;
+    }
+    recordMutationFailure();
+    return;
+  }
+  addOrder(order_id, price, qty, side);
+}
 
 uint32_t OrderBook::allocateOrder() noexcept {
   const uint32_t idx = order_arena_.allocate();
@@ -507,4 +730,34 @@ BookUpdate OrderBook::getBookUpdate() const noexcept {
                                         level->num_orders};
   }
   return update;
+}
+
+const Order *OrderBook::getOrder(uint64_t order_id) const noexcept {
+  const uint32_t order_idx = order_refs_.find(order_id);
+  if (order_idx == LocalOrderRefMap::kInvalidIndex) {
+    return nullptr;
+  }
+  const Order *order = order_arena_.at(order_idx);
+  return order != nullptr && order->order_id == order_id ? order : nullptr;
+}
+
+OrderBookStats OrderBook::stats() const noexcept {
+  OrderBookStats result{};
+  result.invalid_adds = invalid_adds_;
+  result.duplicate_order_refs = duplicate_order_refs_;
+  result.missing_order_refs = missing_order_refs_;
+  result.stale_order_refs = stale_order_refs_;
+  result.mutation_failures = mutation_failures_;
+  result.index_insert_failures = index_insert_failures_;
+  result.index_replace_failures = index_replace_failures_;
+  result.index_erase_failures = index_erase_failures_;
+  result.price_rejections = price_rejections_;
+  result.live_orders = live_order_count_;
+  result.orders = order_arena_.stats();
+  result.index_size = order_refs_.size();
+  result.index_capacity = order_refs_.capacity();
+  result.index_max_entries = order_refs_.maxEntries();
+  result.index_failures = order_refs_.failureCounters();
+  result.index_probes = order_refs_.probeStats();
+  return result;
 }

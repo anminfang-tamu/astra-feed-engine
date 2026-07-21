@@ -14,8 +14,6 @@
 #include "astra/symbol/StockDirectory.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 
-#include <algorithm>
-#include <bit>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -43,30 +41,6 @@ static bool envBool(const char *value, bool fallback) noexcept {
       std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0)
     return true;
   return fallback;
-}
-
-static std::size_t envPowerOfTwoSize(const char *name,
-                                     std::size_t fallback) {
-  const char *value = std::getenv(name);
-  if (value == nullptr || *value == '\0') {
-    return fallback;
-  }
-
-  errno = 0;
-  char *end = nullptr;
-  const unsigned long long parsed = std::strtoull(value, &end, 10);
-  if (errno != 0 || end == value || *end != '\0' || parsed < 2 ||
-      parsed > std::numeric_limits<std::size_t>::max()) {
-    throw std::runtime_error(std::string(name) +
-                             " must be a power-of-two integer >= 2");
-  }
-
-  const std::size_t result = static_cast<std::size_t>(parsed);
-  if (!std::has_single_bit(result)) {
-    throw std::runtime_error(std::string(name) +
-                             " must be a power-of-two integer >= 2");
-  }
-  return result;
 }
 
 static std::size_t envSize(const char *name, std::size_t fallback,
@@ -111,18 +85,20 @@ static bool bookStatsClean(const BookManagerStats &stats) noexcept {
   return stats.invalid_adds == 0 && stats.duplicate_order_refs == 0 &&
          stats.missing_order_refs == 0 && stats.stale_order_refs == 0 &&
          stats.mutation_failures == 0 &&
-         stats.directory_insert_failures == 0 &&
-         stats.directory_replace_failures == 0 &&
-         stats.directory_erase_failures == 0 &&
+         stats.order_ref_index_insert_failures == 0 &&
+         stats.order_ref_index_replace_failures == 0 &&
+         stats.order_ref_index_erase_failures == 0 &&
          stats.late_book_creation_attempts == 0 &&
+         stats.book_creation_failures == 0 &&
          stats.allocation_failures == 0 && stats.price_rejections == 0 &&
          stats.locally_invalid_books == 0 &&
+         stats.inconsistent_books == 0 &&
          stats.orders.invalid_releases == 0 &&
          stats.orders.double_releases == 0 &&
          stats.price_levels.internal_node_exhaustions == 0 &&
          stats.price_levels.leaf_exhaustions == 0 &&
          stats.price_levels.level_exhaustions == 0 &&
-         stats.directory_size == stats.live_orders &&
+         stats.order_ref_index_size == stats.live_orders &&
          stats.orders.in_use == stats.live_orders;
 }
 
@@ -190,17 +166,14 @@ int main(int argc, char *argv[]) {
         batch_size = static_cast<std::size_t>(parsed);
     }
 
-    const std::size_t order_directory_slots = envPowerOfTwoSize(
-        "ASTRA_ORDER_DIRECTORY_SLOTS",
-        OrderRefDirectory::kDefaultSlotCapacity);
-    const std::size_t max_order_pool_capacity = std::min(
-        order_directory_slots / 2,
+    const std::size_t default_book_order_capacity = envSize(
+        "ASTRA_BOOK_ORDER_CAPACITY",
+        astra::book_capacity::kDefaultOrderCapacity, 1,
         static_cast<std::size_t>(OrderArena::kInvalidIndex));
-    const std::size_t order_pool_capacity =
-        envSize("ASTRA_ORDER_POOL_CAPACITY", max_order_pool_capacity, 1,
-                max_order_pool_capacity);
-    PriceLevelArenaConfig price_level_config =
-        BookManager::defaultPriceLevelArenaConfig(order_pool_capacity);
+    PriceLevelArenaConfig price_level_config{
+        BookManager::kDefaultPriceInternalNodeCapacity,
+        BookManager::kDefaultPriceLeafCapacity,
+        BookManager::kDefaultPriceLevelCapacity};
     price_level_config.internal_node_capacity = envSize(
         "ASTRA_PRICE_INTERNAL_NODE_CAPACITY",
         price_level_config.internal_node_capacity, 2);
@@ -212,8 +185,7 @@ int main(int argc, char *argv[]) {
         Order::kLevelMask);
 
     astra::symbol::StockDirectory symbols;
-    BookManager book_manager(order_directory_slots, price_level_config,
-                             order_pool_capacity);
+    BookManager book_manager(default_book_order_capacity, price_level_config);
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
     std::unique_ptr<IMarketDataSource> source;
     DualUdpReceiver *dual_receiver = nullptr;
@@ -266,6 +238,8 @@ int main(int argc, char *argv[]) {
     EngineConfig config;
     config.enable_latency_metrics = envBool(
         std::getenv("ASTRA_LATENCY_METRICS"), config.enable_latency_metrics);
+    config.stop_on_decode_error = envBool(
+        std::getenv("ASTRA_STOP_ON_DECODE_ERROR"), true);
     // config.enable_stage_latency_metrics =
     //     config.enable_latency_metrics &&
     //     envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
@@ -282,7 +256,6 @@ int main(int argc, char *argv[]) {
     const char *rx_name =
         use_dpdk ? "dpdk" : (use_recvmmsg ? "recvmmsg" : "recv");
     std::size_t rx_batch_size = use_recvmmsg ? batch_size : 1;
-    const BookManagerStats initial_book_stats = book_manager.stats();
 #ifdef ASTRA_ENABLE_DPDK
     if (dpdk_receiver != nullptr)
       rx_batch_size = dpdk_receiver->burstSize();
@@ -301,18 +274,16 @@ int main(int argc, char *argv[]) {
 #endif
       std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
-                << "  order_directory_slots="
-                << initial_book_stats.directory_capacity
-                << "  order_directory_max_entries="
-                << initial_book_stats.directory_max_entries
-                << "  order_pool_capacity="
-                << initial_book_stats.orders.capacity
+                << "  stop_on_decode_error="
+                << (config.stop_on_decode_error ? "on" : "off")
+                << "  default_book_order_capacity="
+                << default_book_order_capacity
                 << "  price_internal_nodes="
-                << initial_book_stats.price_levels.internal_node_capacity
+                << price_level_config.internal_node_capacity
                 << "  price_leaves="
-                << initial_book_stats.price_levels.leaf_capacity
+                << price_level_config.leaf_capacity
                 << "  price_levels="
-                << initial_book_stats.price_levels.level_capacity
+                << price_level_config.level_capacity
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
                 << " — press Ctrl+C to stop\n";
@@ -328,18 +299,16 @@ int main(int argc, char *argv[]) {
 #endif
       std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
-                << "  order_directory_slots="
-                << initial_book_stats.directory_capacity
-                << "  order_directory_max_entries="
-                << initial_book_stats.directory_max_entries
-                << "  order_pool_capacity="
-                << initial_book_stats.orders.capacity
+                << "  stop_on_decode_error="
+                << (config.stop_on_decode_error ? "on" : "off")
+                << "  default_book_order_capacity="
+                << default_book_order_capacity
                 << "  price_internal_nodes="
-                << initial_book_stats.price_levels.internal_node_capacity
+                << price_level_config.internal_node_capacity
                 << "  price_leaves="
-                << initial_book_stats.price_levels.leaf_capacity
+                << price_level_config.leaf_capacity
                 << "  price_levels="
-                << initial_book_stats.price_levels.level_capacity
+                << price_level_config.level_capacity
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
                 << " — press Ctrl+C to stop\n";
@@ -369,37 +338,42 @@ int main(int argc, char *argv[]) {
     const BookManagerStats book_stats = book_manager.stats();
     std::cout << "book_stats books=" << book_stats.books
               << " live_orders=" << book_stats.live_orders
-              << " directory_size=" << book_stats.directory_size
-              << " directory_slots=" << book_stats.directory_capacity
-              << " directory_max_entries="
-              << book_stats.directory_max_entries
-              << " directory_max_probe="
-              << book_stats.directory_max_probe_length
+              << " local_index_size=" << book_stats.order_ref_index_size
+              << " local_index_slots=" << book_stats.order_ref_index_capacity
+              << " local_index_max_entries="
+              << book_stats.order_ref_index_max_entries
+              << " local_index_max_probe="
+              << book_stats.order_ref_index_max_probe_length
               << " invalid_adds=" << book_stats.invalid_adds
               << " duplicate_order_refs="
               << book_stats.duplicate_order_refs
               << " missing_order_refs=" << book_stats.missing_order_refs
               << " stale_order_refs=" << book_stats.stale_order_refs
               << " mutation_failures=" << book_stats.mutation_failures
-              << " directory_insert_failures="
-              << book_stats.directory_insert_failures
-              << " directory_replace_failures="
-              << book_stats.directory_replace_failures
-              << " directory_erase_failures="
-              << book_stats.directory_erase_failures
+              << " order_ref_index_insert_failures="
+              << book_stats.order_ref_index_insert_failures
+              << " order_ref_index_replace_failures="
+              << book_stats.order_ref_index_replace_failures
+              << " order_ref_index_erase_failures="
+              << book_stats.order_ref_index_erase_failures
               << " late_book_creation_attempts="
               << book_stats.late_book_creation_attempts
+              << " book_creation_failures="
+              << book_stats.book_creation_failures
               << " allocation_failures=" << book_stats.allocation_failures
-              << " order_pool_in_use=" << book_stats.orders.in_use
-              << " order_pool_high_watermark="
+              << " local_order_arenas_in_use=" << book_stats.orders.in_use
+              << " local_order_arenas_capacity="
+              << book_stats.orders.capacity
+              << " live_order_high_watermark="
               << book_stats.orders.high_watermark
-              << " order_pool_invalid_releases="
+              << " local_order_arena_invalid_releases="
               << book_stats.orders.invalid_releases
-              << " order_pool_double_releases="
+              << " local_order_arena_double_releases="
               << book_stats.orders.double_releases
               << " price_rejections=" << book_stats.price_rejections
               << " locally_invalid_books="
               << book_stats.locally_invalid_books
+              << " inconsistent_books=" << book_stats.inconsistent_books
               << " price_internal_nodes_in_use="
               << book_stats.price_levels.internal_nodes_in_use
               << " price_internal_nodes_high_watermark="

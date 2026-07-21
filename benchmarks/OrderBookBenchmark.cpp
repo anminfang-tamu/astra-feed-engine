@@ -2,9 +2,7 @@
 #include "astra/symbol/StockDirectory.hpp"
 #include "astra/parser/ItchParser.hpp"
 
-#include <algorithm>
 #include <array>
-#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -40,17 +38,6 @@ size_t parseSize(const char *name, size_t fallback, size_t minimum,
   return static_cast<size_t>(parsed);
 }
 
-size_t directorySlots() {
-  const size_t slots =
-      parseSize("ASTRA_ORDER_DIRECTORY_SLOTS",
-                OrderRefDirectory::kDefaultSlotCapacity, 2);
-  if (!std::has_single_bit(slots)) {
-    throw std::runtime_error(
-        "ASTRA_ORDER_DIRECTORY_SLOTS must be a power of two");
-  }
-  return slots;
-}
-
 uint16_t readU16BE(const std::array<unsigned char, 2> &bytes) noexcept {
   return static_cast<uint16_t>((static_cast<uint16_t>(bytes[0]) << 8) |
                                static_cast<uint16_t>(bytes[1]));
@@ -64,18 +51,20 @@ bool hasBookFailure(const BookManagerStats &stats) noexcept {
   return stats.invalid_adds != 0 || stats.duplicate_order_refs != 0 ||
          stats.missing_order_refs != 0 || stats.stale_order_refs != 0 ||
          stats.mutation_failures != 0 ||
-         stats.directory_insert_failures != 0 ||
-         stats.directory_replace_failures != 0 ||
-         stats.directory_erase_failures != 0 ||
+         stats.order_ref_index_insert_failures != 0 ||
+         stats.order_ref_index_replace_failures != 0 ||
+         stats.order_ref_index_erase_failures != 0 ||
          stats.late_book_creation_attempts != 0 ||
+         stats.book_creation_failures != 0 ||
          stats.allocation_failures != 0 || stats.price_rejections != 0 ||
          stats.locally_invalid_books != 0 ||
+         stats.inconsistent_books != 0 ||
          stats.price_levels.internal_node_exhaustions != 0 ||
          stats.price_levels.leaf_exhaustions != 0 ||
          stats.price_levels.level_exhaustions != 0 ||
          stats.orders.invalid_releases != 0 ||
          stats.orders.double_releases != 0 ||
-         stats.directory_size != stats.live_orders ||
+         stats.order_ref_index_size != stats.live_orders ||
          stats.orders.in_use != stats.live_orders;
 }
 
@@ -88,15 +77,14 @@ int main(int argc, char **argv) {
   }
 
   try {
-    const size_t order_directory_slots = directorySlots();
-    const size_t max_order_pool_capacity = std::min(
-        order_directory_slots / 2,
+    const size_t default_book_order_capacity = parseSize(
+        "ASTRA_BOOK_ORDER_CAPACITY",
+        astra::book_capacity::kDefaultOrderCapacity, 1,
         static_cast<size_t>(OrderArena::kInvalidIndex));
-    const size_t order_pool_capacity =
-        parseSize("ASTRA_ORDER_POOL_CAPACITY", max_order_pool_capacity, 1,
-                  max_order_pool_capacity);
-    PriceLevelArenaConfig price_config =
-        BookManager::defaultPriceLevelArenaConfig(order_pool_capacity);
+    PriceLevelArenaConfig price_config{
+        BookManager::kDefaultPriceInternalNodeCapacity,
+        BookManager::kDefaultPriceLeafCapacity,
+        BookManager::kDefaultPriceLevelCapacity};
     price_config.internal_node_capacity = parseSize(
         "ASTRA_PRICE_INTERNAL_NODE_CAPACITY",
         price_config.internal_node_capacity, 2);
@@ -110,8 +98,7 @@ int main(int argc, char **argv) {
 
     const Clock::time_point initialization_start = Clock::now();
     astra::symbol::StockDirectory symbols;
-    BookManager books(order_directory_slots, price_config,
-                      order_pool_capacity);
+    BookManager books(default_book_order_capacity, price_config);
     ItchParser parser(symbols, books);
     const Clock::time_point initialization_end = Clock::now();
 
@@ -204,34 +191,36 @@ int main(int argc, char **argv) {
               << " books=" << stats.books << " live_orders=" << stats.live_orders
               << " top_checksum=" << top_checksum << '\n';
 
-    std::cout << "book_gate directory_size=" << stats.directory_size
-              << " directory_slots=" << stats.directory_capacity
-              << " directory_max_entries=" << stats.directory_max_entries
-              << " directory_max_probe=" << stats.directory_max_probe_length
+    std::cout << "book_gate local_index_size=" << stats.order_ref_index_size
+              << " local_index_slots=" << stats.order_ref_index_capacity
+              << " local_index_max_entries=" << stats.order_ref_index_max_entries
+              << " local_index_max_probe=" << stats.order_ref_index_max_probe_length
               << " invalid_adds=" << stats.invalid_adds
               << " duplicate_order_refs=" << stats.duplicate_order_refs
               << " missing_order_refs=" << stats.missing_order_refs
               << " stale_order_refs=" << stats.stale_order_refs
               << " mutation_failures=" << stats.mutation_failures
-              << " directory_insert_failures="
-              << stats.directory_insert_failures
-              << " directory_replace_failures="
-              << stats.directory_replace_failures
-              << " directory_erase_failures="
-              << stats.directory_erase_failures
+              << " order_ref_index_insert_failures="
+              << stats.order_ref_index_insert_failures
+              << " order_ref_index_replace_failures="
+              << stats.order_ref_index_replace_failures
+              << " order_ref_index_erase_failures="
+              << stats.order_ref_index_erase_failures
               << " late_book_creation_attempts="
               << stats.late_book_creation_attempts
+              << " book_creation_failures=" << stats.book_creation_failures
               << " allocation_failures=" << stats.allocation_failures
-              << " order_pool_in_use=" << stats.orders.in_use
-              << " order_pool_capacity=" << stats.orders.capacity
-              << " order_pool_high_watermark="
+              << " local_order_arenas_in_use=" << stats.orders.in_use
+              << " local_order_arenas_capacity=" << stats.orders.capacity
+              << " live_order_high_watermark="
               << stats.orders.high_watermark
-              << " order_pool_invalid_releases="
+              << " local_order_arena_invalid_releases="
               << stats.orders.invalid_releases
-              << " order_pool_double_releases="
+              << " local_order_arena_double_releases="
               << stats.orders.double_releases
               << " price_rejections=" << stats.price_rejections
               << " locally_invalid_books=" << stats.locally_invalid_books
+              << " inconsistent_books=" << stats.inconsistent_books
               << '\n';
 
     std::cout << "price_pool_gate internal_nodes="

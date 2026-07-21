@@ -16,7 +16,7 @@ struct OrderArenaStats {
   uint64_t double_releases{0};
 };
 
-// Fixed storage for Orders shared by all books. Construction allocates and
+// Fixed storage for the Orders of one OrderBook. Construction allocates and
 // touches every backing page; allocate(), release(), and at() never allocate.
 // The arena is intentionally single-writer.
 class OrderArena {

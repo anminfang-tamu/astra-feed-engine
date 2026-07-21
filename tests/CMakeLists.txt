@@ -17,10 +17,10 @@ endif()
 
 add_executable(astra_tests
     book/BookManagerTest.cpp
+    book/LocalOrderRefMapTest.cpp
     book/OrderArenaTest.cpp
     book/OrderBookTest.cpp
     book/PriceLevelIndexTest.cpp
-    book/OrderRefDirectoryTest.cpp
     codec/MoldUdpDecoderTest.cpp
     engine/MarketDataEngineTest.cpp
     metrics/LatencyRecorderTest.cpp

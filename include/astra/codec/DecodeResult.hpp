@@ -13,6 +13,7 @@ enum class DecodeStatus {
   Heartbeat,
   EndOfStream,
   InvalidSequence,
+  InvalidItchMessage,
 };
 
 struct DecodeResult {

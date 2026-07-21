@@ -9,6 +9,21 @@ constexpr std::size_t kStockLen = 8;
 constexpr std::size_t kSystemEventLen = 12;
 constexpr std::size_t kSystemEventCodeOffset = 11;
 
+bool requiresPreparedBookUniverse(char type) noexcept {
+  switch (type) {
+  case 'A':
+  case 'F':
+  case 'E':
+  case 'C':
+  case 'X':
+  case 'D':
+  case 'U':
+    return true;
+  default:
+    return false;
+  }
+}
+
 std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
                            std::size_t len) {
   const auto *p = reinterpret_cast<const char *>(msg.data() + off);
@@ -22,7 +37,8 @@ std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
 
 ItchParser::ItchParser(astra::symbol::StockDirectory &symbols,
                        BookManager &books, uint8_t channel_id)
-    : symbols_(symbols), books_(books), channel_id_(channel_id) {}
+    : symbols_(symbols), books_(books), channel_id_(channel_id),
+      book_universe_ready_(books.bookUniverseSealed()) {}
 
 uint16_t ItchParser::readU16BE(std::span<const std::byte> msg,
                                std::size_t off) {
@@ -56,6 +72,9 @@ bool ItchParser::handleMessage(std::span<const std::byte> msg) {
 
   const char type = static_cast<char>(std::to_integer<uint8_t>(msg[0]));
   const uint16_t locate = msg.size() >= 3 ? readU16BE(msg, 1) : 0;
+  if (requiresPreparedBookUniverse(type) && !book_universe_ready_) {
+    return fail("book message arrived before the book universe was ready");
+  }
 
   switch (type) {
   // Book-relevant messages
@@ -128,7 +147,7 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
 
   if (!symbols_.isRegistered(locate)) {
-    return (void)skip();
+    return (void)fail("add order references an unregistered stock locate");
   }
 
   books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
@@ -220,12 +239,19 @@ void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t) {
 // [26]   Issue Classification
 // [29]   Authenticity ('P'=live, 'T'=test)
 void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
-  if (msg.size() < 39)
-    return;
+  if (msg.size() < 39) {
+    return (void)fail("truncated stock directory");
+  }
   const uint16_t locate = readU16BE(msg, 1);
   const std::string_view sym = fixedText(msg, 11, kStockLen);
-  if (sym.empty() || locate == 0)
-    return;
+  if (sym.empty() || !astra::symbol::isValidStockLocate(locate)) {
+    return (void)fail("invalid stock directory identity");
+  }
+  if (books_.bookUniverseSealed()) {
+    book_universe_ready_ = false;
+    return (void)fail(
+        "stock directory arrived after the book universe was sealed");
+  }
   if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
   }
@@ -243,9 +269,8 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
-  if (channel_phase_ == ChannelPhase::SystemHours) {
-    createRegisteredBook(locate);
-  }
+  books_.setBookCapacityTier(locate,
+                             astra::book_capacity::tierForTicker(sym));
 }
 
 // 'S' (12 bytes) — System Event
@@ -263,12 +288,19 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
   switch (event_code) {
   case 'O':
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
+    book_universe_ready_ = false;
     break;
   case 'S':
-    handleSystemHoursStart();
+    if (!handleSystemHoursStart()) {
+      (void)fail("failed to prepare the complete registered book universe");
+    }
     break;
   case 'Q':
-    channel_phase_ = ChannelPhase::MarketHours;
+    if (!book_universe_ready_) {
+      (void)fail("market hours started before the book universe was ready");
+    } else {
+      channel_phase_ = ChannelPhase::MarketHours;
+    }
     break;
   case 'M':
     channel_phase_ = ChannelPhase::SystemHours;
@@ -276,6 +308,7 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
   case 'E':
   case 'C':
     channel_phase_ = ChannelPhase::WaitingStartOfMessages;
+    book_universe_ready_ = false;
     break;
   default:
     markStartupAdminMessage(event_code);
@@ -283,9 +316,10 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
   }
 }
 
-void ItchParser::handleSystemHoursStart() noexcept {
+bool ItchParser::handleSystemHoursStart() noexcept {
   channel_phase_ = ChannelPhase::SystemHours;
-  createRegisteredBooks();
+  book_universe_ready_ = createRegisteredBooks();
+  return book_universe_ready_;
 }
 
 void ItchParser::markStartupAdminMessage(char type) noexcept {
@@ -295,27 +329,39 @@ void ItchParser::markStartupAdminMessage(char type) noexcept {
   }
 }
 
-void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
+bool ItchParser::createRegisteredBook(uint16_t locate) noexcept {
   if (!astra::symbol::isValidStockLocate(locate) ||
       prepared_book_by_locate_[locate] || !symbols_.isRegistered(locate)) {
-    return;
+    return true;
   }
 
-  if (books_.getOrCreate(locate) != nullptr) {
+  if (books_.prepareBook(locate)) {
     prepared_book_by_locate_[locate] = true;
+    return true;
   }
+  return false;
 }
 
-void ItchParser::createRegisteredBooks() noexcept {
+bool ItchParser::createRegisteredBooks() noexcept {
+  bool all_prepared = true;
+  size_t registered_books = 0;
   for (uint16_t locate = 1; locate < astra::symbol::StockDirectory::kMaxLocate;
        ++locate) {
-    createRegisteredBook(locate);
+    if (!symbols_.isRegistered(locate)) {
+      continue;
+    }
+    ++registered_books;
+    if (!createRegisteredBook(locate)) {
+      all_prepared = false;
+    }
   }
   books_.sealBookUniverse();
+  return registered_books != 0 && all_prepared;
 }
 
 void ItchParser::reset() {
   channel_phase_ = ChannelPhase::WaitingStartOfMessages;
+  book_universe_ready_ = false;
   last_message_skipped_ = false;
   last_error_.clear();
   prepared_book_by_locate_.fill(false);

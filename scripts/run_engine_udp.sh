@@ -22,6 +22,7 @@ Usage:
 Default: dual-feed A/B receiver on 0.0.0.0:9000 and 0.0.0.0:9001.
 
 Build environment:
+  ASTRA_BOOK_ORDER_CAPACITY=65536  # default-tier symbols
   ASTRA_BUILD_TYPE=Release  # default
   ASTRA_ENABLE_IPO=ON       # optional compiler-supported LTO/IPO
 USAGE

@@ -31,6 +31,7 @@ Useful environment:
   ASTRA_DPDK_MEMPOOL_SIZE=65535
   ASTRA_DPDK_PROMISCUOUS=off
   ASTRA_DPDK_ALLMULTICAST=on
+  ASTRA_BOOK_ORDER_CAPACITY=65536  # default-tier symbols
   ASTRA_BUILD_TYPE=Release  # default
   ASTRA_ENABLE_IPO=ON       # optional compiler-supported LTO/IPO
 USAGE

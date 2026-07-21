@@ -1,192 +1,170 @@
 # Performance Review and Optimization Status
 
-This review treats AstraFeed as a long-running ITCH market-data engine, not as
-an optimizer for one captured trading day. The design target is bounded or
-expected O(1) book mutation, fixed storage after readiness, one authoritative
-copy of each index, and explicit failure when a configured envelope is too
-small.
+This review treats AstraFeed as a long-running ITCH market-data engine. The
+design target is fixed storage after readiness, bounded hot-path work, explicit
+capacity failure, and one clear owner for each piece of order-book state.
 
-## Implemented architecture
+## Current hybrid architecture
 
-### One authoritative full-64-bit order-reference directory
+### Symbol-owned order storage and reference index
 
-`OrderRefDirectory` is now the only `order_ref -> order` index.
+Each `OrderBook` owns both of the structures needed to resolve and mutate an
+order:
 
-- It accepts every nonzero `uint64_t` ITCH order reference.
-- It is a fixed, pre-touched, half-loaded open-addressed table.
-- Entries are 16 bytes and contain the full reference plus stock-locate/order
-  handle.
-- Backward-shift deletion avoids tombstones.
-- Insert, replace, erase, and probe failures are counted.
-- The old dense-direct/per-book `OrderIdMap` fallback and its tests were
-  removed.
+- `LocalOrderRefMap`: full nonzero `uint64_t order_ref -> uint32_t local index`.
+- `OrderArena`: fixed records, free-index stack, and occupancy bits for that
+  symbol only.
 
-The default 16,777,216 slots consume 256 MiB and allow 8,388,608 concurrent
-live mappings. This is configurable with `ASTRA_ORDER_DIRECTORY_SLOTS`.
+`BookManager` no longer owns a global order directory or global order arena. It
+routes by the ITCH Stock Locate field, prepares books, aggregates shutdown
+statistics, and tracks process-wide live-order high-watermark state. All
+reference-map insert/erase/replace transactions now live beside the order and
+FIFO mutation inside `OrderBook`.
 
-### One global fixed order arena
+The local map uses 16-byte entries and reserves four slots per configured
+order. Since it enforces a 50% table limit while the order arena is the tighter
+limit, actual maximum load is 25%. This is an intentional memory-for-latency
+trade: about 64 bytes of map plus 36.125 bytes of arena storage per configured
+order for the power-of-two built-in tiers. A custom non-power-of-two capacity
+rounds the map to the next power of two and can reserve nearly eight slots per
+order in the worst alignment case.
 
-All books share `OrderArena`; there are no per-symbol order pools or liquidity
-tier guesses.
+Construction sizes and first-touches every vector. Add, find, cancel, execute,
+delete, replace, and release never resize or allocate. Erase performs
+backward-shift compaction by copying 16-byte entries within the existing array;
+it does not allocate. Permanent tombstones were not selected because a hot
+symbol's full-day churn can eventually remove every real Empty terminator and
+force capacity-length probes even when few orders are live.
 
-- `Order` is exactly 32 bytes, so two records fit in one 64-byte cache line.
-- The record retains `price` for future strategy use.
-- The arena owns one contiguous order vector, a fixed free-index stack, and a
-  compact one-bit occupancy map.
-- Allocation and release are O(1), never resize, and expose exhaustion,
-  high-watermark, invalid-release, and double-release counters.
-- Global order indices are stable and are used directly by the directory and
-  FIFO price-level links.
+Order references are now scoped internally by `(stock_locate, order_ref)`. This
+restores the main-branch ownership model and permits the same numeric reference
+in two books even though NASDAQ specifies the reference as day-unique. The
+engine therefore trusts that valid-feed invariant instead of enforcing it with
+a second global hot-path index. A wrong-locate message invalidates the addressed
+book but cannot identify or invalidate the true owner elsewhere.
 
-The default order capacity equals the directory live-entry limit and can be
-reduced explicitly with `ASTRA_ORDER_POOL_CAPACITY`.
+### Full raw-price domain with shared fixed backing
 
-### Complete ITCH price domain without a second ordered index
+The centered 65,536-price window from the original main design was not correct
+for a general ITCH feed: after choosing a reference price, a valid far-away raw
+price could fall outside the window. The hybrid keeps the newer four-byte
+radix/bitmap index over the complete `uint32_t` raw-price domain.
 
-The old centered 65,536-slot price window was incorrect for a general ITCH
-feed and could silently reject valid far-apart prices. It was replaced by a
-four-byte radix/bitmap index over the complete `uint32_t` raw-price domain.
+- Each book owns its radix root and its bid/ask occupancy and FIFO semantics.
+- All books draw nodes, leaves, and level records from one preallocated
+  `PriceLevelArena`.
+- Price zero and `UINT32_MAX` are valid.
+- Bid and ask at the same raw price remain independent.
+- Existing-order mutations use the order's direct level handle.
+- Best price and top ten traverse the same radix state; there is no second
+  ordered container.
+- Empty paths return to fixed free lists, and exhausted creation rolls back
+  without publishing a partial path.
+- Aggregate quantity is 64-bit.
 
-- Every lookup traverses a fixed four-byte path.
-- Bid and ask occupancy are independent while topology is shared.
-- Existing-order cancel, execute, and delete use the order's direct 32-bit
-  level handle.
-- Best-price and top-ten traversal use the same radix state; there is no tree or
-  duplicate sorted container.
-- Empty levels, leaves, and nodes return to fixed free lists.
-- Pool creation is atomic: an exhausted pool publishes no partial path.
-- Aggregate level quantity, top-of-book quantity, and book-update quantity are
-  64-bit.
-- Price zero and `UINT32_MAX` are both valid; explicit presence bits distinguish
-  an empty side from price zero.
+The default shared capacities remain 163,840 internal nodes, 1,048,576 leaves,
+and 2,097,152 side/price level records. This backing is still a market-wide
+failure domain; counters and health gates expose exhaustion.
 
-Default shared capacities are 163,840 internal nodes, 1,048,576 leaves, and
-2,097,152 occupied side/price levels. Every pool has usage, high-watermark, and
-exhaustion metrics.
+### Capacity tiers and readiness
 
-### Readiness and hot-path allocation boundary
+Built-in order capacities are:
 
-The order directory, order arena, price pools, free lists, and occupancy maps
-are allocated and page-touched before packet processing. Stock Directory
-messages identify the book universe; Start of System Hours constructs the
-registered book roots and seals that universe. A late unknown book is rejected
-and counted rather than allocated during live processing.
+| Tier | Orders per book | Approximate local storage |
+| --- | ---: | ---: |
+| Default | 65,536 | 6.258 MiB |
+| Active | 262,144 | 25.031 MiB |
+| Hot | 1,048,576 | 100.125 MiB |
+| UltraHot | 4,194,304 | 400.5 MiB |
 
-Capacity failure latches the affected book locally invalid. No operation moves
-to a fallback data structure, and shutdown metrics make the failure visible.
+`ASTRA_BOOK_ORDER_CAPACITY` controls the manager default. Explicit per-locate
+capacity configuration wins over the compiled ticker tier. The higher-tier
+ticker list is still static and should eventually be replaced with measured
+deployment configuration.
 
-### Decoder and measurement cleanup
+Stock Directory messages identify the book universe. At Start of System Hours
+(`SS`) every registered book is constructed and first-touched synchronously;
+the universe is then sealed. Late books are rejected rather than allocated on
+the live path. Replay deployments must provide enough `SS` pause for this warmup
+and must bind the engine before first-touch to obtain the intended NUMA
+placement.
 
-- A clean in-sequence packet no longer probes the roughly 2 GiB gap table when
-  it is empty.
-- Repeated stale-gap logging is suppressed.
-- The decoder no longer re-decodes and stores an unused stock-locate list or a
-  duplicate channel-phase copy for every message.
-- `ASTRA_LATENCY_METRICS=off` now disables receiver `rdtsc` capture, including
-  kernel UDP, batched UDP, DPDK, and file replay sources. The decoder therefore
-  performs no TSC conversion in throughput mode.
-- When latency is enabled, TSC calibration completes before engine readiness
-  instead of stalling the first measured packet.
+## Correctness and verification status
 
-### Reproducible build gate
+The focused local build covers:
 
-- Fresh single-config CMake builds default to `Release`.
-- `ASTRA_ENABLE_IPO=ON` enables compiler-checked IPO/LTO.
-- UDP and DPDK wrappers always reconfigure and incrementally rebuild before a
-  run, then print Git SHA, dirty/clean state, build type, and IPO mode.
-- Historical README transport rows are marked as cross-revision references and
-  must not be compared as if they came from one binary.
+- full `uint64_t` references and sparse values;
+- duplicate, missing, replace, erase, fill/fail/delete/reuse, and randomized
+  local-map behavior;
+- per-book capacity isolation and identical references across books;
+- wrong-locate mutation behavior;
+- complete raw prices from zero through `UINT32_MAX`;
+- distant prices, radix-byte boundaries, top-ten ordering, and bid/ask
+  independence;
+- shared price-pool exhaustion, atomic rollback, release, and cross-book reuse;
+- aggregate quantity above `UINT32_MAX`;
+- parser routing, readiness, sealing, and ticker-tier selection.
+- rejection of book messages before the preallocated universe is ready.
 
-## Verification completed
+On the current ARM macOS development host, affected sources pass strict C++20
+syntax checks and the focused book/parser tests can be linked manually. The
+full CMake target is intentionally Linux x86-only because `Time.cpp` requires
+the RDTSC timing path.
 
-Focused sanitizer coverage passes:
+The README latency table and 368,366,634-record replay numbers belong to clean
+revision `3e11646f4931`, which used the global reference directory and global
+order arena. They do not validate performance of the current hybrid.
 
-- 72 order-arena, order-directory, price-index, manager, and order-book tests
-  under ASan and UBSan.
-- 16 ITCH parser integration tests under ASan and UBSan.
-- Randomized differential tests cover directory insert/erase/replace, arena
-  allocation/release, and sparse price ordering/reclamation.
-- Boundary tests cover order refs through `UINT64_MAX`, prices from zero through
-  `UINT32_MAX`, byte-boundary traversal, same price on both sides, replacement,
-  pool exhaustion, rollback, and aggregate quantity above `UINT32_MAX`.
+## Remaining performance work
 
-The full local 2019 trace gate also passes:
+### P0: validate the hybrid on the production envelope
 
-```text
-records=368366634
-bytes=11245883092
-replay_seconds=86.597
-records_per_second=4253804.594
-order_high_watermark=1742866
-price_internal_node_high_watermark=71065
-price_leaf_high_watermark=587520
-price_level_high_watermark=707130
-all failure counters=0
-final live orders=0
-```
+Run a clean full-file correctness replay and same-binary DPDK test. Record:
 
-This trace is a correctness and capacity observation, not a production sizing
-proof. Defaults retain headroom and remain configurable because another day,
-venue, or symbol mix can have a different concurrent shape.
+- sender/receiver final sequence equality and `Good` channel health;
+- zero transport, book, local-index, order-arena, and price-pool failures;
+- RSS, VMA count, tier counts, and total configured local capacity;
+- `SS` construction/first-touch duration;
+- NUMA residency after warmup;
+- latency percentiles and throughput;
+- `perf stat` cycles, IPC, branches, LLC misses, dTLB misses, and page faults.
 
-## Remaining recommendations
+Do not claim parity or superiority over the historical global design until this
+same-environment comparison exists.
 
-### P0: establish a same-binary network baseline
+### P0: preflight readiness before committing memory
 
-Rerun kernel `recv`, `recvmmsg`, and DPDK on one clean Git SHA with verified
-Release flags, optional IPO held constant, identical replay shape, and these
-acceptance gates:
+The parser now latches any `SS` preparation failure, refuses the Market Hours
+transition, and propagates a decoder/channel error. However, allocation still
+proceeds book by book, so a failed attempt can leave a partially allocated
+sealed universe. Preflight the aggregate tier/capacity budget and report the
+failed locate before committing the large first-touch phase. Startup and
+benchmark initialization measurements should include this work.
 
-- sender and receiver final sequences match;
-- channel status is `Good`;
-- kernel/DPDK drops are zero;
-- every book/directory/order/price failure counter is zero.
+### P1: externalize the symbol capacity profile
 
-Collect `perf stat` and `perf record` after readiness: cycles, instructions,
-IPC, branch misses, LLC misses, dTLB misses, page faults, and top call stacks.
-Do not claim a transport winner from the existing cross-revision README rows.
+Load measured per-symbol high-watermarks with explicit headroom instead of
+depending on a compiled ticker list. Validate the complete file before
+allocation and report ignored/invalid/late overrides rather than silently
+discarding them.
 
-### P1: size the gap-recovery buffer from observed outages
+### P1: keep expensive diagnostics off the hot path
 
-`GapBuffer` still reserves about 2.03 GiB for 1,048,576 full packet slots.
-Skipping the empty lookup removed normal-path cache pollution, but the storage
-envelope remains large. Measure maximum recoverable gap depth and recovery time
-on real feeds, then make capacity explicit and preallocated. Keep failure
-terminal and counted; do not add dynamic growth.
+`BookManager::stats()` deliberately scans every local map to calculate current
+probe layout. At production scale that reads tens of GiB, so it is a shutdown
+or offline diagnostic only. If periodic metrics need probe data, maintain a
+separate cheap historical sample or make the full scan opt-in.
 
-### P1: profile repeated handle validation before weakening it
+### P1: add operation microbenchmarks
 
-Manager resolution validates the directory handle, and indexed book mutations
-validate the same order again. IPO may remove some overhead, and the second
-check protects against stale/corrupt handles. Measure first. If still material,
-introduce an internal resolved-order token or a distinct stale-handle mutation
-result rather than simply deleting safety checks.
+Measure add, partial/full execute, cancel, delete, replace-at-same-price,
+replace-to-new-price, and last-level reclamation separately. Include probe and
+cluster-length distributions; pool reuse and first-use paths have different
+cache behavior.
 
-### P1: add message-type and operation microbenchmarks
+### P2: strengthen residency and receive batching
 
-The full-file benchmark measures aggregate parser/book throughput. Add fixed
-traces for add, cancel, execute, delete, replace-at-same-price, replace-to-new
-path, and last-level reclamation. Report distributions as well as throughput;
-pool reuse paths can have different cache costs from first-use paths.
-
-### P2: process receive batches as batches
-
-`UdpBatchReceiver` uses `recvmmsg`, but the current engine compatibility path
-returns one saved datagram per virtual `next()` call. A batch-aware engine loop
-can amortize dispatch and loop overhead while preserving packet sequence order.
-Compare it only after the new book path is profiled.
-
-### P2: residency and NUMA guarantees
-
-Page touching prevents first-touch faults but does not guarantee pages cannot
-be reclaimed. On the Linux deployment host, measure and optionally support
-`mlock`/`mlock2`, transparent or explicit huge pages, and NUMA-local allocation.
-Startup should fail clearly when a requested strict residency policy cannot be
-honored.
-
-### P3: specialize the live engine loop only if dispatch remains visible
-
-The source and processor interfaces still use virtual dispatch once per packet.
-Keep them for tests and configuration. Add a concrete or templated live loop
-only if profiles show dispatch is material after book, receive, and memory
-costs are addressed.
+Page touching establishes first-touch placement but does not prevent reclaim.
+Evaluate strict `mlock`/`mlock2`, huge pages, and NUMA failure policy on the EC2
+host. Separately, consider a batch-aware engine loop so `recvmmsg` batches are
+not returned one saved datagram per virtual `next()` call.
