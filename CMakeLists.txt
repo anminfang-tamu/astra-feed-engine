@@ -5,12 +5,35 @@ project(astra_feed_engine
     LANGUAGES CXX
 )
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        Debug Release RelWithDebInfo MinSizeRel
+    )
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(ASTRA_BUILD_APPS       "Build application binaries" ON)
 option(ASTRA_BUILD_TESTS      "Build tests"                ON)
 option(ASTRA_BUILD_BENCHMARKS "Build benchmarks"           OFF)
 option(ASTRA_ENABLE_DPDK      "Build DPDK receiver support" OFF)
+option(ASTRA_ENABLE_IPO       "Enable interprocedural optimization (LTO)" OFF)
+
+if(ASTRA_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(
+        RESULT ASTRA_IPO_SUPPORTED
+        OUTPUT ASTRA_IPO_ERROR
+        LANGUAGES CXX
+    )
+    if(NOT ASTRA_IPO_SUPPORTED)
+        message(FATAL_ERROR
+            "ASTRA_ENABLE_IPO=ON, but IPO/LTO is unavailable: ${ASTRA_IPO_ERROR}"
+        )
+    endif()
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 
 find_library(ZLIB_LIBRARY z REQUIRED)
 
@@ -72,16 +95,28 @@ target_compile_options(astra_feed_engine
 )
 
 if(ASTRA_ENABLE_DPDK)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "ASTRA_ENABLE_DPDK requires Linux")
+    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(DPDK REQUIRED IMPORTED_TARGET libdpdk)
     target_sources(astra_feed_engine PRIVATE src/source/DpdkReceiver.cpp)
     target_compile_definitions(astra_feed_engine PUBLIC ASTRA_ENABLE_DPDK=1)
+    target_link_libraries(astra_feed_engine PRIVATE PkgConfig::DPDK)
 endif()
 
 if(ASTRA_BUILD_APPS)
+    find_package(Threads REQUIRED)
+
     add_executable(md_engine            apps/md_engine_main.cpp)
     target_link_libraries(md_engine     PRIVATE astra::feed_engine)
 
     add_executable(itch_moldudp_sender  apps/itch_moldudp_sender_main.cpp)
-    target_link_libraries(itch_moldudp_sender PRIVATE astra::feed_engine)
+    target_link_libraries(itch_moldudp_sender
+        PRIVATE
+            astra::feed_engine
+            Threads::Threads
+    )
 endif()
 
 if(ASTRA_BUILD_TESTS)

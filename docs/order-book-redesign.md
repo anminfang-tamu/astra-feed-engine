@@ -619,7 +619,7 @@ acceptance run, add `--expect-records=<exact-records>` and
 hard failure. The replay also fails on a parser error, page-capacity failure,
 nonzero final live orders, an ending phase other than End of Messages, or an
 enabled p50/p99/p99.9 threshold failure. Add `--max-p99-ns=<limit>` and
-`--max-p99-9-ns=<limit>` from the same-host baseline policy.
+`--max-p99-9-ns=<limit>` using approved absolute branch-6 ceilings.
 
 The aggregate `itch_book_replay` line reports `sample_count`, the sample policy
 and warmup, prefault mode, configured direct-slot/fallback-bucket/price-page
@@ -718,189 +718,69 @@ consolidated two-process result are retained in
 [`full-trace-replay-verification-20260722.txt`](full-trace-replay-verification-20260722.txt).
 
 The version-2 Release disassembly verifier passed the final redesign binary
-(SHA-256 above) with 94 selected functions and the pinned branch-5 adapter with
-78. It starts from both replay and live parser entrypoints, dispatch, and the
-book mutation roots, then recursively includes resolved direct in-binary calls
-and tail calls. Allocator, mapping, syscall, lock, lock-prefix, and indirect-call
-targets are forbidden; only the named cold `fail()` and `applyBookFailure()`
-formatting boundaries may allocate. Standard-library/ABI/PLT bodies, symbol
-resolution, and those two named cold helpers remain explicit static-analysis
-trust boundaries.
+(SHA-256 above) with 94 selected functions. It starts from both replay and live
+parser entrypoints, dispatch, and the book mutation roots, then recursively
+includes resolved direct in-binary calls and tail calls. Allocator, mapping,
+syscall, lock, lock-prefix, and indirect-call targets are forbidden; only the
+named cold `fail()` and `applyBookFailure()` formatting boundaries may allocate.
+Standard-library/ABI/PLT bodies, symbol resolution, and those two named cold
+helpers remain explicit static-analysis trust boundaries.
 
 Portable-clock local benchmark runs completed, but their nanosecond values are
 not acceptance evidence and are intentionally not treated as proof of the
-150 ns target. Only the pending controlled x86 EC2/NUMA comparison described
-below can establish that result.
+150 ns target. Only a controlled x86 EC2/NUMA branch-6 run can establish that
+result.
 
 ## Acceptance gates
 
-- Full replay: exact expected record and byte counts, at least the configured
-  minimum aggregate samples, no parser/mutation error, no page-capacity
-  failure, zero final live orders, and End of Messages reached. Run mutation
-  observation separately and require `--expect-mutation-digest` to match the
-  physical digest from the first run on that exact trace, and require
-  `--expect-semantic-mutation-digest` to match its layout-independent semantic
-  digest; the final checksum alone is not acceptance evidence. The checked-in
-  fixed-seed model test compares every mutation with an independent reference
-  model. An independent full-trace aggregate oracle remains an additional
-  production-signoff check rather than a claim made by the current replay
-  binary.
-- Boundary tests: full raw price domain, locate 65,535, aggregate quantity above
-  `UINT32_MAX`, duplicate replacement ID, and destination-page exhaustion.
-- Lifecycle: repeated and new `R` after `SS`; `SE`, arbitrary permitted cleanup
-  messages, then `SC`; order-message `E` after system-event `M`; order-message
-  `E` and `C` tested independently; and any ITCH message after `SC` rejected
-  without mutating book or directory state.
-- Deterministic work: direct lookup examines one slot; fallback examines at
-  most two two-way buckets. Resolving an existing/source order performs zero
-  price-root lookups, so E/C/X/D need none; U still reserves its destination
-  price. Reserving and committing a new price page performs two root-slot reads
-  plus one publish write; one bitmap predecessor/successor search reads
-  at most five words; cached best lookup performs no bitmap search; and a full
-  top-ten side performs at most nine successor traversals. Test-only counting
-  observers instantiate the same templated bitmap and fallback loops used by
-  the no-op production path and prove the five-word bitmap and four-slot
-  fallback worst cases; optimized library symbols contain no observer calls.
-- Hot path after full prefaulting: the versioned disassembly verifier must cover
-  both parser entrypoints, dispatch, every A/F/E/C/X/D/U handler, and the
-  transitive resolved in-binary mutation closure. No successful path may call
-  an allocator, mapping, syscall, lock, or indirect target; allocation is
-  confined to the two named cold error-formatting helpers. The replay's
-  post-warmup `getrusage` gate must also report zero minor and major faults. The
-  separate `perf stat` run records cycles, cache/TLB behavior, faults, context
-  switches, and migrations; it is supporting evidence, not an allocator/lock
-  tracer. Do not add diagnostic counters to the timed path.
-- Performance: use the same EC2 instance type, isolated core, NUMA node,
-  compiler, build flags, clock policy, huge-page policy, trace, warmup, and
-  exact versioned fixed-seed sample-schedule ID and interval for baseline and
-  candidate. Run at least five fresh processes and retain every aggregate and
-  per-message-type distribution.
-  Do not accept the candidate unless every run has p50 at most 150 ns and
-  p99/p99.9 do not regress against a branch-5 result produced by that identical
-  harness on the same host.
-- Report p50, p90, p99, p99.9, maximum, sample counts, record/byte gates,
-  sample-schedule ID, physical and semantic mutation digests from the separate
-  correctness run, prefault mode, configured capacities, committed pages,
-  capacity failures, and clock calibration. Retain the `A/F/E/C/X/D/U`
-  distributions. For the synthetic fallback workload, retain
-  primary/secondary lookup and way diagnostics; use a separate untimed/profiled
-  run for hardware counters.
+- Full replay must match the exact record and byte counts, collect the required
+  samples, report no parser or mutation failure, exhaust no capacity, finish
+  with zero live orders, and reach End of Messages. Physical and semantic
+  mutation digests run in separate processes from latency measurement.
+- Lifecycle coverage includes repeated and new `R` after `SS`, directory
+  traffic after system-event `E`, order-message `E` and `C` as independent
+  mutations, cleanup through Post System Hours, and rejection of every message
+  after terminal system-event `C`.
+- Direct order lookup examines one slot; fallback examines at most two two-way
+  buckets. Existing-order `E/C/X/D` mutations need no price-root lookup.
+  Bitmap predecessor/successor search and top-ten traversal retain their tested
+  finite bounds.
+- After full prefaulting, the disassembly verifier must cover both parser
+  entrypoints, dispatch, every `A/F/E/C/X/D/U` handler, and the transitive
+  in-binary mutation closure. Successful hot paths may not call allocators,
+  mapping/syscall, lock, or indirect targets. Post-warmup minor and major fault
+  counts must remain zero.
+- Run at least five fresh branch-6 processes with the same EC2 instance, isolated
+  core, NUMA node, compiler, build flags, clock policy, huge-page policy, trace,
+  warmup, and fixed sampling schedule. Every aggregate p50 must be at most
+  150 ns. Aggregate and per-message-type p99/p99.9 must meet explicitly
+  approved absolute ceilings; p90 and maximum remain reported diagnostics.
+- Retain all aggregate and `A/F/E/C/X/D/U` distributions, sample counts,
+  record/byte gates, sampling identity, capacity configuration, page usage,
+  clock calibration, digests from correctness processes, and separate
+  hardware-counter evidence.
 
-The user reported a 310 ns branch-5 p50 observation, which motivated the 150 ns
-candidate target. The repository does not contain a like-for-like artifact that
-reproduces that observation: branch 5 records a different DPDK packet-path run,
-while the committed 310 ns historical value is a UDP receive-path p99, not an
-order-book p50. Therefore 310 ns is context, not an accepted comparison
-baseline. A valid baseline must port the identical sampled book-latency harness
-to a pinned branch-5 snapshot, or use approved external output captured with
-the same workload and controls. No current-branch full-trace EC2 latency result
-is asserted here; controlled evidence remains pending.
+Run the gate with `scripts/run_order_book_acceptance.sh`, supplying the exact
+trace counts, isolated CPU/local NUMA node, and all three absolute latency
+ceilings. It evaluates only the supplied branch-6 binary, runs a minimum of five
+latency processes, and retains every result plus the worst distribution. With
+`--correctness-digest`, it performs digest discovery and verification in
+separate processes.
 
-Run that acceptance through `scripts/run_order_book_acceptance.sh`, supplying
-the exact profile record/byte counts, isolated CPU/local NUMA node, and all
-three approved latency ceilings. The default/minimum is five latency processes,
-all of which must pass; `--correctness-digest` adds separate discovery and
-verification processes for both the implementation and semantic digest. This
-is a single-variant gate for the supplied binary and ceilings; it does not run
-or compare another branch. The harness preserves every output and the worst
-distribution. Its Linux preflight requires a named non-detached clean Git
-branch and an identifiable CMake `Release` compiler/configuration. It does not
-infer a source/binary relationship from the supplied build directory. Instead,
-it exports the verified commit with `git archive`, configures that exact tree in
-a fresh temporary out-of-tree directory under an empty recorded environment,
-and performs a clean-first build of the single replay target. The supplied,
-fresh-built, and retained executable copies must be byte-identical before the
-first replay; this same target and proof path supports the reviewed branch-5
-compatibility commit. The harness derives `planned_storage_bytes` through the
-binary's allocation-free
-`--storage-plan-only` mode, then fails closed on a
-capacity mismatch (including exact schema-arena arithmetic), CPU/node
-mismatch, insufficient node or finite cgroup-ancestor plan-plus-reserve
-headroom, enabled swap, post-warmup faults, swapped benchmark pages, anonymous
-resident/NUMA capacity below the plan, or less than 99% anonymous placement on
-the selected node. The selected CPU must be present in Linux's domain-isolated
-CPU list; an exposed scaling governor must be `performance`. It also requires
-THP `always` or `madvise` mode. Under `redesign_v1`, all eleven exact named
-arena VMAs must have complete huge-page backing and complete requested-node
-residency. It records boot/CPU identity,
-binding/topology, overcommit/commit, THP, cgroup, and ready-marker-based
-post-prefault memory/NUMA evidence. Each latency or digest process waits behind
-a start gate until that evidence and the exact sampling-schedule identity are
-captured and validated, preventing monitor inspection from overlapping replay.
-A separate default-required `perf stat`
-process retains the approved counter set without entering the accepted latency
-population.
+The harness exports the verified clean commit, performs a clean Release rebuild
+of the replay target, and requires the supplied, rebuilt, and retained binaries
+to be byte-identical. It derives the storage plan from
+`--storage-plan-only`; verifies node and cgroup headroom, CPU isolation,
+performance governor, swap, THP policy, VMA identity, residency, and NUMA
+placement; and releases each replay start gate only after ready-marker memory
+evidence passes. The trace and all relevant inputs are hashed before and after
+the run. The final `manifest.sha256` covers every retained artifact.
 
-The backend-specific replay drivers share the trace, sampling, digest,
-post-System-S ready/start-gate, and output contracts. The same harness
-dispatches explicitly for the pinned baseline adapter's
-`branch5_native_v1` schema. It does not apply the redesign's arena or THP
-claims to branch 5. Once the adapter consumes the directory/System-`S` prelude,
-it seals the prepared-book universe and publishes a
-`branch5_native_ranges_v1` manifest: six shared price-vector spans, followed by
-four vector spans for each prepared locate in ascending locate order. The
-harness recomputes its FNV digest, checks header/ready/final identity and the
-six storage-plan sizes, rejects zero, overlapping, file-backed, or out-of-VMA
-spans, and uses aggregate anonymous NUMA pages so shared heap boundary pages
-are not counted more than once. Since branch-5 per-book bytes cannot be known
-before that prelude, live baseline admission requires an explicit conservative
-`--planned-bytes`; after ready, anonymous residency must cover the full native
-manifest byte total. Missing and unknown schemas fail closed.
-
-The branch-5 manifest field `book_universe_sealed=1` describes only that
-historical adapter. Branch 6 does not seal directory membership: repeated and
-genuinely new `R` messages remain valid after `SS` and system-event `E`, until
-terminal system-event `C`.
-
-Live provenance is fail-closed. The trace is hashed before and after every run
-without an opt-in (`--hash-trace` remains only as a compatibility no-op). The
-artifact directory contains the tested and independently fresh-built
-executables, exact `git archive` source tree, NUL-delimited configure/build
-argv, build logs, harness, hot-path verifier and disassembly report, both
-`CMakeCache.txt` files, available build graph/compile-command files, compiler
-version, complete pre-build/post-build/post-run Git snapshots, and pre/post
-hashes and file metadata. Provenance version 2 binds all copies to one binary
-SHA and the verified commit/tree/fingerprint; the comparator rejects old,
-incomplete, stale-binary, substituted-binary, non-clean-first, and wrong-target
-attestations. Any trace, binary, harness, verifier, CMake cache, branch, commit,
-or worktree change rejects the run. The final GNU-format
-`manifest.sha256` covers every regular artifact; verify it from the artifact
-directory with `sha256sum -c manifest.sha256`. `--planned-bytes` may
-conservatively raise the derived admission footprint and `--reserve-bytes`
-changes headroom. Use `--dry-run` for a write-free macOS CLI check.
-`scripts/setup_ec2.sh` builds the benchmark binaries by default.
-
-Compare the retained baseline and candidate artifacts with:
-
-```sh
-scripts/compare_order_book_acceptance.sh \
-  --baseline-dir <branch5-artifact-dir> \
-  --candidate-dir <redesign-artifact-dir> \
-  --expect-baseline-branch <branch5-port-branch> \
-  --expect-baseline-commit <branch5-port-commit> \
-  --expect-candidate-branch 6-redesign-order-book-data-structure \
-  --expect-candidate-commit <redesign-commit> \
-  --expect-candidate-capacity-evidence-sha256 <approved-capacity-evidence-sha256> \
-  --expect-trace-sha256 1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3 \
-  --expect-records 368366634 \
-  --expect-bytes 11245883092
-```
-
-For the built-in pinned candidate, pass the pinned trace SHA as the approved
-capacity-evidence SHA. The comparator also exact-checks its profiler identity,
-three capacities, profiled demands, and minimum/effective headrooms. For a
-custom candidate, pass the independently approved canonical-manifest SHA.
-
-Every candidate aggregate p50 must be at most 150 ns. For the aggregate and
-each `A/F/E/C/X/D/U` workload, every candidate p99 and p99.9 must be no greater
-than that workload's worst branch-5 value across all runs. P90 and maximum are
-reported but are not acceptance gates.
-
-The comparator verifies each outer manifest, copies both artifact directories
-into private temporary snapshots, requires the source and copied manifest
-digests to remain identical, and parses only those verified snapshots. The
-temporary filesystem therefore needs enough free space for both artifact
-directories.
+Branch 6 never seals the stock-directory universe at `SS`. Its 65,536
+descriptor slots and backing arenas already exist, so late/repeated `R`
+messages remain an administrative path without hot-path growth. System event
+`E` moves lifecycle phase but does not stop `A/F/E/C/X/D/U`; only system
+event `C` is terminal.
 
 Recommended hardware-counter capture:
 

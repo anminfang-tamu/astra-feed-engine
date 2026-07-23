@@ -1,5 +1,6 @@
 #pragma once
 
+#include "astra/protocol/SequencedPacket.hpp"
 #include "astra/source/IMarketDataSource.hpp"
 
 #include <array>
@@ -22,7 +23,8 @@ class ItchMoldUdpSource : public IMarketDataSource {
 public:
     static constexpr uint16_t    kDefaultMsgsPerPacket = 20;
     static constexpr std::size_t kMoldHeaderSize       = 20; // 10+8+2
-    static constexpr std::size_t kMaxPacketBytes       = 65535;
+    static constexpr std::size_t kMaxPacketBytes =
+        SequencedPacket::kMaxPacketSize;
 
     // session must be <= 10 chars; it is right-padded with spaces to exactly 10.
     ItchMoldUdpSource(const std::string &path,
@@ -32,6 +34,8 @@ public:
     bool next(PacketView &packet) override;
 
     bool               isOpen()     const;
+    bool               completed()  const noexcept;
+    uint64_t           nextSequence() const noexcept { return next_seq_; }
     const std::string &lastError()  const;
 
 private:
@@ -41,6 +45,7 @@ private:
     uint64_t      next_seq_{1};     // MoldUDP64 sequence number (1-based, per message)
     std::string   last_error_;
     bool          eof_{false};
+    bool          completed_{false};
 
     std::array<std::byte, kMaxPacketBytes> packet_buf_{};
 };

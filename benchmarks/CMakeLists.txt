@@ -32,12 +32,6 @@ if(ASTRA_BUILD_TESTS)
                     $<TARGET_FILE:astra_itch_book_replay_benchmark>)
         set_tests_properties(ItchBookReplayIdentityTest PROPERTIES TIMEOUT 30)
 
-        add_test(
-            NAME OrderBookAcceptanceComparatorTest
-            COMMAND ${Python3_EXECUTABLE}
-                    ${PROJECT_SOURCE_DIR}/scripts/tests/test_compare_order_book_acceptance.py)
-        set_tests_properties(OrderBookAcceptanceComparatorTest
-                             PROPERTIES TIMEOUT 30)
     endif()
 
     # The verifier's symbol contract is intentionally tied to optimized code;

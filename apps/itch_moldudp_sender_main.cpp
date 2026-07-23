@@ -1,7 +1,9 @@
+#include "astra/protocol/PacketHeader.hpp"
 #include "astra/source/UdpSender.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 #include "replay/itch/ItchMoldUdpSource.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -12,16 +14,61 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
 
 std::atomic<bool> g_running{true};
+constexpr uint64_t kDefaultLineBDelayNs = 1'000;
+constexpr uint64_t kMaxLineBDelayNs = 1'000'000'000;
 
 void onSignal(int) { g_running.store(false, std::memory_order_relaxed); }
+
+bool sleepUntilOrStopped(std::chrono::steady_clock::time_point deadline) {
+    constexpr auto kMaxSleep = std::chrono::milliseconds(100);
+    while (g_running.load(std::memory_order_relaxed)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return true;
+        const auto remaining = deadline - now;
+        const auto max_sleep =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                kMaxSleep);
+        std::this_thread::sleep_for(remaining < max_sleep ? remaining
+                                                          : max_sleep);
+    }
+    return false;
+}
+
+bool parseU64Strict(const char *value, uint64_t &parsed_value) {
+    if (value == nullptr || value[0] == '\0') return false;
+
+    uint64_t parsed = 0;
+    for (const char *p = value; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        const uint64_t digit = static_cast<uint64_t>(*p - '0');
+        if (parsed > (std::numeric_limits<uint64_t>::max() - digit) / 10u)
+            return false;
+        parsed = parsed * 10u + digit;
+    }
+    parsed_value = parsed;
+    return true;
+}
+
+bool parseCpuId(const char *value, int &cpu_id) {
+    uint64_t parsed = 0;
+    if (!parseU64Strict(value, parsed) ||
+        parsed > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    cpu_id = static_cast<int>(parsed);
+    return true;
+}
 
 uint64_t parseU64(const char *value, uint64_t fallback) {
     if (value == nullptr) return fallback;
@@ -55,6 +102,29 @@ uint64_t readU64BE(const std::byte *p) {
     for (int i = 0; i < 8; ++i)
         v = (v << 8) | std::to_integer<uint8_t>(p[i]);
     return v;
+}
+
+std::array<std::byte, MoldUdpPacketHeader::kHeaderSize>
+makeEndOfSessionPacket(std::string_view session, uint64_t next_sequence) {
+    std::array<std::byte, MoldUdpPacketHeader::kHeaderSize> packet{};
+    for (std::size_t i = 0; i < MoldUdpPacketHeader::kSessionSize; ++i) {
+        packet[i] =
+            i < session.size()
+                ? static_cast<std::byte>(
+                      static_cast<unsigned char>(session[i]))
+                : std::byte{' '};
+    }
+    for (int i = 7; i >= 0; --i) {
+        packet[MoldUdpPacketHeader::kSessionSize +
+               static_cast<std::size_t>(i)] =
+            static_cast<std::byte>(next_sequence & 0xffu);
+        next_sequence >>= 8;
+    }
+    packet[18] = static_cast<std::byte>(
+        MoldUdpPacketHeader::kEndOfSessionMessageCount >> 8);
+    packet[19] = static_cast<std::byte>(
+        MoldUdpPacketHeader::kEndOfSessionMessageCount & 0xffu);
+    return packet;
 }
 
 uint64_t readU48BE(const std::byte *p) {
@@ -246,15 +316,244 @@ std::chrono::nanoseconds scaledDelay(uint64_t ns_delta, double speedup) {
     return std::chrono::nanoseconds(static_cast<int64_t>(scaled_ns));
 }
 
+struct RedundantPacketHandoff {
+    const std::byte *data{nullptr};
+    std::size_t      size{0};
+    uint16_t         msg_count{0};
+    std::chrono::steady_clock::time_point line_b_not_before{};
+
+    // A completes before generation is published. The producer cannot reuse
+    // the source buffer until B acknowledges that generation.
+    alignas(64) std::atomic<uint64_t> generation{0};
+    alignas(64) std::atomic<uint64_t> line_b_completed_generation{0};
+    alignas(64) std::atomic<bool> stop{false};
+};
+
+struct RedundantLineState {
+    // 0 = starting, 1 = ready, 2 = failed.
+    std::atomic<unsigned> startup_status{0};
+    astra::utils::CpuAffinityResult affinity{};
+    std::string startup_error;
+
+    uint64_t packets_sent{0};
+    uint64_t messages_sent{0};
+    uint64_t send_failures{0};
+    uint64_t delay_overruns{0};
+};
+
+class RedundantUdpSender {
+public:
+    RedundantUdpSender(std::string ip,
+                       uint16_t port_a,
+                       uint16_t port_b,
+                       bool affinity_configured,
+                       int cpu_a,
+                       int cpu_b,
+                       uint64_t line_b_delay_ns)
+        : ip_(std::move(ip)),
+          ports_{port_a, port_b},
+          affinity_configured_(affinity_configured),
+          cpu_ids_{cpu_a, cpu_b},
+          line_b_delay_ns_(line_b_delay_ns) {
+        if (affinity_configured_) {
+            states_[0].affinity =
+                astra::utils::pinCurrentThreadToCpu(cpu_ids_[0]);
+            if (!states_[0].affinity) {
+                throw std::runtime_error(
+                    affinityError("line A", states_[0].affinity));
+            }
+        }
+        sender_a_ = std::make_unique<UdpSender>(ip_.c_str(), ports_[0]);
+
+        worker_b_ = std::thread(&RedundantUdpSender::lineBWorkerLoop, this);
+        waitForStartup(states_[1]);
+        if (states_[1].startup_status.load(std::memory_order_acquire) != 1) {
+            const std::string error =
+                "line B sender startup failed: " + states_[1].startup_error;
+            stopAndJoin();
+            throw std::runtime_error(error);
+        }
+    }
+
+    ~RedundantUdpSender() { stopAndJoin(); }
+
+    RedundantUdpSender(const RedundantUdpSender &) = delete;
+    RedundantUdpSender &operator=(const RedundantUdpSender &) = delete;
+
+    void send(const std::byte *data, std::size_t size, uint16_t msg_count) {
+        if (worker_failed_.load(std::memory_order_acquire))
+            throw std::runtime_error("line B sender failed: " + worker_error_);
+
+        if (sender_a_->send(data, size)) {
+            ++states_[0].packets_sent;
+            states_[0].messages_sent += msg_count;
+        } else {
+            ++states_[0].send_failures;
+        }
+
+        handoff_.data = data;
+        handoff_.size = size;
+        handoff_.msg_count = msg_count;
+        handoff_.line_b_not_before =
+            std::chrono::steady_clock::now() +
+            std::chrono::nanoseconds(
+                static_cast<int64_t>(line_b_delay_ns_));
+
+        const uint64_t generation =
+            handoff_.generation.fetch_add(1, std::memory_order_release) + 1;
+
+        uint64_t line_b_completed =
+            handoff_.line_b_completed_generation.load(
+                std::memory_order_acquire);
+        while (line_b_completed != generation) {
+            if (worker_failed_.load(std::memory_order_acquire)) {
+                throw std::runtime_error("line B sender failed: " +
+                                         worker_error_);
+            }
+            line_b_completed = handoff_.line_b_completed_generation.load(
+                std::memory_order_acquire);
+        }
+    }
+
+    [[nodiscard]] const RedundantLineState &line(std::size_t index) const {
+        return states_[index];
+    }
+
+    [[nodiscard]] bool affinityConfigured() const {
+        return affinity_configured_;
+    }
+
+private:
+    static std::string affinityError(
+        const char *line,
+        const astra::utils::CpuAffinityResult &affinity) {
+        return std::string(line) + " CPU affinity " +
+               astra::utils::cpuAffinityStatusName(affinity.status) +
+               " for CPU " + std::to_string(affinity.cpu_id) + ": " +
+               affinity.message;
+    }
+
+    static void waitForStartup(RedundantLineState &state) {
+        unsigned status =
+            state.startup_status.load(std::memory_order_acquire);
+        while (status == 0) {
+            state.startup_status.wait(status, std::memory_order_acquire);
+            status = state.startup_status.load(std::memory_order_acquire);
+        }
+    }
+
+    void lineBWorkerLoop() noexcept {
+        RedundantLineState &state = states_[1];
+        bool startup_complete = false;
+        try {
+            if (affinity_configured_) {
+                state.affinity =
+                    astra::utils::pinCurrentThreadToCpu(cpu_ids_[1]);
+                if (!state.affinity) {
+                    throw std::runtime_error(
+                        affinityError("line B", state.affinity));
+                }
+            }
+
+            UdpSender sender(ip_.c_str(), ports_[1]);
+            startup_complete = true;
+            state.startup_status.store(1, std::memory_order_release);
+            state.startup_status.notify_one();
+
+            uint64_t observed_generation = 0;
+            for (;;) {
+                uint64_t generation =
+                    handoff_.generation.load(std::memory_order_acquire);
+                while (generation == observed_generation) {
+                    generation =
+                        handoff_.generation.load(std::memory_order_acquire);
+                }
+                observed_generation = generation;
+
+                if (handoff_.stop.load(std::memory_order_acquire)) return;
+
+                if (line_b_delay_ns_ > 0) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now > handoff_.line_b_not_before) {
+                        ++state.delay_overruns;
+                    }
+                    while (g_running.load(std::memory_order_relaxed) &&
+                           std::chrono::steady_clock::now() <
+                               handoff_.line_b_not_before) {
+                        // CPU B is dedicated to the redundant line. Busy
+                        // polling avoids scheduler wakeup jitter at 1 us skew.
+                    }
+                }
+
+                if (sender.send(handoff_.data, handoff_.size)) {
+                    ++state.packets_sent;
+                    state.messages_sent += handoff_.msg_count;
+                } else {
+                    ++state.send_failures;
+                }
+
+                handoff_.line_b_completed_generation.store(
+                    generation, std::memory_order_release);
+            }
+        } catch (const std::exception &e) {
+            if (!startup_complete) {
+                state.startup_error = e.what();
+                state.startup_status.store(2, std::memory_order_release);
+                state.startup_status.notify_one();
+            } else {
+                worker_error_ = e.what();
+                worker_failed_.store(true, std::memory_order_release);
+            }
+        } catch (...) {
+            if (!startup_complete) {
+                state.startup_error = "unknown exception";
+                state.startup_status.store(2, std::memory_order_release);
+                state.startup_status.notify_one();
+            } else {
+                worker_error_ = "unknown exception";
+                worker_failed_.store(true, std::memory_order_release);
+            }
+        }
+    }
+
+    void stopAndJoin() noexcept {
+        if (!handoff_.stop.exchange(true, std::memory_order_acq_rel)) {
+            handoff_.generation.fetch_add(1, std::memory_order_release);
+        }
+        if (worker_b_.joinable()) worker_b_.join();
+    }
+
+    std::string ip_;
+    std::array<uint16_t, 2> ports_{};
+    bool affinity_configured_{false};
+    std::array<int, 2> cpu_ids_{};
+    uint64_t line_b_delay_ns_{0};
+    RedundantPacketHandoff handoff_{};
+    std::array<RedundantLineState, 2> states_{};
+    std::unique_ptr<UdpSender> sender_a_;
+    std::thread worker_b_{};
+    std::atomic<bool> worker_failed_{false};
+    std::string worker_error_;
+};
+
 } // namespace
 
 int main(int argc, char *argv[]) {
-    if (argc < 4 || argc > 11) {
+    const bool redundant =
+        argc >= 2 && std::string_view(argv[1]) == "--redundant";
+    const bool valid_single_args = !redundant && argc >= 4 && argc <= 11;
+    const bool valid_redundant_args = redundant && argc >= 9 && argc <= 13;
+    if (!valid_single_args && !valid_redundant_args) {
         std::cerr << "Usage: " << argv[0]
                   << " <NASDAQ_ITCH50> <dest-ip> <port>"
                      " [msgs_per_packet] [session] [pkt/s] [premarket_seconds]"
                      " [ss_pause_seconds] [premarket_replay_mode]"
                      " [premarket_speedup]\n"
+                  << "       " << argv[0]
+                  << " --redundant <NASDAQ_ITCH50> <dest-ip> <port_a> <port_b>"
+                     " <msgs_per_packet> <session> <pkt/s>"
+                     " [premarket_seconds] [ss_pause_seconds]"
+                     " [premarket_replay_mode] [premarket_speedup]\n"
                   << "  msgs_per_packet  ITCH messages bundled per UDP datagram"
                      " (default " << ItchMoldUdpSource::kDefaultMsgsPerPacket << ")\n"
                   << "  session          10-char MoldUDP64 session id"
@@ -272,44 +571,127 @@ int main(int argc, char *argv[]) {
                      " premarket_seconds > 0)\n"
                   << "  premarket_speedup"
                      "  timestamp mode speedup factor"
-                     " (default ASTRA_PREMARKET_SPEEDUP or 1.0)\n";
+                     " (default ASTRA_PREMARKET_SPEEDUP or 1.0)\n"
+                  << "  redundant CPU affinity: set both ASTRA_CPU_A and"
+                     " ASTRA_CPU_B to distinct CPUs\n"
+                  << "  redundant line skew: ASTRA_LINE_B_DELAY_NS"
+                     " (default 1000; 0 disables)\n";
         return EXIT_FAILURE;
     }
 
-    const std::string path  = argv[1];
-    const char       *ip    = argv[2];
-    const uint16_t    port  = parsePort(argv[3]);
-    const uint16_t    msgs_per_packet =
-        argc >= 5 ? parseMsgsPerPacket(argv[4])
-                  : ItchMoldUdpSource::kDefaultMsgsPerPacket;
-    const std::string session        = argc >= 6 ? argv[5] : "ASTRA     ";
-    const uint64_t    pkts_per_second = argc >= 7 ? parseU64(argv[6], 0) : 0;
+    const int path_arg = redundant ? 2 : 1;
+    const int ip_arg = redundant ? 3 : 2;
+    const int port_a_arg = redundant ? 4 : 3;
+    const int port_b_arg = redundant ? 5 : 0;
+    const int msgs_per_packet_arg = redundant ? 6 : 4;
+    const int session_arg = redundant ? 7 : 5;
+    const int rate_arg = redundant ? 8 : 6;
+    const int premarket_seconds_arg = redundant ? 9 : 7;
+    const int ss_pause_seconds_arg = redundant ? 10 : 8;
+    const int replay_mode_arg = redundant ? 11 : 9;
+    const int speedup_arg = redundant ? 12 : 10;
+
+    const std::string path = argv[path_arg];
+    const char *ip = argv[ip_arg];
+    const uint16_t port_a = parsePort(argv[port_a_arg]);
+    const uint16_t port_b = redundant ? parsePort(argv[port_b_arg]) : 0;
+    const uint16_t msgs_per_packet =
+        argc > msgs_per_packet_arg
+            ? parseMsgsPerPacket(argv[msgs_per_packet_arg])
+            : ItchMoldUdpSource::kDefaultMsgsPerPacket;
+    const std::string session =
+        argc > session_arg ? argv[session_arg] : "ASTRA     ";
+    const uint64_t pkts_per_second =
+        argc > rate_arg ? parseU64(argv[rate_arg], 0) : 0;
     const uint64_t    premarket_seconds =
-        argc >= 8 ? parseU64(argv[7], 0)
-                  : parseU64(std::getenv("ASTRA_PREMARKET_SECONDS"), 0);
+        argc > premarket_seconds_arg
+            ? parseU64(argv[premarket_seconds_arg], 0)
+            : parseU64(std::getenv("ASTRA_PREMARKET_SECONDS"), 0);
     const uint64_t    ss_pause_seconds =
-        argc >= 9 ? parseU64(argv[8], 0)
-                  : parseU64(std::getenv("ASTRA_SS_PAUSE_SECONDS"), 0);
+        argc > ss_pause_seconds_arg
+            ? parseU64(argv[ss_pause_seconds_arg], 0)
+            : parseU64(std::getenv("ASTRA_SS_PAUSE_SECONDS"), 0);
     const PremarketReplayMode replay_mode =
-        parseReplayMode(argc >= 10 ? argv[9]
-                                   : std::getenv("ASTRA_PREMARKET_REPLAY_MODE"),
+        parseReplayMode(argc > replay_mode_arg
+                            ? argv[replay_mode_arg]
+                            : std::getenv("ASTRA_PREMARKET_REPLAY_MODE"),
                         premarket_seconds);
     const double premarket_speedup =
-        argc >= 11 ? parseDouble(argv[10], 1.0)
-                   : parseDouble(std::getenv("ASTRA_PREMARKET_SPEEDUP"), 1.0);
+        argc > speedup_arg
+            ? parseDouble(argv[speedup_arg], 1.0)
+            : parseDouble(std::getenv("ASTRA_PREMARKET_SPEEDUP"), 1.0);
+
+    if (msgs_per_packet == 0) {
+        std::cerr << "msgs_per_packet must be greater than zero\n";
+        return EXIT_FAILURE;
+    }
+
+    bool affinity_configured = false;
+    int cpu_a = -1;
+    int cpu_b = -1;
+    uint64_t line_b_delay_ns = kDefaultLineBDelayNs;
+    if (redundant) {
+        const char *cpu_a_env = std::getenv("ASTRA_CPU_A");
+        const char *cpu_b_env = std::getenv("ASTRA_CPU_B");
+        const bool cpu_a_configured =
+            cpu_a_env != nullptr && cpu_a_env[0] != '\0';
+        const bool cpu_b_configured =
+            cpu_b_env != nullptr && cpu_b_env[0] != '\0';
+        if (cpu_a_configured != cpu_b_configured) {
+            std::cerr << "ASTRA_CPU_A and ASTRA_CPU_B must be configured"
+                         " together for redundant mode\n";
+            return EXIT_FAILURE;
+        }
+        if (cpu_a_configured) {
+            if (!parseCpuId(cpu_a_env, cpu_a) ||
+                !parseCpuId(cpu_b_env, cpu_b)) {
+                std::cerr << "ASTRA_CPU_A and ASTRA_CPU_B must be"
+                             " non-negative integer CPU IDs\n";
+                return EXIT_FAILURE;
+            }
+            if (cpu_a == cpu_b) {
+                std::cerr << "ASTRA_CPU_A and ASTRA_CPU_B must identify"
+                             " distinct CPUs\n";
+                return EXIT_FAILURE;
+            }
+            affinity_configured = true;
+        }
+
+        if (const char *delay_env = std::getenv("ASTRA_LINE_B_DELAY_NS")) {
+            if (!parseU64Strict(delay_env, line_b_delay_ns) ||
+                line_b_delay_ns > kMaxLineBDelayNs) {
+                std::cerr << "ASTRA_LINE_B_DELAY_NS must be an integer from"
+                             " 0 through 1000000000\n";
+                return EXIT_FAILURE;
+            }
+        }
+    }
 
     try {
-        if (const char *cpu_env = std::getenv("ASTRA_CPU")) {
-            const int cpu_id =
-                static_cast<int>(std::strtol(cpu_env, nullptr, 10));
-            const auto affinity = astra::utils::pinCurrentThreadToCpu(cpu_id);
-            std::cout << "cpu_affinity status="
-                      << astra::utils::cpuAffinityStatusName(affinity.status)
-                      << " cpu=" << affinity.cpu_id;
-            if (!affinity)
-                std::cout << " error=" << affinity.error_code
-                          << " message=\"" << affinity.message << "\"";
-            std::cout << "\n";
+        if (!redundant) {
+            const char *cpu_env = std::getenv("ASTRA_CPU");
+            if (cpu_env != nullptr && cpu_env[0] != '\0') {
+                int cpu_id = -1;
+                if (!parseCpuId(cpu_env, cpu_id)) {
+                    throw std::invalid_argument(
+                        "ASTRA_CPU must be a non-negative in-range integer"
+                        " CPU ID");
+                }
+                const auto affinity =
+                    astra::utils::pinCurrentThreadToCpu(cpu_id);
+                std::cout
+                    << "cpu_affinity status="
+                    << astra::utils::cpuAffinityStatusName(affinity.status)
+                    << " cpu=" << affinity.cpu_id;
+                if (!affinity)
+                    std::cout << " error=" << affinity.error_code
+                              << " message=\"" << affinity.message << "\"";
+                std::cout << "\n";
+                if (!affinity) {
+                    throw std::runtime_error(
+                        "requested CPU affinity is required for this run");
+                }
+            }
         }
 
         const bool needs_premarket_window =
@@ -334,12 +716,41 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
 
-        UdpSender sender(ip, port);
         std::signal(SIGINT,  onSignal);
         std::signal(SIGTERM, onSignal);
 
-        std::cout << "MoldUDP64/ITCH5.0 sender -> " << ip << ":" << port
-                  << "  file=" << path
+        std::unique_ptr<UdpSender> sender_a;
+        std::unique_ptr<RedundantUdpSender> redundant_sender;
+        if (redundant) {
+            redundant_sender = std::make_unique<RedundantUdpSender>(
+                ip, port_a, port_b, affinity_configured, cpu_a, cpu_b,
+                line_b_delay_ns);
+            if (redundant_sender->affinityConfigured()) {
+                for (std::size_t line = 0; line < 2; ++line) {
+                    const auto &affinity =
+                        redundant_sender->line(line).affinity;
+                    std::cout << "cpu_affinity line="
+                              << (line == 0 ? "A" : "B")
+                              << " status="
+                              << astra::utils::cpuAffinityStatusName(
+                                     affinity.status)
+                              << " cpu=" << affinity.cpu_id << "\n";
+                }
+            }
+        } else {
+            sender_a = std::make_unique<UdpSender>(ip, port_a);
+        }
+
+        std::cout << "MoldUDP64/ITCH5.0 sender";
+        if (redundant) {
+            std::cout << " redundant -> line_a=" << ip << ":" << port_a
+                      << " line_b=" << ip << ":" << port_b
+                      << " line_b_delay_ns=" << line_b_delay_ns
+                      << " send_threads=2";
+        } else {
+            std::cout << " -> " << ip << ":" << port_a;
+        }
+        std::cout << "  file=" << path
                   << "  session=" << session
                   << "  msgs_per_packet=" << msgs_per_packet;
         if (pkts_per_second > 0)
@@ -379,12 +790,19 @@ int main(int argc, char *argv[]) {
         auto next_premarket_send = std::chrono::steady_clock::now();
         auto premarket_start = std::chrono::steady_clock::now();
         bool premarket_active = false;
+        bool ss_pause_pending = ss_pause_seconds > 0;
 
-        uint64_t  pkts_sent     = 0;
-        uint64_t  msgs_sent     = 0;
-        uint64_t  send_failures = 0;
-        uint64_t  first_seq_sent = 0;
-        uint64_t  next_seq_sent  = 0;
+        uint64_t line_a_pkts_sent = 0;
+        uint64_t line_a_msgs_sent = 0;
+        uint64_t line_a_send_failures = 0;
+        uint64_t line_b_pkts_sent = 0;
+        uint64_t line_b_msgs_sent = 0;
+        uint64_t line_b_send_failures = 0;
+        uint64_t line_b_delay_overruns = 0;
+        uint64_t logical_packets = 0;
+        uint64_t logical_messages = 0;
+        uint64_t logical_first_seq = 0;
+        uint64_t logical_next_seq = 0;
         PacketView packet;
 
         while (g_running.load(std::memory_order_relaxed)) {
@@ -392,16 +810,15 @@ int main(int argc, char *argv[]) {
 
             const uint64_t first_seq = readU64BE(packet.data + 10);
             const uint16_t msg_count = readU16BE(packet.data + 18);
+            const bool inspect_timing = premarket_enabled || ss_pause_pending;
             const PacketTiming packet_timing =
-                premarket_enabled ? inspectPacket(packet) : PacketTiming{};
-            const bool contains_ss =
-                premarket_enabled && packet_timing.contains_ss;
-            const bool contains_sq =
-                premarket_enabled && packet_timing.contains_sq;
+                inspect_timing ? inspectPacket(packet) : PacketTiming{};
+            const bool contains_ss = packet_timing.contains_ss;
+            const bool contains_sq = packet_timing.contains_sq;
 
             if (premarket_active) {
                 if (replay_mode == PremarketReplayMode::Flat) {
-                    std::this_thread::sleep_until(next_premarket_send);
+                    if (!sleepUntilOrStopped(next_premarket_send)) break;
                     next_premarket_send += premarket_interval;
                 } else if (replay_mode == PremarketReplayMode::Timestamp) {
                     uint64_t packet_timestamp = packet_timing.first_timestamp_ns;
@@ -409,33 +826,53 @@ int main(int argc, char *argv[]) {
                         packet_timestamp = packet_timing.sq_timestamp_ns;
                     if (packet_timing.has_timestamp &&
                         packet_timestamp > premarket.ss_timestamp_ns) {
-                        std::this_thread::sleep_until(
-                            premarket_start +
-                            scaledDelay(packet_timestamp -
-                                            premarket.ss_timestamp_ns,
-                                        premarket_speedup));
+                        if (!sleepUntilOrStopped(
+                                premarket_start +
+                                scaledDelay(packet_timestamp -
+                                                premarket.ss_timestamp_ns,
+                                            premarket_speedup))) {
+                            break;
+                        }
                     }
                 }
             }
 
-            if (sender.send(packet.data, packet.size)) {
-                ++pkts_sent;
-                msgs_sent += msg_count;
-                if (first_seq_sent == 0)
-                    first_seq_sent = first_seq;
-                next_seq_sent = first_seq + msg_count;
+            ++logical_packets;
+            logical_messages += msg_count;
+            if (logical_first_seq == 0)
+                logical_first_seq = first_seq;
+            logical_next_seq = first_seq + msg_count;
+
+            if (redundant_sender != nullptr) {
+                // PacketView aliases the source's reusable packet buffer.
+                // This call returns only after A and B have completed sendto,
+                // so source.next() cannot mutate bytes still used by a line.
+                redundant_sender->send(packet.data, packet.size, msg_count);
             } else {
-                ++send_failures;
+                if (sender_a->send(packet.data, packet.size)) {
+                    ++line_a_pkts_sent;
+                    line_a_msgs_sent += msg_count;
+                } else {
+                    ++line_a_send_failures;
+                }
             }
 
-            if (contains_ss && !premarket_active) {
-                if (ss_pause_seconds > 0) {
-                    std::this_thread::sleep_for(
+            if (contains_ss) {
+                if (ss_pause_pending) {
+                    const bool pause_completed = sleepUntilOrStopped(
+                        std::chrono::steady_clock::now() +
                         std::chrono::seconds(ss_pause_seconds));
+                    ss_pause_pending = false;
+                    // Do not let the regular rate limiter "catch up" against
+                    // deadlines accumulated before a long SS pause.
+                    next_send = std::chrono::steady_clock::now();
+                    if (!pause_completed) break;
                 }
-                premarket_active = true;
-                premarket_start = std::chrono::steady_clock::now();
-                next_premarket_send = premarket_start + premarket_interval;
+                if (premarket_enabled && !premarket_active) {
+                    premarket_active = true;
+                    premarket_start = std::chrono::steady_clock::now();
+                    next_premarket_send = premarket_start + premarket_interval;
+                }
             }
 
             if (contains_sq) {
@@ -446,16 +883,97 @@ int main(int argc, char *argv[]) {
             if (!premarket_active && !contains_ss && !contains_sq &&
                 interval.count() > 0) {
                 next_send += interval;
-                std::this_thread::sleep_until(next_send);
+                if (!sleepUntilOrStopped(next_send)) break;
             }
         }
 
-        std::cout << "pkts_sent=" << pkts_sent
-                  << " msgs_sent=" << msgs_sent
-                  << " first_seq=" << first_seq_sent
-                  << " next_seq=" << next_seq_sent
-                  << " send_failures=" << send_failures << "\n";
-        return EXIT_SUCCESS;
+        bool end_of_session_sent = false;
+        if (source.completed()) {
+            const uint64_t end_sequence = source.nextSequence();
+            const auto end_packet =
+                makeEndOfSessionPacket(session, end_sequence);
+            ++logical_packets;
+            if (logical_first_seq == 0)
+                logical_first_seq = end_sequence;
+            logical_next_seq = end_sequence;
+
+            if (redundant_sender != nullptr) {
+                const uint64_t line_a_packets_before =
+                    redundant_sender->line(0).packets_sent;
+                const uint64_t line_b_packets_before =
+                    redundant_sender->line(1).packets_sent;
+                redundant_sender->send(end_packet.data(), end_packet.size(), 0);
+                end_of_session_sent =
+                    redundant_sender->line(0).packets_sent ==
+                        line_a_packets_before + 1 &&
+                    redundant_sender->line(1).packets_sent ==
+                        line_b_packets_before + 1;
+            } else if (sender_a->send(end_packet.data(), end_packet.size())) {
+                ++line_a_pkts_sent;
+                end_of_session_sent = true;
+            } else {
+                ++line_a_send_failures;
+            }
+        }
+
+        const bool interrupted =
+            !g_running.load(std::memory_order_relaxed);
+        const char *completion = "source_error";
+        if (source.completed())
+            completion = "complete";
+        else if (source.lastError().empty() && interrupted)
+            completion = "interrupted";
+        if (!source.lastError().empty()) {
+            std::cerr << "Replay source error: " << source.lastError() << "\n";
+        }
+
+        if (redundant) {
+            const RedundantLineState &line_a = redundant_sender->line(0);
+            const RedundantLineState &line_b = redundant_sender->line(1);
+            line_a_pkts_sent = line_a.packets_sent;
+            line_a_msgs_sent = line_a.messages_sent;
+            line_a_send_failures = line_a.send_failures;
+            line_b_pkts_sent = line_b.packets_sent;
+            line_b_msgs_sent = line_b.messages_sent;
+            line_b_send_failures = line_b.send_failures;
+            line_b_delay_overruns = line_b.delay_overruns;
+            std::cout << "sender_stats completion=" << completion
+                      << " line_a_pkts_sent=" << line_a_pkts_sent
+                      << " line_a_msgs_sent=" << line_a_msgs_sent
+                      << " line_a_send_failures=" << line_a_send_failures
+                      << " line_b_pkts_sent=" << line_b_pkts_sent
+                      << " line_b_msgs_sent=" << line_b_msgs_sent
+                      << " line_b_send_failures=" << line_b_send_failures
+                      << " line_b_delay_ns=" << line_b_delay_ns
+                      << " line_b_delay_overruns="
+                      << line_b_delay_overruns
+                      << " logical_packets=" << logical_packets
+                      << " logical_messages=" << logical_messages
+                      << " first_seq=" << logical_first_seq
+                      << " next_seq=" << logical_next_seq
+                      << " end_of_session_sent="
+                      << (end_of_session_sent ? "true" : "false") << "\n";
+        } else {
+            std::cout << "sender_stats completion=" << completion
+                      << " pkts_sent=" << line_a_pkts_sent
+                      << " msgs_sent=" << line_a_msgs_sent
+                      << " first_seq=" << logical_first_seq
+                      << " next_seq=" << logical_next_seq
+                      << " send_failures=" << line_a_send_failures
+                      << " end_of_session_sent="
+                      << (end_of_session_sent ? "true" : "false") << "\n";
+        }
+        const bool redundant_counts_clean =
+            !redundant ||
+            (line_a_pkts_sent == logical_packets &&
+             line_b_pkts_sent == logical_packets &&
+             line_a_msgs_sent == logical_messages &&
+             line_b_msgs_sent == logical_messages);
+        return source.completed() && end_of_session_sent &&
+                       line_a_send_failures == 0 &&
+                       line_b_send_failures == 0 && redundant_counts_clean
+                   ? EXIT_SUCCESS
+                   : EXIT_FAILURE;
     } catch (const std::exception &e) {
         std::cerr << "Fatal: " << e.what() << "\n";
         return EXIT_FAILURE;

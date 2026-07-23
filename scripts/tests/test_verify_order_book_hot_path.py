@@ -50,54 +50,6 @@ REDESIGN_REQUIRED = (
     *(f"OrderBook::fixtureTraversal{ordinal}()" for ordinal in range(12)),
 )
 
-BRANCH5_REQUIRED = (
-    "BookManager::addOrder()",
-    "BookManager::trade()",
-    "BookManager::cancelShares()",
-    "BookManager::deleteOrder()",
-    "BookManager::replaceOrder()",
-    "OrderBook::addOrder()",
-    "OrderBook::trade()",
-    "OrderBook::cancelShares()",
-    "OrderBook::deleteOrder()",
-    "OrderBook::replaceOrder()",
-    "OrderBook::addOrderIndexed()",
-    "OrderBook::tradeIndexed()",
-    "OrderBook::cancelSharesIndexed()",
-    "OrderBook::deleteOrderIndexed()",
-    "OrderBook::replaceOrderIndexed()",
-    "OrderBook::removeFromLevel()",
-    "OrderArena::allocate()",
-    "OrderArena::release()",
-    "OrderArena::at()",
-    "OrderArena::isInUse()",
-    "OrderArena::markFree()",
-    "OrderArena::markInUse()",
-    "LocalOrderRefMap::erase()",
-    "LocalOrderRefMap::replaceKey()",
-    "PriceLevelIndex::ensure()",
-    "PriceLevelIndex::find()",
-    "PriceLevelIndex::eraseEmpty()",
-    "PriceLevelIndex::best()",
-    "PriceLevelIndex::nextWorse()",
-    "PriceLevelArena::allocateNode()",
-    "PriceLevelArena::allocateLeaf()",
-    "PriceLevelArena::allocateLevel()",
-    "PriceLevelArena::releaseNode()",
-    "PriceLevelArena::releaseLeaf()",
-    "PriceLevelArena::releaseLevel()",
-    "PriceLevelArena::level()",
-    "PriceLevelArena::node()",
-    "PriceLevelArena::leaf()",
-    "ItchParser::handleMessage()",
-    "ItchParser::handleAdd()",
-    "ItchParser::handleExecution()",
-    "ItchParser::handleCancel()",
-    "ItchParser::handleDelete()",
-    "ItchParser::handleReplace()",
-)
-
-
 class SyntheticDisassembly:
     def __init__(self, symbols: Iterable[str]) -> None:
         self.symbols = list(dict.fromkeys(symbols))
@@ -244,15 +196,6 @@ class VerifyOrderBookHotPathTest(unittest.TestCase):
             result.stderr,
         )
 
-    def test_branch5_contract_and_shared_parser_entrypoint_still_pass(self) -> None:
-        fixture = SyntheticDisassembly(BRANCH5_REQUIRED)
-        result = invoke("branch5_native_v1", fixture, report=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("version=2 result=PASS schema=branch5_native_v1", result.stdout)
-        self.assertIsNotNone(result.report)
-        assert result.report is not None
-        self.assertIn("<ItchParser::handleMessage()>", result.report)
-
     def test_transitive_unmatched_project_helper_is_audited(self) -> None:
         fixture = SyntheticDisassembly(
             (*REDESIGN_REQUIRED, "OpaqueStageOne()", "OpaqueStageTwo()")
@@ -367,10 +310,10 @@ class VerifyOrderBookHotPathTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_indirect_call_in_transitive_helper_fails(self) -> None:
-        fixture = SyntheticDisassembly((*BRANCH5_REQUIRED, "NativeOpaqueHelper()"))
-        fixture.call("ItchParser::handleExecution()", "NativeOpaqueHelper()")
-        fixture.instruction("NativeOpaqueHelper()", "call *%rax")
-        result = invoke("branch5_native_v1", fixture)
+        fixture = SyntheticDisassembly((*REDESIGN_REQUIRED, "OpaqueHelper()"))
+        fixture.call("ItchParser::handleOrderExecuted()", "OpaqueHelper()")
+        fixture.instruction("OpaqueHelper()", "call *%rax")
+        result = invoke("redesign_v1", fixture)
         self.assertEqual(result.returncode, 2)
         self.assertIn("call *%rax", result.stdout)
         self.assertIn("indirect call or tail call", result.stderr)
@@ -387,22 +330,6 @@ class VerifyOrderBookHotPathTest(unittest.TestCase):
         result = invoke("redesign_v1", rejected)
         self.assertEqual(result.returncode, 2)
         self.assertIn("indirect call or tail call", result.stderr)
-
-    def test_branch5_two_historical_jump_tables_are_allowed(self) -> None:
-        allowed = SyntheticDisassembly(BRANCH5_REQUIRED)
-        allowed.instruction("ItchParser::handleMessage()", "jmp *%rax")
-        allowed.instruction("ItchParser::handleMessage()", "jmp *%rcx")
-        result = invoke("branch5_native_v1", allowed)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-        rejected = SyntheticDisassembly(BRANCH5_REQUIRED)
-        rejected.instruction("ItchParser::handleMessage()", "jmp *%rax")
-        rejected.instruction("ItchParser::handleMessage()", "jmp *%rcx")
-        rejected.instruction("ItchParser::handleMessage()", "jmp *%rdx")
-        result = invoke("branch5_native_v1", rejected)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("indirect call or tail call", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,9 @@ ItchMoldUdpSource::ItchMoldUdpSource(const std::string &path,
       msgs_per_packet_(msgs_per_packet) {
     if (!input_.is_open()) {
         last_error_ = "failed to open ITCH file: " + path;
+    } else if (msgs_per_packet_ == 0) {
+        last_error_ = "msgs_per_packet must be greater than zero";
+        eof_ = true;
     }
     session_.resize(10, ' '); // pad/truncate to exactly 10 bytes
 }
@@ -50,17 +53,33 @@ bool ItchMoldUdpSource::next(PacketView &packet) {
         unsigned char len_bytes[2];
         input_.read(reinterpret_cast<char *>(len_bytes), 2);
 
-        if (input_.gcount() == 0 && input_.eof()) { eof_ = true; break; }
-        if (input_.gcount() != 2)                 { eof_ = true; break; }
+        if (input_.gcount() == 0 && input_.eof()) {
+            eof_ = true;
+            completed_ = true;
+            break;
+        }
+        if (input_.gcount() != 2) {
+            eof_ = true;
+            last_error_ = "truncated ITCH message-length prefix";
+            break;
+        }
 
         const uint16_t msg_len =
             (static_cast<uint16_t>(len_bytes[0]) << 8) | len_bytes[1];
-        if (msg_len == 0) { eof_ = true; break; }
+        if (msg_len == 0) {
+            eof_ = true;
+            last_error_ = "invalid zero-length ITCH message";
+            break;
+        }
 
         if (offset + 2u + msg_len > kMaxPacketBytes) {
-            // Message won't fit in this packet — seek back and flush now.
-            // ITCH messages are tiny (<40 bytes) so this only triggers if
-            // msgs_per_packet is set absurdly high relative to the buffer.
+            // Flush existing messages and retry this message in the next
+            // packet. A single message that cannot fit is an input error.
+            if (count == 0) {
+                eof_ = true;
+                last_error_ = "ITCH message is too large for a MoldUDP packet";
+                break;
+            }
             input_.seekg(-2, std::ios::cur);
             break;
         }
@@ -74,6 +93,7 @@ bool ItchMoldUdpSource::next(PacketView &packet) {
                     static_cast<std::streamsize>(msg_len));
         if (input_.gcount() != static_cast<std::streamsize>(msg_len)) {
             eof_ = true;
+            last_error_ = "truncated ITCH message payload";
             break;
         }
         offset += msg_len;
@@ -95,5 +115,7 @@ bool ItchMoldUdpSource::next(PacketView &packet) {
 }
 
 bool ItchMoldUdpSource::isOpen() const { return input_.is_open(); }
+
+bool ItchMoldUdpSource::completed() const noexcept { return completed_; }
 
 const std::string &ItchMoldUdpSource::lastError() const { return last_error_; }

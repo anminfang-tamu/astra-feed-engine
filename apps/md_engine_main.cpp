@@ -4,6 +4,9 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/metrics/LatencyRecorder.hpp"
 // #include "astra/metrics/StageLatencyRecorder.hpp"
+#ifdef ASTRA_ENABLE_DPDK
+#include "astra/source/DpdkReceiver.hpp"
+#endif
 #include "astra/source/DualUdpBatchReceiver.hpp"
 #include "astra/source/DualUdpReceiver.hpp"
 #include "astra/source/UdpBatchReceiver.hpp"
@@ -26,6 +29,36 @@ static MarketDataEngine *g_engine = nullptr;
 static void onSignal(int) {
   if (g_engine)
     g_engine->stop();
+}
+
+static void pinRequestedCpu(const char *phase) {
+  const char *cpu_env = std::getenv("ASTRA_CPU");
+  if (cpu_env == nullptr || *cpu_env == '\0')
+    return;
+
+  const char *end = cpu_env + std::strlen(cpu_env);
+  uint64_t parsed_cpu = 0;
+  const auto parse_result =
+      std::from_chars(cpu_env, end, parsed_cpu, 10);
+  if (parse_result.ec != std::errc{} || parse_result.ptr != end ||
+      parsed_cpu >
+          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::invalid_argument(
+        "ASTRA_CPU must be a non-negative in-range integer CPU ID");
+  }
+
+  const int cpu_id = static_cast<int>(parsed_cpu);
+  const auto affinity = astra::utils::pinCurrentThreadToCpu(cpu_id);
+  std::cout << "cpu_affinity status="
+            << astra::utils::cpuAffinityStatusName(affinity.status)
+            << " cpu=" << affinity.cpu_id << " phase=" << phase;
+  if (!affinity)
+    std::cout << " error=" << affinity.error_code << " message=\""
+              << affinity.message << "\"";
+  std::cout << "\n";
+  if (!affinity)
+    throw std::runtime_error(
+        "requested CPU affinity is required for this run");
 }
 
 static bool envBool(const char *name, const char *value, bool fallback) {
@@ -351,20 +384,14 @@ int main(int argc, char *argv[]) {
           : 0;
 
   try {
-    if (const char *cpu_env = std::getenv("ASTRA_CPU")) {
-      const int cpu_id = static_cast<int>(std::strtol(cpu_env, nullptr, 10));
-      const auto affinity = astra::utils::pinCurrentThreadToCpu(cpu_id);
-      std::cout << "cpu_affinity status="
-                << astra::utils::cpuAffinityStatusName(affinity.status)
-                << " cpu=" << affinity.cpu_id;
-      if (!affinity)
-        std::cout << " error=" << affinity.error_code << " message=\""
-                  << affinity.message << "\"";
-      std::cout << "\n";
-      if (!affinity) {
-        std::cerr << "requested CPU affinity is required for this run\n";
-        return EXIT_FAILURE;
-      }
+    const char *rx_transport = std::getenv("ASTRA_RX");
+    const bool use_dpdk =
+        rx_transport != nullptr && std::strcmp(rx_transport, "dpdk") == 0;
+    if (rx_transport != nullptr && !use_dpdk &&
+        std::strcmp(rx_transport, "udp") != 0 &&
+        std::strcmp(rx_transport, "kernel") != 0) {
+      throw std::runtime_error(std::string("Unknown ASTRA_RX: ") +
+                               rx_transport);
     }
 
     const char *rx_mode = std::getenv("ASTRA_UDP_RX");
@@ -377,6 +404,62 @@ int main(int argc, char *argv[]) {
       if (parsed > 0)
         batch_size = static_cast<std::size_t>(parsed);
     }
+
+    // DPDK EAL may replace the calling thread's affinity. Kernel receivers do
+    // not, so pin them before opening sockets; the DPDK path is pinned again
+    // immediately after EAL/NIC initialization and before large arena maps.
+    if (!use_dpdk)
+      pinRequestedCpu("pre_source");
+
+    std::unique_ptr<IMarketDataSource> source;
+    DualUdpReceiver *dual_receiver = nullptr;
+    DualUdpBatchReceiver *dual_batch_receiver = nullptr;
+    UdpBatchReceiver *batch_receiver = nullptr;
+#ifdef ASTRA_ENABLE_DPDK
+    DpdkReceiver *dpdk_receiver = nullptr;
+#endif
+    if (use_dpdk) {
+#ifndef ASTRA_ENABLE_DPDK
+      throw std::runtime_error(
+          "ASTRA_RX=dpdk requested, but md_engine was built without "
+          "-DASTRA_ENABLE_DPDK=ON");
+#else
+      if (dual_feed) {
+        auto receiver = std::make_unique<DpdkReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])));
+        dpdk_receiver = receiver.get();
+        source = std::move(receiver);
+      } else {
+        auto receiver = std::make_unique<DpdkReceiver>(ip, port);
+        dpdk_receiver = receiver.get();
+        source = std::move(receiver);
+      }
+#endif
+    } else if (dual_feed) {
+      if (use_recvmmsg) {
+        auto receiver = std::make_unique<DualUdpBatchReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])), batch_size);
+        dual_batch_receiver = receiver.get();
+        source = std::move(receiver);
+      } else {
+        auto receiver = std::make_unique<DualUdpReceiver>(
+            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
+            static_cast<uint16_t>(std::atoi(argv[4])));
+        dual_receiver = receiver.get();
+        source = std::move(receiver);
+      }
+    } else if (use_recvmmsg) {
+      auto receiver = std::make_unique<UdpBatchReceiver>(ip, port, batch_size);
+      batch_receiver = receiver.get();
+      source = std::move(receiver);
+    } else {
+      source = std::make_unique<UdpReceiver>(ip, port);
+    }
+
+    if (use_dpdk)
+      pinRequestedCpu("post_dpdk_eal");
 
     astra::symbol::StockDirectory symbols;
     const BookDeploymentCapacity deployment = bookCapacityFromEnvironment();
@@ -406,31 +489,7 @@ int main(int argc, char *argv[]) {
               << effective_storage.planned_storage_bytes
               << "\n";
     MoldUdpDecoder decoder(symbols, book_manager, channel_id);
-    std::unique_ptr<IMarketDataSource> source;
-    DualUdpReceiver *dual_receiver = nullptr;
-    DualUdpBatchReceiver *dual_batch_receiver = nullptr;
-    UdpBatchReceiver *batch_receiver = nullptr;
-    if (dual_feed) {
-      if (use_recvmmsg) {
-        auto receiver = std::make_unique<DualUdpBatchReceiver>(
-            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-            static_cast<uint16_t>(std::atoi(argv[4])), batch_size);
-        dual_batch_receiver = receiver.get();
-        source = std::move(receiver);
-      } else {
-        auto receiver = std::make_unique<DualUdpReceiver>(
-            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-            static_cast<uint16_t>(std::atoi(argv[4])));
-        dual_receiver = receiver.get();
-        source = std::move(receiver);
-      }
-    } else if (use_recvmmsg) {
-      auto receiver = std::make_unique<UdpBatchReceiver>(ip, port, batch_size);
-      batch_receiver = receiver.get();
-      source = std::move(receiver);
-    } else {
-      source = std::make_unique<UdpReceiver>(ip, port);
-    }
+
     LatencyRecorder latency_recorder;
     // StageLatencyRecorder stage_latency_recorder;
     EngineConfig config;
@@ -450,13 +509,26 @@ int main(int argc, char *argv[]) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
+    const char *rx_name =
+        use_dpdk ? "dpdk" : (use_recvmmsg ? "recvmmsg" : "recv");
+    std::size_t rx_batch_size = use_recvmmsg ? batch_size : 1;
+#ifdef ASTRA_ENABLE_DPDK
+    if (dpdk_receiver != nullptr)
+      rx_batch_size = dpdk_receiver->burstSize();
+#endif
+
     if (dual_feed) {
       std::cout << "Engine started  line_a=" << argv[1] << ":" << argv[2]
                 << "  line_b=" << argv[3] << ":" << argv[4]
                 << "  channel=" << static_cast<int>(channel_id)
-                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
-                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
-                << "  metrics="
+                << "  rx=" << rx_name << "  batch_size=" << rx_batch_size;
+#ifdef ASTRA_ENABLE_DPDK
+      if (dpdk_receiver != nullptr) {
+        std::cout << "  dpdk_port=" << dpdk_receiver->portId()
+                  << "  dpdk_queue=" << dpdk_receiver->queueId();
+      }
+#endif
+      std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
@@ -464,9 +536,14 @@ int main(int argc, char *argv[]) {
     } else {
       std::cout << "Engine started  addr=" << ip << ":" << port
                 << "  channel=" << static_cast<int>(channel_id)
-                << "  rx=" << (use_recvmmsg ? "recvmmsg" : "recv")
-                << "  batch_size=" << (use_recvmmsg ? batch_size : 1)
-                << "  metrics="
+                << "  rx=" << rx_name << "  batch_size=" << rx_batch_size;
+#ifdef ASTRA_ENABLE_DPDK
+      if (dpdk_receiver != nullptr) {
+        std::cout << "  dpdk_port=" << dpdk_receiver->portId()
+                  << "  dpdk_queue=" << dpdk_receiver->queueId();
+      }
+#endif
+      std::cout << "  metrics="
                 << (config.enable_latency_metrics ? "on" : "off")
                 // << "  stage_metrics="
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
@@ -532,6 +609,21 @@ int main(int argc, char *argv[]) {
                 << " line_b_kernel_drops="
                 << dual_batch_receiver->kernelDropsB() << "\n";
     }
+#ifdef ASTRA_ENABLE_DPDK
+    if (dpdk_receiver != nullptr) {
+      std::cout << "rx_stats line_a_packets=" << dpdk_receiver->packetsA()
+                << " line_b_packets=" << dpdk_receiver->packetsB()
+                << " filtered=" << dpdk_receiver->filtered()
+                << " malformed=" << dpdk_receiver->malformed()
+                << " fast_path=" << dpdk_receiver->fastPathPackets()
+                << " fallback_path=" << dpdk_receiver->fallbackPathPackets()
+                << " polls=" << dpdk_receiver->polls()
+                << " empty_polls=" << dpdk_receiver->emptyPolls()
+                << " imissed=" << dpdk_receiver->imissed()
+                << " ierrors=" << dpdk_receiver->ierrors()
+                << " rx_nombuf=" << dpdk_receiver->rxNombuf() << "\n";
+    }
+#endif
     if (config.enable_latency_metrics) {
       latency_recorder.report();
       // if (config.enable_stage_latency_metrics)

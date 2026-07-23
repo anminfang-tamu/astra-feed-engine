@@ -8,25 +8,6 @@ ROOT_DIR="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 DEFAULT_BINARY="${ROOT_DIR}/build/benchmarks/astra_itch_book_replay_benchmark"
 DEFAULT_RESERVE_BYTES=17179869184
-BRANCH5_PINNED_TRACE_SHA256=1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3
-BRANCH5_PINNED_DEFAULT_ORDER_CAPACITY=65536
-BRANCH5_PINNED_PRICE_NODE_CAPACITY=163840
-BRANCH5_PINNED_PRICE_LEAF_CAPACITY=1048576
-BRANCH5_PINNED_PRICE_LEVEL_CAPACITY=2097152
-BRANCH5_PINNED_PRICE_POOL_BYTES=2456420352
-BRANCH5_PINNED_PREPARED_BOOKS=8713
-BRANCH5_PINNED_NATIVE_RANGE_COUNT=34858
-BRANCH5_PINNED_NATIVE_RANGE_BYTES=62404952064
-BRANCH5_PINNED_SAMPLE_EVERY=64
-BRANCH5_PINNED_SAMPLE_CAPACITY=8388608
-BRANCH5_PINNED_RESERVE_BYTES=17179869184
-# The exact native vector payload is 58.119140625 GiB. A canonical 64 GiB
-# admission plan leaves 5.880859375 GiB for allocator/page rounding before the
-# separately admitted 16 GiB runtime/OS reserve.
-BRANCH5_PINNED_PLANNED_BYTES=68719476736
-BRANCH5_PINNED_CAPACITY_PROFILE_NAME=nasdaq-itch-20190130-branch5-native-v1
-BRANCH5_PINNED_CAPACITY_EVIDENCE_RELATIVE=compat/branch5_native_v1/capacity-evidence-01302019.txt
-BRANCH5_PINNED_CAPACITY_EVIDENCE_SHA256=05f21a7c0db648028feb2cc006440ae5fb4431fa1f3685bc1404ddad610b4282
 
 BINARY="${DEFAULT_BINARY}"
 TRACE=""
@@ -53,10 +34,6 @@ PRICE_PAGE_CAPACITY=""
 CAPACITY_PROFILE_NAME=""
 CAPACITY_EVIDENCE_FILE=""
 CAPACITY_EVIDENCE_SHA256=""
-DEFAULT_ORDER_CAPACITY=""
-PRICE_NODE_CAPACITY=""
-PRICE_LEAF_CAPACITY=""
-PRICE_LEVEL_CAPACITY=""
 SAMPLE_CAPACITY=""
 DISCOVER_DIGEST=0
 EXPECTED_MUTATION_DIGEST=""
@@ -78,10 +55,6 @@ ARENA_DIRECT_INDEX=-1
 ARENA_DESCRIPTOR_INDEX=-1
 ARENA_PRICE_PAGES_INDEX=-1
 HOT_ARENA_POLICY=""
-BRANCH5_CAPACITY_POLICY=not_applicable
-BRANCH5_CAPACITY_PROFILE_NAME=not_applicable
-BRANCH5_CAPACITY_EVIDENCE_POLICY=not_applicable
-BRANCH5_RUNTIME_CAPACITY_MODE=not_applicable
 CAPACITY_EVIDENCE_PROVENANCE_SOURCE=""
 CAPACITY_EVIDENCE_EXPECTED_SHA256=not_applicable
 ACTIVE_COMMAND_PID=""
@@ -194,10 +167,9 @@ Options:
   --binary FILE                   Replay binary; default:
                                   build/benchmarks/astra_itch_book_replay_benchmark
   --expect-hot-arena-schema NAME  Expected binary storage schema:
-                                  redesign_v1 or branch5_native_v1. Required
-                                  with --dry-run because files are not probed;
-                                  live runs fail if the binary reports another
-                                  schema.
+                                  redesign_v1. Required with --dry-run because
+                                  files are not probed; live runs fail if the
+                                  binary reports another schema.
   --monitor-cpu N                 Housekeeping CPU for the short /proc memory
                                   monitor. Default: CPU 0, or CPU 1 when the
                                   candidate uses CPU 0.
@@ -212,16 +184,10 @@ Options:
   --capacity-profile-name NAME    Custom redesign capacity-profile name.
   --capacity-evidence-file FILE   Canonical custom capacity evidence manifest.
   --capacity-evidence-sha256 HEX  Independently approved SHA-256 of FILE.
-  --default-order-capacity N      Override branch5 per-book order capacity.
-  --price-node-capacity N         Override branch5 internal-node capacity.
-  --price-leaf-capacity N         Override branch5 leaf capacity.
-  --price-level-capacity N        Override branch5 price-level capacity.
   --sample-capacity N             Override pre-resident timed-sample capacity.
   --planned-bytes N               Optional conservative admission footprint.
                                   Must be at least the binary's storage plan;
-                                  otherwise the plan is used directly. Required
-                                  for branch5_native_v1 because per-book vector
-                                  bytes resolve only after the R/S prelude.
+                                  otherwise the plan is used directly.
   --reserve-bytes N               Required node/cgroup headroom in addition to
                                   planned bytes; default: 17179869184 (16 GiB).
   --correctness-digest            After latency runs, run one digest discovery
@@ -247,16 +213,13 @@ observation is always run in a separate process without latency gates.
 Accepted runs require an explicit supported hot-arena schema. `redesign_v1`
 requires transparent huge pages plus exact 2 MiB alignment, VMA identity,
 whole-extent huge-page backing, and requested-node residency for all eleven
-named arenas. `branch5_native_v1` instead validates its sealed native-vector
-manifest against anonymous process VMAs and aggregate NUMA placement; it never
-pretends those allocator ranges are redesign arenas. Live runs also require a
-Release CMake build. The harness exports the verified clean commit, configures
-a fresh out-of-tree benchmark-only build graph, and performs a clean-first
-target build. The supplied binary must be byte-identical to that rebuilt
-target. Trace, binary, harness, and Git state must then remain stable through
-the post-run snapshot. The named clean branch must not be detached, and --cpu
-must appear in Linux's domain-isolated CPU list; an exposed scaling governor
-must be performance.
+named arenas. Live runs also require a Release CMake build. The harness exports
+the verified clean commit, then configures a fresh out-of-tree benchmark-only build graph
+and performs a clean-first target build. The supplied binary must be
+byte-identical to that rebuilt target. Trace, binary, harness, and Git state
+must then remain stable through the post-run snapshot. The named clean branch
+must not be detached, and --cpu must appear in Linux's domain-isolated CPU
+list; an exposed scaling governor must be performance.
 USAGE
 }
 
@@ -291,71 +254,49 @@ configure_hot_arena_schema() {
   HOT_ARENA_POLICY=""
   ARENA_ALIGNMENT_BYTES=0
 
-  case "${schema}" in
-    redesign_v1)
-      ARENA_ALIGNMENT_BYTES=2097152
-      ARENA_IDS=(
-        order_direct
-        order_fallback
-        book_descriptors
-        price_roots
-        price_prepared_books
-        price_pages
-        price_page_owners
-        price_page_summaries
-        price_page_occupancy
-        price_book_summaries
-        price_book_occupancy
-      )
-      ARENA_VMA_NAMES=(
-        astra-order-direct
-        astra-order-fallback
-        astra-book-descriptors
-        astra-price-roots
-        astra-price-prepared
-        astra-price-pages
-        astra-price-owners
-        astra-price-summaries
-        astra-price-page-bitmap
-        astra-price-book-summaries
-        astra-price-book-bitmap
-      )
-      # The descriptor mapping is reported separately from the legacy
-      # mapped_array_bytes subtotal. Every other redesign_v1 arena contributes
-      # to that subtotal.
-      ARENA_MAPPED_SUBTOTAL_FLAGS=(1 1 0 1 1 1 1 1 1 1 1)
-      ARENA_DIRECT_INDEX=0
-      ARENA_DESCRIPTOR_INDEX=2
-      ARENA_PRICE_PAGES_INDEX=5
-      HOT_ARENA_POLICY=redesign_exact_v1
-      ;;
-    branch5_native_v1)
-      # Branch 5 owns allocator-backed vectors, not the redesign's eleven
-      # aligned mappings. Its exact payload spans are declared only after the
-      # trace's directory prelude prepares and seals the native book universe.
-      HOT_ARENA_POLICY=branch5_native_ranges_v1
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ "${schema}" == redesign_v1 ]] || return 1
+  ARENA_ALIGNMENT_BYTES=2097152
+  ARENA_IDS=(
+    order_direct
+    order_fallback
+    book_descriptors
+    price_roots
+    price_prepared_books
+    price_pages
+    price_page_owners
+    price_page_summaries
+    price_page_occupancy
+    price_book_summaries
+    price_book_occupancy
+  )
+  ARENA_VMA_NAMES=(
+    astra-order-direct
+    astra-order-fallback
+    astra-book-descriptors
+    astra-price-roots
+    astra-price-prepared
+    astra-price-pages
+    astra-price-owners
+    astra-price-summaries
+    astra-price-page-bitmap
+    astra-price-book-summaries
+    astra-price-book-bitmap
+  )
+  # The descriptor mapping is reported separately from the legacy
+  # mapped_array_bytes subtotal. Every other redesign_v1 arena contributes
+  # to that subtotal.
+  ARENA_MAPPED_SUBTOTAL_FLAGS=(1 1 0 1 1 1 1 1 1 1 1)
+  ARENA_DIRECT_INDEX=0
+  ARENA_DESCRIPTOR_INDEX=2
+  ARENA_PRICE_PAGES_INDEX=5
+  HOT_ARENA_POLICY=redesign_exact_v1
 
-  case "${HOT_ARENA_POLICY}" in
-    redesign_exact_v1)
-      [[ "${#ARENA_IDS[@]}" -eq 11 &&
-         "${#ARENA_VMA_NAMES[@]}" -eq "${#ARENA_IDS[@]}" &&
-         "${#ARENA_MAPPED_SUBTOTAL_FLAGS[@]}" -eq "${#ARENA_IDS[@]}" &&
-         "${ARENA_IDS[ARENA_DIRECT_INDEX]}" == order_direct &&
-         "${ARENA_IDS[ARENA_DESCRIPTOR_INDEX]}" == book_descriptors &&
-         "${ARENA_IDS[ARENA_PRICE_PAGES_INDEX]}" == price_pages ]]
-      ;;
-    branch5_native_ranges_v1)
-      [[ "${#ARENA_IDS[@]}" -eq 0 && "${#ARENA_VMA_NAMES[@]}" -eq 0 ]]
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ "${#ARENA_IDS[@]}" -eq 11 &&
+     "${#ARENA_VMA_NAMES[@]}" -eq "${#ARENA_IDS[@]}" &&
+     "${#ARENA_MAPPED_SUBTOTAL_FLAGS[@]}" -eq "${#ARENA_IDS[@]}" &&
+     "${ARENA_IDS[ARENA_DIRECT_INDEX]}" == order_direct &&
+     "${ARENA_IDS[ARENA_DESCRIPTOR_INDEX]}" == book_descriptors &&
+     "${ARENA_IDS[ARENA_PRICE_PAGES_INDEX]}" == price_pages ]]
 }
 
 hot_arena_schema_matches_expectation() {
@@ -403,63 +344,6 @@ uint_gt() {
 uint_ge() {
   [[ "$(normalize_uint "$1")" == "$(normalize_uint "$2")" ]] ||
     uint_gt "$1" "$2"
-}
-
-branch5_runtime_capacity_request_is_canonical() {
-  if [[ -z "$1" && -z "$2" && -z "$3" && -z "$4" ]]; then
-    return 0
-  fi
-  [[ -n "$1" && -n "$2" && -n "$3" && -n "$4" &&
-     "$(normalize_uint "$1")" == \
-       "${BRANCH5_PINNED_DEFAULT_ORDER_CAPACITY}" &&
-     "$(normalize_uint "$2")" == \
-       "${BRANCH5_PINNED_PRICE_NODE_CAPACITY}" &&
-     "$(normalize_uint "$3")" == \
-       "${BRANCH5_PINNED_PRICE_LEAF_CAPACITY}" &&
-     "$(normalize_uint "$4")" == \
-       "${BRANCH5_PINNED_PRICE_LEVEL_CAPACITY}" ]]
-}
-
-branch5_plan_is_canonical() {
-  [[ "$(normalize_uint "$1")" == \
-       "${BRANCH5_PINNED_DEFAULT_ORDER_CAPACITY}" &&
-     "$(normalize_uint "$2")" == \
-       "${BRANCH5_PINNED_PRICE_NODE_CAPACITY}" &&
-     "$(normalize_uint "$3")" == \
-       "${BRANCH5_PINNED_PRICE_LEAF_CAPACITY}" &&
-     "$(normalize_uint "$4")" == \
-       "${BRANCH5_PINNED_PRICE_LEVEL_CAPACITY}" &&
-     "$(normalize_uint "$5")" == \
-       "${BRANCH5_PINNED_PRICE_POOL_BYTES}" ]]
-}
-
-BRANCH5_CAPACITY_ERROR=""
-validate_branch5_capacity_extent() {
-  local prepared_books
-  local range_count
-  local range_bytes
-  local planned_bytes
-  local policy="$5"
-  BRANCH5_CAPACITY_ERROR=""
-
-  prepared_books="$(normalize_uint "$1")"
-  range_count="$(normalize_uint "$2")"
-  range_bytes="$(normalize_uint "$3")"
-  planned_bytes="$(normalize_uint "$4")"
-
-  if uint_gt "${range_bytes}" "${planned_bytes}"; then
-    BRANCH5_CAPACITY_ERROR="branch5 native payload exceeds the admitted --planned-bytes bound"
-    return 1
-  fi
-  if [[ "${policy}" == pinned_trace_canonical_v1 ]] &&
-     [[ "${prepared_books}" != "${BRANCH5_PINNED_PREPARED_BOOKS}" ||
-        "${range_count}" != "${BRANCH5_PINNED_NATIVE_RANGE_COUNT}" ||
-        "${range_bytes}" != "${BRANCH5_PINNED_NATIVE_RANGE_BYTES}" ||
-        "${planned_bytes}" != "${BRANCH5_PINNED_PLANNED_BYTES}" ]]; then
-    BRANCH5_CAPACITY_ERROR="branch5 native extent differs from the pinned full-trace capacity profile"
-    return 1
-  fi
-  return 0
 }
 
 # Add unsigned decimal strings without routing uint64 values through Bash's
@@ -741,26 +625,6 @@ while [[ $# -gt 0 ]]; do
       CAPACITY_EVIDENCE_SHA256="$2"
       shift 2
       ;;
-    --default-order-capacity)
-      need_value "$@"
-      DEFAULT_ORDER_CAPACITY="$2"
-      shift 2
-      ;;
-    --price-node-capacity)
-      need_value "$@"
-      PRICE_NODE_CAPACITY="$2"
-      shift 2
-      ;;
-    --price-leaf-capacity)
-      need_value "$@"
-      PRICE_LEAF_CAPACITY="$2"
-      shift 2
-      ;;
-    --price-level-capacity)
-      need_value "$@"
-      PRICE_LEVEL_CAPACITY="$2"
-      shift 2
-      ;;
     --sample-capacity)
       need_value "$@"
       SAMPLE_CAPACITY="$2"
@@ -815,9 +679,8 @@ done
 [[ -n "${MAX_P99_NS}" ]] || die "--max-p99-ns is required"
 [[ -n "${MAX_P999_NS}" ]] || die "--max-p99-9-ns is required"
 if [[ -n "${EXPECTED_HOT_ARENA_SCHEMA}" &&
-      "${EXPECTED_HOT_ARENA_SCHEMA}" != redesign_v1 &&
-      "${EXPECTED_HOT_ARENA_SCHEMA}" != branch5_native_v1 ]]; then
-  die "--expect-hot-arena-schema must be redesign_v1 or branch5_native_v1"
+      "${EXPECTED_HOT_ARENA_SCHEMA}" != redesign_v1 ]]; then
+  die "--expect-hot-arena-schema must be redesign_v1"
 fi
 if [[ "${DRY_RUN}" -eq 1 && -z "${EXPECTED_HOT_ARENA_SCHEMA}" ]]; then
   die "--expect-hot-arena-schema is required with --dry-run"
@@ -866,19 +729,6 @@ fi
 if [[ -n "${PRICE_PAGE_CAPACITY}" ]]; then
   require_positive_uint "${PRICE_PAGE_CAPACITY}" "--price-page-capacity"
 fi
-if [[ -n "${DEFAULT_ORDER_CAPACITY}" ]]; then
-  require_positive_uint "${DEFAULT_ORDER_CAPACITY}" \
-    "--default-order-capacity"
-fi
-if [[ -n "${PRICE_NODE_CAPACITY}" ]]; then
-  require_positive_uint "${PRICE_NODE_CAPACITY}" "--price-node-capacity"
-fi
-if [[ -n "${PRICE_LEAF_CAPACITY}" ]]; then
-  require_positive_uint "${PRICE_LEAF_CAPACITY}" "--price-leaf-capacity"
-fi
-if [[ -n "${PRICE_LEVEL_CAPACITY}" ]]; then
-  require_positive_uint "${PRICE_LEVEL_CAPACITY}" "--price-level-capacity"
-fi
 if [[ -n "${SAMPLE_CAPACITY}" ]]; then
   require_positive_uint "${SAMPLE_CAPACITY}" "--sample-capacity"
 fi
@@ -912,10 +762,6 @@ for optional_value_and_label in \
   "${DIRECT_ORDER_SLOTS}:--direct-order-slots" \
   "${FALLBACK_BUCKETS}:--fallback-buckets" \
   "${PRICE_PAGE_CAPACITY}:--price-page-capacity" \
-  "${DEFAULT_ORDER_CAPACITY}:--default-order-capacity" \
-  "${PRICE_NODE_CAPACITY}:--price-node-capacity" \
-  "${PRICE_LEAF_CAPACITY}:--price-leaf-capacity" \
-  "${PRICE_LEVEL_CAPACITY}:--price-level-capacity" \
   "${SAMPLE_CAPACITY}:--sample-capacity" \
   "${EXPECTED_MUTATION_DIGEST}:--expect-mutation-digest" \
   "${EXPECTED_SEMANTIC_MUTATION_DIGEST}:--expect-semantic-mutation-digest"; do
@@ -964,18 +810,6 @@ if [[ -n "${FALLBACK_BUCKETS}" ]]; then
 fi
 if [[ -n "${PRICE_PAGE_CAPACITY}" ]]; then
   PRICE_PAGE_CAPACITY="$(normalize_uint "${PRICE_PAGE_CAPACITY}")"
-fi
-if [[ -n "${DEFAULT_ORDER_CAPACITY}" ]]; then
-  DEFAULT_ORDER_CAPACITY="$(normalize_uint "${DEFAULT_ORDER_CAPACITY}")"
-fi
-if [[ -n "${PRICE_NODE_CAPACITY}" ]]; then
-  PRICE_NODE_CAPACITY="$(normalize_uint "${PRICE_NODE_CAPACITY}")"
-fi
-if [[ -n "${PRICE_LEAF_CAPACITY}" ]]; then
-  PRICE_LEAF_CAPACITY="$(normalize_uint "${PRICE_LEAF_CAPACITY}")"
-fi
-if [[ -n "${PRICE_LEVEL_CAPACITY}" ]]; then
-  PRICE_LEVEL_CAPACITY="$(normalize_uint "${PRICE_LEVEL_CAPACITY}")"
 fi
 if [[ -n "${SAMPLE_CAPACITY}" ]]; then
   SAMPLE_CAPACITY="$(normalize_uint "${SAMPLE_CAPACITY}")"
@@ -1050,18 +884,6 @@ build_storage_options() {
   fi
   if [[ -n "${PRICE_PAGE_CAPACITY}" ]]; then
     STORAGE_OPTIONS+=("--price-page-capacity=${PRICE_PAGE_CAPACITY}")
-  fi
-  if [[ -n "${DEFAULT_ORDER_CAPACITY}" ]]; then
-    STORAGE_OPTIONS+=("--default-order-capacity=${DEFAULT_ORDER_CAPACITY}")
-  fi
-  if [[ -n "${PRICE_NODE_CAPACITY}" ]]; then
-    STORAGE_OPTIONS+=("--price-node-capacity=${PRICE_NODE_CAPACITY}")
-  fi
-  if [[ -n "${PRICE_LEAF_CAPACITY}" ]]; then
-    STORAGE_OPTIONS+=("--price-leaf-capacity=${PRICE_LEAF_CAPACITY}")
-  fi
-  if [[ -n "${PRICE_LEVEL_CAPACITY}" ]]; then
-    STORAGE_OPTIONS+=("--price-level-capacity=${PRICE_LEVEL_CAPACITY}")
   fi
   if [[ -n "${SAMPLE_CAPACITY}" ]]; then
     STORAGE_OPTIONS+=("--sample-capacity=${SAMPLE_CAPACITY}")
@@ -1153,32 +975,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   if ! configure_hot_arena_schema "${EXPECTED_HOT_ARENA_SCHEMA}"; then
     die "unsupported expected hot-arena schema: ${EXPECTED_HOT_ARENA_SCHEMA}"
   fi
-  case "${HOT_ARENA_POLICY}" in
-    redesign_exact_v1)
-      if [[ -n "${DEFAULT_ORDER_CAPACITY}" ||
-            -n "${PRICE_NODE_CAPACITY}" ||
-            -n "${PRICE_LEAF_CAPACITY}" ||
-            -n "${PRICE_LEVEL_CAPACITY}" ]]; then
-        die "branch5 capacity options are invalid for redesign_v1"
-      fi
-      ;;
-    branch5_native_ranges_v1)
-      if [[ -n "${DIRECT_ORDER_SLOTS}" ||
-            -n "${FALLBACK_BUCKETS}" ||
-            -n "${PRICE_PAGE_CAPACITY}" ||
-            -n "${CAPACITY_PROFILE_NAME}" ]]; then
-        die "redesign capacity options are invalid for branch5_native_v1"
-      fi
-      if ! branch5_runtime_capacity_request_is_canonical \
-           "${DEFAULT_ORDER_CAPACITY}" "${PRICE_NODE_CAPACITY}" \
-           "${PRICE_LEAF_CAPACITY}" "${PRICE_LEVEL_CAPACITY}"; then
-        die "branch5 capacity flags must be omitted together or all equal the canonical pinned values"
-      fi
-      if [[ -z "${PLANNED_BYTES_OVERRIDE}" ]]; then
-        die "branch5_native_v1 requires --planned-bytes because per-book bytes resolve only after the R/S prelude"
-      fi
-      ;;
-  esac
   echo "dry_run=1 linux_preflight=skipped filesystem_checks=skipped"
   echo "expected_hot_arena_schema=${EXPECTED_HOT_ARENA_SCHEMA} schema_probe=skipped"
   echo "output_dir=${OUTPUT_DIR}"
@@ -1198,11 +994,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
       "--max-p99-ns=${MAX_P99_NS}"
       "--max-p99-9-ns=${MAX_P999_NS}"
     )
-    if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-      command+=(
-        "--native-range-manifest=${OUTPUT_DIR}/latency-${run_id}.native-ranges.txt"
-      )
-    fi
     command+=(
       "--start-gate-file=${OUTPUT_DIR}/latency-${run_id}.start-gate"
       "--start-gate-timeout-ms=600000"
@@ -1213,11 +1004,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   if [[ "${DISCOVER_DIGEST}" -eq 1 ]]; then
     echo "correctness_discovery command="
     command=("${BASE_COMMAND[@]}" --mutation-digest)
-    if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-      command+=(
-        "--native-range-manifest=${OUTPUT_DIR}/correctness-discovery.native-ranges.txt"
-      )
-    fi
     command+=(
       "--start-gate-file=${OUTPUT_DIR}/correctness-discovery.start-gate"
       --start-gate-timeout-ms=600000
@@ -1229,11 +1015,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
       '--expect-mutation-digest=<digest-from-discovery>' \
       '--expect-semantic-mutation-digest=<semantic-digest-from-discovery>' \
     )
-    if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-      command+=(
-        "--native-range-manifest=${OUTPUT_DIR}/correctness-verification.native-ranges.txt"
-      )
-    fi
     command+=(
       "--start-gate-file=${OUTPUT_DIR}/correctness-verification.start-gate"
       --start-gate-timeout-ms=600000
@@ -1248,11 +1029,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     fi
     if [[ -n "${EXPECTED_SEMANTIC_MUTATION_DIGEST}" ]]; then
       command+=("--expect-semantic-mutation-digest=${EXPECTED_SEMANTIC_MUTATION_DIGEST}")
-    fi
-    if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-      command+=(
-        "--native-range-manifest=${OUTPUT_DIR}/correctness-verification.native-ranges.txt"
-      )
     fi
     command+=(
       "--start-gate-file=${OUTPUT_DIR}/correctness-verification.start-gate"
@@ -1269,11 +1045,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
       --
       "${BASE_COMMAND[@]}"
     )
-    if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-      command+=(
-        "--native-range-manifest=${OUTPUT_DIR}/hardware-counters.native-ranges.txt"
-      )
-    fi
     print_command "${command[@]}"
   else
     echo "hardware_counters=explicitly_skipped"
@@ -1423,7 +1194,7 @@ capture_file_state() {
   return 0
 }
 
-CAPACITY_EVIDENCE_POLICY=not_applicable_branch5_or_builtin
+CAPACITY_EVIDENCE_POLICY=not_applicable_builtin
 CAPACITY_EVIDENCE_SHA256_BEFORE=not_applicable
 CAPACITY_EVIDENCE_STAT_BEFORE=not_applicable
 CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE=not_applicable
@@ -1574,74 +1345,6 @@ fi
 if ! hot_arena_schema_matches_expectation \
      "${PROBED_HOT_ARENA_SCHEMA}" "${EXPECTED_HOT_ARENA_SCHEMA}"; then
   preflight_fail "binary hot-arena schema ${PROBED_HOT_ARENA_SCHEMA} differs from --expect-hot-arena-schema=${EXPECTED_HOT_ARENA_SCHEMA}"
-fi
-if [[ "${PROBED_HOT_ARENA_SCHEMA}" == branch5_native_v1 ]]; then
-  if ! branch5_runtime_capacity_request_is_canonical \
-       "${DEFAULT_ORDER_CAPACITY}" "${PRICE_NODE_CAPACITY}" \
-       "${PRICE_LEAF_CAPACITY}" "${PRICE_LEVEL_CAPACITY}"; then
-    preflight_fail "branch5 capacity flags must be omitted together or all equal the canonical pinned values"
-  fi
-  if [[ -n "${DEFAULT_ORDER_CAPACITY}" ]]; then
-    BRANCH5_RUNTIME_CAPACITY_MODE=canonical_explicit_v1
-  else
-    BRANCH5_RUNTIME_CAPACITY_MODE=binary_defaults_v1
-  fi
-  if [[ "${TRACE_SHA256_BEFORE}" == "${BRANCH5_PINNED_TRACE_SHA256}" ]]; then
-    BRANCH5_CAPACITY_POLICY=pinned_trace_canonical_v1
-    BRANCH5_CAPACITY_PROFILE_NAME="${BRANCH5_PINNED_CAPACITY_PROFILE_NAME}"
-    BRANCH5_CAPACITY_EVIDENCE_POLICY=reviewed_manifest_sha256_v1
-    if [[ "${BRANCH5_RUNTIME_CAPACITY_MODE}" != canonical_explicit_v1 ]]; then
-      preflight_fail "pinned branch5 trace requires all four canonical capacity flags explicitly"
-    fi
-    if [[ "${PLANNED_BYTES_OVERRIDE}" != \
-          "${BRANCH5_PINNED_PLANNED_BYTES}" ]]; then
-      preflight_fail "pinned branch5 trace requires --planned-bytes=${BRANCH5_PINNED_PLANNED_BYTES}"
-    fi
-    [[ "${RESERVE_BYTES}" == "${BRANCH5_PINNED_RESERVE_BYTES}" ]] ||
-      preflight_fail "pinned branch5 trace requires --reserve-bytes=${BRANCH5_PINNED_RESERVE_BYTES}"
-    [[ "${SAMPLE_EVERY}" == "${BRANCH5_PINNED_SAMPLE_EVERY}" ]] ||
-      preflight_fail "pinned branch5 trace requires --sample-every=${BRANCH5_PINNED_SAMPLE_EVERY}"
-    [[ "${SAMPLE_CAPACITY}" == "${BRANCH5_PINNED_SAMPLE_CAPACITY}" ]] ||
-      preflight_fail "pinned branch5 trace requires --sample-capacity=${BRANCH5_PINNED_SAMPLE_CAPACITY}"
-    [[ -z "${CAPACITY_EVIDENCE_FILE}" ]] ||
-      preflight_fail "branch5 native acceptance does not accept a redesign capacity manifest"
-    CAPACITY_EVIDENCE_PROVENANCE_SOURCE="$(
-      readlink -f -- \
-        "${ROOT_DIR}/${BRANCH5_PINNED_CAPACITY_EVIDENCE_RELATIVE}"
-    )" || preflight_fail "cannot resolve reviewed branch5 capacity evidence"
-    [[ -r "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" &&
-       -f "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" ]] ||
-      preflight_fail "reviewed branch5 capacity evidence is not a readable file"
-    CAPACITY_EVIDENCE_EXPECTED_SHA256="${BRANCH5_PINNED_CAPACITY_EVIDENCE_SHA256}"
-    if ! capture_file_state "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
-         "${PROVENANCE_DIR}/capacity-evidence-source-before.state"; then
-      preflight_fail "${FILE_STATE_ERROR}"
-    fi
-    CAPACITY_EVIDENCE_SHA256_BEFORE="${FILE_STATE_SHA256}"
-    CAPACITY_EVIDENCE_STAT_BEFORE="${FILE_STATE_STAT}"
-    [[ "${CAPACITY_EVIDENCE_SHA256_BEFORE}" == \
-       "${CAPACITY_EVIDENCE_EXPECTED_SHA256}" ]] ||
-      preflight_fail "reviewed branch5 capacity evidence hash differs"
-    CAPACITY_EVIDENCE_ARCHIVE="${PROVENANCE_DIR}/capacity-evidence-manifest.txt"
-    if ! cp --preserve=mode,timestamps -- \
-         "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
-         "${CAPACITY_EVIDENCE_ARCHIVE}"; then
-      preflight_fail "cannot archive reviewed branch5 capacity evidence"
-    fi
-    if ! capture_file_state "${CAPACITY_EVIDENCE_ARCHIVE}" \
-         "${PROVENANCE_DIR}/capacity-evidence-archive-before.state"; then
-      preflight_fail "${FILE_STATE_ERROR}"
-    fi
-    CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE="${FILE_STATE_SHA256}"
-    CAPACITY_EVIDENCE_ARCHIVE_STAT_BEFORE="${FILE_STATE_STAT}"
-    [[ "${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}" == \
-       "${CAPACITY_EVIDENCE_EXPECTED_SHA256}" ]] ||
-      preflight_fail "archived branch5 capacity evidence differs from reviewed source"
-  else
-    BRANCH5_CAPACITY_POLICY=default_binary_unbound_trace_v1
-    BRANCH5_CAPACITY_PROFILE_NAME=branch5-default-binary-v1
-    BRANCH5_CAPACITY_EVIDENCE_POLICY=unbound_trace_v1
-  fi
 fi
 write_command_file "${HOT_PATH_VERIFIER_COMMAND_FILE}" \
   "${HOT_PATH_VERIFIER_ARCHIVE}" --schema "${PROBED_HOT_ARENA_SCHEMA}" \
@@ -1823,18 +1526,6 @@ else
 fi
 [[ "${GIT_DIRTY}" -eq 0 ]] ||
   preflight_fail "live acceptance requires a clean Git worktree and index"
-if [[ "${PROBED_HOT_ARENA_SCHEMA}" == branch5_native_v1 ]]; then
-  BRANCH5_PINNED_COMMIT=324d81a15ee52cc72f68873a1ced122923406df2
-  BRANCH5_COMPATIBILITY_TREE=492938730e6db91e84bdb1f8e25152536e81dbc0
-  [[ "${GIT_PARENT_BEFORE}" == "${BRANCH5_PINNED_COMMIT}" ]] ||
-    preflight_fail "branch5 compatibility commit is not directly based on ${BRANCH5_PINNED_COMMIT}"
-  [[ "$(git -C "${SOURCE_ROOT_CANONICAL}" rev-list --count \
-       "${BRANCH5_PINNED_COMMIT}..${GIT_COMMIT_BEFORE}")" == 1 ]] ||
-    preflight_fail "branch5 baseline must be exactly one compatibility commit above the pinned implementation"
-  [[ "${GIT_TREE_BEFORE}" == "${BRANCH5_COMPATIBILITY_TREE}" ]] ||
-    preflight_fail "branch5 compatibility tree differs from the reviewed native port"
-fi
-
 cache_value() {
   local key="$1"
   awk -F= -v prefix="${key}:" 'index($1, prefix) == 1 {
@@ -2419,28 +2110,6 @@ if [[ "${HOT_ARENA_POLICY}" == redesign_exact_v1 ]]; then
       preflight_fail "built-in acceptance capacity profile differs from the pinned trace"
     CAPACITY_EVIDENCE_POLICY=pinned_trace_builtin_v1
   fi
-else
-  [[ -z "${CAPACITY_EVIDENCE_FILE}" ]] ||
-    preflight_fail "branch5 native acceptance does not accept a redesign capacity manifest"
-  CAPACITY_EVIDENCE_POLICY=not_applicable_branch5_native_v1
-fi
-if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 &&
-      -z "${PLANNED_BYTES_OVERRIDE}" ]]; then
-  preflight_fail "branch5 native per-book capacity is unresolved before the R/S prelude; supply a conservative --planned-bytes admission bound"
-fi
-if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]] &&
-   ! command -v python3 >/dev/null 2>&1; then
-  preflight_fail "python3 is required to validate branch5 native-range manifests"
-fi
-if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-  for required_flag in --native-range-manifest --default-order-capacity \
-                       --price-node-capacity --price-leaf-capacity \
-                       --price-level-capacity; do
-    case "${benchmark_help}" in
-      *"${required_flag}"*) ;;
-      *) preflight_fail "branch5 replay binary help is missing ${required_flag}" ;;
-    esac
-  done
 fi
 
 for plan_key in system_page_bytes prefault; do
@@ -2475,11 +2144,6 @@ PLAN_DESCRIPTOR_BYTES=""
 PLAN_DIRECT_ORDER_SLOTS=""
 PLAN_FALLBACK_BUCKETS=""
 PLAN_PRICE_PAGE_CAPACITY=""
-PLAN_BRANCH5_PRICE_POOL_BYTES=()
-PLAN_DEFAULT_ORDER_CAPACITY=""
-PLAN_PRICE_INTERNAL_NODE_CAPACITY=""
-PLAN_PRICE_LEAF_CAPACITY=""
-PLAN_PRICE_LEVEL_CAPACITY=""
 
 case "${HOT_ARENA_POLICY}" in
   redesign_exact_v1)
@@ -2561,62 +2225,6 @@ case "${HOT_ARENA_POLICY}" in
     read_record_field "${PLAN_STDOUT}" itch_book_replay_storage_plan \
       price_page_capacity
     PLAN_PRICE_PAGE_CAPACITY="$(normalize_uint "${RECORD_FIELD_VALUE}")"
-    ;;
-  branch5_native_ranges_v1)
-    BRANCH5_PRICE_PLAN_KEYS=(
-      price_nodes_bytes price_leaves_bytes price_levels_bytes
-      price_free_nodes_bytes price_free_leaves_bytes price_free_levels_bytes
-    )
-    for plan_key in "${BRANCH5_PRICE_PLAN_KEYS[@]}" \
-                    planned_price_pool_bytes default_order_capacity \
-                    price_internal_node_capacity price_leaf_capacity \
-                    price_level_capacity; do
-      if ! read_record_field "${PLAN_STDOUT}" itch_book_replay_storage_plan \
-           "${plan_key}" || ! is_uint "${RECORD_FIELD_VALUE}"; then
-        preflight_fail "branch5 storage plan lacks one numeric ${plan_key} field"
-      fi
-    done
-    branch5_price_sum=0
-    for plan_key in "${BRANCH5_PRICE_PLAN_KEYS[@]}"; do
-      read_record_field "${PLAN_STDOUT}" itch_book_replay_storage_plan \
-        "${plan_key}"
-      plan_value="$(normalize_uint "${RECORD_FIELD_VALUE}")"
-      if [[ "${plan_value}" == 0 ]] ||
-         uint_gt "${plan_value}" 9223372036854775807; then
-        preflight_fail "branch5 storage-plan ${plan_key} is invalid"
-      fi
-      PLAN_BRANCH5_PRICE_POOL_BYTES+=("${plan_value}")
-      branch5_price_sum="$(uint_add "${branch5_price_sum}" "${plan_value}")"
-    done
-    read_record_field "${PLAN_STDOUT}" itch_book_replay_storage_plan \
-      planned_price_pool_bytes
-    DERIVED_PLANNED_BYTES="$(normalize_uint "${RECORD_FIELD_VALUE}")"
-    if [[ "${branch5_price_sum}" != "${DERIVED_PLANNED_BYTES}" ]]; then
-      preflight_fail "branch5 price-pool plan differs from its six vector byte sizes"
-    fi
-    for plan_key in default_order_capacity price_internal_node_capacity \
-                    price_leaf_capacity price_level_capacity; do
-      read_record_field "${PLAN_STDOUT}" itch_book_replay_storage_plan \
-        "${plan_key}"
-      plan_value="$(normalize_uint "${RECORD_FIELD_VALUE}")"
-      [[ "${plan_value}" != 0 ]] ||
-        preflight_fail "branch5 storage-plan ${plan_key} is zero"
-      case "${plan_key}" in
-        default_order_capacity) PLAN_DEFAULT_ORDER_CAPACITY="${plan_value}" ;;
-        price_internal_node_capacity)
-          PLAN_PRICE_INTERNAL_NODE_CAPACITY="${plan_value}" ;;
-        price_leaf_capacity) PLAN_PRICE_LEAF_CAPACITY="${plan_value}" ;;
-        price_level_capacity) PLAN_PRICE_LEVEL_CAPACITY="${plan_value}" ;;
-      esac
-    done
-    if ! branch5_plan_is_canonical \
-         "${PLAN_DEFAULT_ORDER_CAPACITY}" \
-         "${PLAN_PRICE_INTERNAL_NODE_CAPACITY}" \
-         "${PLAN_PRICE_LEAF_CAPACITY}" \
-         "${PLAN_PRICE_LEVEL_CAPACITY}" \
-         "${DERIVED_PLANNED_BYTES}"; then
-      preflight_fail "branch5 storage plan differs from the pinned native capacities"
-    fi
     ;;
 esac
 
@@ -2920,17 +2528,7 @@ CPU_MODEL_NAME="$(cpuinfo_value 'model name' 2>/dev/null || true)"
   echo "node_mem_total_bytes=${NODE_MEM_TOTAL_BYTES}"
   echo "node_mem_free_bytes=${NODE_MEM_FREE_BYTES}"
   echo "derived_planned_storage_bytes=${DERIVED_PLANNED_BYTES}"
-  if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-    echo "admission_basis=explicit_override_plus_reserve"
-    echo "branch5_capacity_policy=${BRANCH5_CAPACITY_POLICY}"
-    echo "branch5_capacity_profile_name=${BRANCH5_CAPACITY_PROFILE_NAME}"
-    echo "branch5_capacity_evidence_policy=${BRANCH5_CAPACITY_EVIDENCE_POLICY}"
-    echo "branch5_runtime_capacity_mode=${BRANCH5_RUNTIME_CAPACITY_MODE}"
-    echo "branch5_plan_scope=shared_price_pool_only"
-    echo "branch5_per_book_bytes_resolved_at_ready=1"
-  else
-    echo "admission_basis=complete_redesign_arena_plan_plus_reserve"
-  fi
+  echo "admission_basis=complete_redesign_arena_plan_plus_reserve"
   echo "planned_bytes=${PLANNED_BYTES}"
   echo "reserve_bytes=${RESERVE_BYTES}"
   echo "required_bytes=${REQUIRED_BYTES}"
@@ -2962,16 +2560,6 @@ CPU_MODEL_NAME="$(cpuinfo_value 'model name' 2>/dev/null || true)"
       echo "plan_direct_order_slots=${PLAN_DIRECT_ORDER_SLOTS}"
       echo "plan_fallback_buckets=${PLAN_FALLBACK_BUCKETS}"
       echo "plan_price_page_capacity=${PLAN_PRICE_PAGE_CAPACITY}"
-      ;;
-    branch5_native_ranges_v1)
-      echo "plan_price_pool_bytes=${DERIVED_PLANNED_BYTES}"
-      for arena_index in "${!BRANCH5_PRICE_PLAN_KEYS[@]}"; do
-        echo "plan_${BRANCH5_PRICE_PLAN_KEYS[arena_index]}=${PLAN_BRANCH5_PRICE_POOL_BYTES[arena_index]}"
-      done
-      echo "plan_default_order_capacity=${PLAN_DEFAULT_ORDER_CAPACITY}"
-      echo "plan_price_internal_node_capacity=${PLAN_PRICE_INTERNAL_NODE_CAPACITY}"
-      echo "plan_price_leaf_capacity=${PLAN_PRICE_LEAF_CAPACITY}"
-      echo "plan_price_level_capacity=${PLAN_PRICE_LEVEL_CAPACITY}"
       ;;
   esac
   echo "sample_capacity_override=${SAMPLE_CAPACITY:-binary-default}"
@@ -3499,326 +3087,6 @@ read_ready_arena_fields() {
   return 0
 }
 
-cpp_quoted_value() {
-  local value="$1"
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  printf '"%s"' "${value}"
-}
-
-record_has_exact_quoted_field() {
-  local source="$1"
-  local record_name="$2"
-  local key="$3"
-  local expected="$4"
-  local line=""
-  local token=""
-  line="$(awk -v record="${record_name}" '
-    $1 == record { print; ++lines }
-    END { if (lines != 1) exit 1 }
-  ' "${source}")" || return 1
-  token="${key}=$(cpp_quoted_value "${expected}")"
-  [[ " ${line} " == *" ${token} "* ]]
-}
-
-BRANCH5_NATIVE_PREPARED_BOOKS=""
-BRANCH5_NATIVE_RANGE_COUNT=""
-BRANCH5_NATIVE_RANGE_BYTES=""
-BRANCH5_NATIVE_RANGE_DIGEST=""
-BRANCH5_NATIVE_ERROR=""
-read_branch5_native_record() {
-  local source="$1"
-  local record_name="$2"
-  local expected_manifest="$3"
-  local key=""
-  local value=""
-  BRANCH5_NATIVE_ERROR=""
-
-  if ! read_record_field "${source}" "${record_name}" hot_arena_schema ||
-     [[ "${RECORD_FIELD_VALUE}" != branch5_native_v1 ]]; then
-    BRANCH5_NATIVE_ERROR="${record_name} lacks branch5_native_v1 schema"
-    return 1
-  fi
-  if ! read_record_field "${source}" "${record_name}" \
-       native_range_manifest_schema ||
-     [[ "${RECORD_FIELD_VALUE}" != branch5_native_ranges_v1 ]]; then
-    BRANCH5_NATIVE_ERROR="${record_name} native manifest schema is invalid"
-    return 1
-  fi
-  if ! record_has_exact_quoted_field "${source}" "${record_name}" \
-       native_range_manifest "${expected_manifest}"; then
-    BRANCH5_NATIVE_ERROR="${record_name} native manifest path is missing or unexpected"
-    return 1
-  fi
-
-  for key in prefault native_prefault_complete book_universe_sealed \
-             prepared_books native_range_count native_range_bytes \
-             native_range_digest; do
-    if ! read_record_field "${source}" "${record_name}" "${key}" ||
-       ! is_uint "${RECORD_FIELD_VALUE}"; then
-      BRANCH5_NATIVE_ERROR="${record_name} lacks one numeric ${key} field"
-      return 1
-    fi
-    value="$(normalize_uint "${RECORD_FIELD_VALUE}")"
-    case "${key}" in
-      prefault|native_prefault_complete|book_universe_sealed)
-        if [[ "${value}" != 1 ]]; then
-          BRANCH5_NATIVE_ERROR="${record_name} reports incomplete native preparation"
-          return 1
-        fi
-        ;;
-      prepared_books) BRANCH5_NATIVE_PREPARED_BOOKS="${value}" ;;
-      native_range_count) BRANCH5_NATIVE_RANGE_COUNT="${value}" ;;
-      native_range_bytes) BRANCH5_NATIVE_RANGE_BYTES="${value}" ;;
-      native_range_digest) BRANCH5_NATIVE_RANGE_DIGEST="${value}" ;;
-    esac
-  done
-  if [[ "${BRANCH5_NATIVE_PREPARED_BOOKS}" == 0 ||
-        "${BRANCH5_NATIVE_RANGE_BYTES}" == 0 ]] ||
-     uint_gt "${BRANCH5_NATIVE_PREPARED_BOOKS}" 65535 ||
-     uint_gt "${BRANCH5_NATIVE_RANGE_COUNT}" 262146 ||
-     uint_gt "${BRANCH5_NATIVE_RANGE_BYTES}" "${UINT64_MAX_VALUE}" ||
-     uint_gt "${BRANCH5_NATIVE_RANGE_DIGEST}" "${UINT64_MAX_VALUE}"; then
-    BRANCH5_NATIVE_ERROR="${record_name} native range totals are invalid"
-    return 1
-  fi
-  local expected_count=$((6 + 4 * BRANCH5_NATIVE_PREPARED_BOOKS))
-  if [[ "${BRANCH5_NATIVE_RANGE_COUNT}" != "${expected_count}" ]]; then
-    BRANCH5_NATIVE_ERROR="${record_name} native range count does not match prepared books"
-    return 1
-  fi
-  if ! validate_branch5_capacity_extent \
-       "${BRANCH5_NATIVE_PREPARED_BOOKS}" \
-       "${BRANCH5_NATIVE_RANGE_COUNT}" \
-       "${BRANCH5_NATIVE_RANGE_BYTES}" \
-       "${PLANNED_BYTES}" "${BRANCH5_CAPACITY_POLICY}"; then
-    BRANCH5_NATIVE_ERROR="${record_name} ${BRANCH5_CAPACITY_ERROR}"
-    return 1
-  fi
-  return 0
-}
-
-validate_branch5_native_manifest() {
-  local manifest="$1"
-  local smaps="$2"
-  local prepared_books="$3"
-  local expected_count="$4"
-  local expected_bytes="$5"
-  local expected_digest="$6"
-  shift 6
-  local expected_global_sizes=("$@")
-  local validation_output=""
-  BRANCH5_NATIVE_ERROR=""
-
-  if [[ ! -f "${manifest}" || -L "${manifest}" ]]; then
-    BRANCH5_NATIVE_ERROR="branch5 native-range manifest is absent or not a regular file"
-    return 1
-  fi
-  if [[ "${#expected_global_sizes[@]}" -ne 6 ]]; then
-    BRANCH5_NATIVE_ERROR="branch5 native validator lacks six planned global sizes"
-    return 1
-  fi
-  if ! validation_output="$(python3 - "${manifest}" "${smaps}" \
-      "${prepared_books}" "${expected_count}" "${expected_bytes}" \
-      "${expected_digest}" "${BRANCH5_CAPACITY_POLICY}" \
-      "${expected_global_sizes[@]}" 2>&1 <<'PY'
-import bisect
-import collections
-import re
-import struct
-import sys
-from pathlib import Path
-
-manifest_path = Path(sys.argv[1])
-smaps_argument = sys.argv[2]
-expected_prepared, expected_count, expected_bytes, expected_digest = (
-    int(value, 10) for value in sys.argv[3:7]
-)
-capacity_policy = sys.argv[7]
-expected_global_sizes = tuple(int(value, 10) for value in sys.argv[8:14])
-u64_max = (1 << 64) - 1
-global_kinds = (
-    "price_nodes", "price_leaves", "price_levels",
-    "price_free_nodes", "price_free_leaves", "price_free_levels",
-)
-book_kinds = (
-    "order_records", "order_free_indices", "order_occupancy",
-    "order_ref_entries",
-)
-allowed_order_capacities = (65536, 262144, 1048576, 4194304)
-active_locates = {85, 617, 1718, 5430, 5823, 6398}
-hot_locates = {14, 331, 381, 3419, 3420, 5217}
-ultra_hot_locates = {4118, 5628, 6449, 7291, 7804}
-
-data = manifest_path.read_bytes()
-if not data or not data.endswith(b"\n") or b"\r" in data:
-    raise ValueError("manifest must be nonempty LF-terminated ASCII")
-text = data.decode("ascii")
-lines = text[:-1].split("\n")
-header_pattern = re.compile(
-    r"branch5_native_ranges schema=branch5_native_ranges_v1 "
-    r"count=([0-9]+) bytes=([0-9]+) digest=([0-9]+)\Z"
-)
-row_pattern = re.compile(
-    r"branch5_native_range ordinal=([0-9]+) kind=([a-z_]+) "
-    r"locate=([0-9]+) base=([0-9]+) bytes=([0-9]+)\Z"
-)
-header = header_pattern.fullmatch(lines[0])
-if header is None:
-    raise ValueError("manifest header grammar/schema is invalid")
-header_count, header_bytes, header_digest = (
-    int(value, 10) for value in header.groups()
-)
-rows = []
-for index, line in enumerate(lines[1:]):
-    match = row_pattern.fullmatch(line)
-    if match is None:
-        raise ValueError(f"manifest row {index} grammar is invalid")
-    ordinal, kind, locate, base, size = match.groups()
-    ordinal, locate, base, size = map(int, (ordinal, locate, base, size))
-    if ordinal != index:
-        raise ValueError("manifest ordinals are not contiguous from zero")
-    if not 0 <= locate <= 65535:
-        raise ValueError("manifest locate exceeds the ITCH uint16 domain")
-    if not 0 < base <= u64_max or not 0 < size <= u64_max:
-        raise ValueError("manifest contains a zero/out-of-range span")
-    if base + size > u64_max:
-        raise ValueError("manifest span overflows uint64")
-    rows.append((kind, locate, base, size))
-
-if header_count != len(rows) or header_count != expected_count:
-    raise ValueError("manifest count differs from header/ready marker")
-if expected_count != 6 + 4 * expected_prepared:
-    raise ValueError("manifest count differs from prepared-book count")
-if tuple((kind, locate) for kind, locate, _, _ in rows[:6]) != tuple(
-    (kind, 0) for kind in global_kinds
-):
-    raise ValueError("manifest global range order is invalid")
-if tuple(row[3] for row in rows[:6]) != expected_global_sizes:
-    raise ValueError("manifest global range sizes differ from storage plan")
-
-prepared_locates = []
-order_capacities = []
-for start in range(6, len(rows), 4):
-    group = rows[start:start + 4]
-    locates = {row[1] for row in group}
-    if len(group) != 4 or len(locates) != 1:
-        raise ValueError("manifest prepared-book range group is incomplete")
-    locate = next(iter(locates))
-    if locate == 0 or tuple(row[0] for row in group) != book_kinds:
-        raise ValueError("manifest prepared-book kind/locate order is invalid")
-    order_sizes = tuple(row[3] for row in group)
-    if order_sizes[0] % 32:
-        raise ValueError("manifest order-record range is not capacity aligned")
-    order_capacity = order_sizes[0] // 32
-    expected_order_sizes = (
-        32 * order_capacity,
-        4 * order_capacity,
-        order_capacity // 8,
-        64 * order_capacity,
-    )
-    if (order_capacity not in allowed_order_capacities or
-            order_sizes != expected_order_sizes):
-        raise ValueError(
-            "manifest per-book ranges differ from a canonical order tier"
-        )
-    prepared_locates.append(locate)
-    order_capacities.append(order_capacity)
-if len(prepared_locates) != expected_prepared or any(
-    left >= right for left, right in zip(prepared_locates, prepared_locates[1:])
-):
-    raise ValueError("manifest prepared locates are not strictly ascending")
-if capacity_policy == "pinned_trace_canonical_v1":
-    if prepared_locates != list(range(1, 8714)):
-        raise ValueError(
-            "manifest prepared locates differ from the pinned full-trace universe"
-        )
-    for locate, order_capacity in zip(prepared_locates, order_capacities):
-        expected_capacity = (
-            4194304 if locate in ultra_hot_locates else
-            1048576 if locate in hot_locates else
-            262144 if locate in active_locates else
-            65536
-        )
-        if order_capacity != expected_capacity:
-            raise ValueError(
-                "manifest order tier differs from the pinned trace directory"
-            )
-    if collections.Counter(order_capacities) != {
-        65536: 8696,
-        262144: 6,
-        1048576: 6,
-        4194304: 5,
-    }:
-        raise ValueError(
-            "manifest order-tier counts differ from the pinned capacity evidence"
-        )
-
-total_bytes = sum(row[3] for row in rows)
-if total_bytes > u64_max or total_bytes != header_bytes or total_bytes != expected_bytes:
-    raise ValueError("manifest byte total differs from header/ready marker")
-ordered_spans = sorted((base, base + size, kind, locate)
-                       for kind, locate, base, size in rows)
-if any(left[1] > right[0]
-       for left, right in zip(ordered_spans, ordered_spans[1:])):
-    raise ValueError("manifest native payload spans overlap")
-
-fnv = 14695981039346656037
-prime = 1099511628211
-def update(payload):
-    global fnv
-    for byte in payload:
-        fnv ^= byte
-        fnv = (fnv * prime) & u64_max
-
-update(b"branch5_native_ranges_v1")
-for kind, locate, base, size in rows:
-    encoded_kind = kind.encode("ascii")
-    update(struct.pack("<Q", len(encoded_kind)))
-    update(encoded_kind)
-    update(struct.pack("<QQQ", locate, base, size))
-if fnv != header_digest or fnv != expected_digest:
-    raise ValueError("manifest digest differs from content/header/ready marker")
-
-if smaps_argument != "-":
-    header_re = re.compile(
-        r"^([0-9a-fA-F]+)-([0-9a-fA-F]+)"
-        r"\s+\S+\s+\S+\s+\S+\s+\S+(?:\s+(.*))?$"
-    )
-    anonymous = []
-    for line in Path(smaps_argument).read_text(errors="strict").splitlines():
-        match = header_re.match(line)
-        if match is None:
-            continue
-        start, end = int(match.group(1), 16), int(match.group(2), 16)
-        pathname = (match.group(3) or "").strip()
-        if (not pathname or pathname == "[heap]" or
-                pathname.startswith("[anon:")):
-            anonymous.append((start, end))
-    anonymous.sort()
-    merged = []
-    for start, end in anonymous:
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    merged_starts = [start for start, _ in merged]
-    for kind, locate, base, size in rows:
-        end = base + size
-        mapping_index = bisect.bisect_right(merged_starts, base) - 1
-        if (mapping_index < 0 or
-                end > merged[mapping_index][1]):
-            raise ValueError(
-                f"native span {kind}/{locate} is not contained in anonymous VMAs"
-            )
-PY
-)"; then
-    BRANCH5_NATIVE_ERROR="branch5 native manifest validation failed: ${validation_output}"
-    return 1
-  fi
-  return 0
-}
-
 MEMORY_EVIDENCE_ERROR=""
 validate_memory_snapshot() {
   local artifact_prefix="$1"
@@ -3838,7 +3106,6 @@ validate_memory_snapshot() {
   local arena_index=""
   local arena_id=""
   local arena_label=""
-  local native_manifest="${artifact_prefix}.native-ranges.txt"
   local resident_minimum_bytes="${DERIVED_PLANNED_BYTES}"
 
   swap_kb="$(read_kb_field "${smaps_file}" Swap)" || {
@@ -3873,22 +3140,6 @@ validate_memory_snapshot() {
           return 1
         fi
       done
-      ;;
-    branch5_native_ranges_v1)
-      if ! read_branch5_native_record "${stdout_file}" \
-           itch_book_replay_ready "${native_manifest}"; then
-        MEMORY_EVIDENCE_ERROR="${BRANCH5_NATIVE_ERROR}"
-        return 1
-      fi
-      if ! validate_branch5_native_manifest "${native_manifest}" \
-           "${full_smaps_file}" "${BRANCH5_NATIVE_PREPARED_BOOKS}" \
-           "${BRANCH5_NATIVE_RANGE_COUNT}" "${BRANCH5_NATIVE_RANGE_BYTES}" \
-           "${BRANCH5_NATIVE_RANGE_DIGEST}" \
-           "${PLAN_BRANCH5_PRICE_POOL_BYTES[@]}"; then
-        MEMORY_EVIDENCE_ERROR="${BRANCH5_NATIVE_ERROR}"
-        return 1
-      fi
-      resident_minimum_bytes="${BRANCH5_NATIVE_RANGE_BYTES}"
       ;;
     *)
       MEMORY_EVIDENCE_ERROR="unsupported hot-arena validation policy"
@@ -4057,15 +3308,8 @@ run_and_capture() {
   shift 4
   local command=("$@")
   local gate_file="${artifact_prefix}.start-gate"
-  local native_manifest="${artifact_prefix}.native-ranges.txt"
   if [[ -e "${gate_file}" ]]; then
     die "start gate path already exists: ${gate_file}"
-  fi
-  if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-    if [[ -e "${native_manifest}" || -L "${native_manifest}" ]]; then
-      die "native-range manifest path already exists: ${native_manifest}"
-    fi
-    command+=("--native-range-manifest=${native_manifest}")
   fi
   command+=("--start-gate-file=${gate_file}"
             "--start-gate-timeout-ms=600000")
@@ -4257,18 +3501,6 @@ validate_common_output() {
         fi
       done
       ;;
-    branch5_native_ranges_v1)
-      for key in native_prefault_complete book_universe_sealed \
-                 prepared_books native_range_count native_range_bytes \
-                 native_range_digest price_internal_node_exhaustions \
-                 price_leaf_exhaustions price_level_exhaustions; do
-        if ! read_main_field "${source}" "${key}" ||
-           ! is_uint "${FIELD_VALUE}"; then
-          VALIDATION_ERROR="missing or nonnumeric branch5 ${key} field"
-          return 1
-        fi
-      done
-      ;;
   esac
 
   local ready_storage_bytes=""
@@ -4387,38 +3619,6 @@ validate_common_output() {
             "${ready_price_pages_mapped_bytes}" != \
             "${READY_ARENA_MAPPED_BYTES[ARENA_PRICE_PAGES_INDEX]}" ]]; then
         VALIDATION_ERROR="price-page ready fields differ from the arena plan"
-        return 1
-      fi
-      ;;
-    branch5_native_ranges_v1)
-      local native_manifest="${source%.stdout.log}.native-ranges.txt"
-      if ! read_branch5_native_record "${source}" itch_book_replay_ready \
-           "${native_manifest}"; then
-        VALIDATION_ERROR="${BRANCH5_NATIVE_ERROR}"
-        return 1
-      fi
-      local ready_native_prepared="${BRANCH5_NATIVE_PREPARED_BOOKS}"
-      local ready_native_count="${BRANCH5_NATIVE_RANGE_COUNT}"
-      local ready_native_bytes="${BRANCH5_NATIVE_RANGE_BYTES}"
-      local ready_native_digest="${BRANCH5_NATIVE_RANGE_DIGEST}"
-      if ! read_branch5_native_record "${source}" itch_book_replay \
-           "${native_manifest}"; then
-        VALIDATION_ERROR="${BRANCH5_NATIVE_ERROR}"
-        return 1
-      fi
-      if [[ "${BRANCH5_NATIVE_PREPARED_BOOKS}" != \
-              "${ready_native_prepared}" ||
-            "${BRANCH5_NATIVE_RANGE_COUNT}" != "${ready_native_count}" ||
-            "${BRANCH5_NATIVE_RANGE_BYTES}" != "${ready_native_bytes}" ||
-            "${BRANCH5_NATIVE_RANGE_DIGEST}" != "${ready_native_digest}" ]]; then
-        VALIDATION_ERROR="branch5 ready/final native manifest identity differs"
-        return 1
-      fi
-      if ! validate_branch5_native_manifest "${native_manifest}" - \
-           "${ready_native_prepared}" "${ready_native_count}" \
-           "${ready_native_bytes}" "${ready_native_digest}" \
-           "${PLAN_BRANCH5_PRICE_POOL_BYTES[@]}"; then
-        VALIDATION_ERROR="${BRANCH5_NATIVE_ERROR}"
         return 1
       fi
       ;;
@@ -4649,16 +3849,6 @@ validate_common_output() {
         VALIDATION_ERROR="committed price-page count is invalid"
         return 1
       fi
-      ;;
-    branch5_native_ranges_v1)
-      for key in price_internal_node_exhaustions price_leaf_exhaustions \
-                 price_level_exhaustions; do
-        read_main_field "${source}" "${key}"
-        if [[ "$(normalize_uint "${FIELD_VALUE}")" != 0 ]]; then
-          VALIDATION_ERROR="branch5 ${key} is nonzero"
-          return 1
-        fi
-      done
       ;;
   esac
   read_main_field "${source}" final_live_orders
@@ -5377,13 +4567,6 @@ if [[ "${RUN_PERF_STAT}" -eq 1 ]]; then
     --
     "${BASE_COMMAND[@]}"
   )
-  if [[ "${HOT_ARENA_POLICY}" == branch5_native_ranges_v1 ]]; then
-    perf_native_manifest="${perf_prefix}.native-ranges.txt"
-    if [[ -e "${perf_native_manifest}" || -L "${perf_native_manifest}" ]]; then
-      die "native-range manifest path already exists: ${perf_native_manifest}"
-    fi
-    perf_command+=("--native-range-manifest=${perf_native_manifest}")
-  fi
   write_command_file "${perf_prefix}.command.txt" "${perf_command[@]}"
   echo "==> separate hardware-counter run"
   print_command "${perf_command[@]}"

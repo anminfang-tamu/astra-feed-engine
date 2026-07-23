@@ -227,10 +227,9 @@ The version-2 Release disassembly gate selected 94 functions from both parser
 entrypoints through `dispatchMessage()` and the transitive in-binary mutation
 closure. It rejected allocator, mapping, syscall, lock, lock-prefix, and
 indirect-call targets; only the named cold `fail()` and `applyBookFailure()`
-formatting boundaries may allocate. The same verifier passed 78 selected
-functions in the pinned branch-5 adapter. Standard-library/ABI/PLT bodies and
-the two named cold boundaries remain explicit trust boundaries, so this is a
-strong static gate rather than a whole-program control-flow proof.
+formatting boundaries may allocate. Standard-library/ABI/PLT bodies and the two
+named cold boundaries remain explicit trust boundaries, so this is a strong
+static gate rather than a whole-program control-flow proof.
 
 ## Order-book benchmarks
 
@@ -343,7 +342,7 @@ Those gates prevent a different or truncated input from being mistaken for the
 approved trace. The replay also exits unsuccessfully on parser errors,
 price-page exhaustion, nonzero final live orders, a final phase other than End
 of Messages, or an enabled p50/p99/p99.9 gate failure. Set `--max-p99-ns` and
-`--max-p99-9-ns` from the approved same-host baseline policy.
+`--max-p99-9-ns` to explicitly approved absolute branch-6 ceilings.
 
 The main output is self-describing: it includes records/bytes, aggregate sample
 count and distribution, sampling policy and warmup, prefault mode, configured
@@ -401,26 +400,15 @@ excluding handles, lookup paths, and addresses. Use its expected-value gate to
 prove semantic equivalence across layout changes; neither digest observer runs
 in latency mode.
 
-For EC2 acceptance, use the same instance type, isolated core, NUMA node,
-compiler, build flags, huge-page policy, clock policy, trace, warmup, and sample
-interval for the branch-5 baseline and this branch. Run at least five fresh
-processes and retain every result. Every candidate aggregate p50 must be at
-most 150 ns. For the aggregate and each of `A/F/E/C/X/D/U`, every candidate
-p99 and p99.9 must be no greater than that workload's worst branch-5 value
-across all retained runs; p90 and maximum are informational. Also run
-`perf stat` separately to record cycles, instructions, branches, branch misses,
-cache misses, dTLB load misses, page faults, context switches, and CPU
-migrations. Generic CI should gate correctness and bounded work, not wall-clock
-nanoseconds.
-
-The user-reported 310 ns branch-5 p50 motivated the target, but it is not a
-repository-reproducible baseline. Branch 5 preserves a different DPDK
-packet-path result, and the committed historical 310 ns row below is UDP
-receive-path p99. Neither is comparable to the sampled book-only replay. Port
-the identical benchmark to a pinned branch-5 snapshot, or supply approved
-same-workload external output, before using 310 ns as comparison evidence. The
-150 ns value is a target and gate, not a result; current-branch full-trace EC2
-acceptance evidence is still pending.
+For EC2 acceptance, fix the instance type, isolated core, NUMA node, compiler,
+build flags, huge-page policy, clock policy, trace, warmup, and sample interval.
+Run at least five fresh branch-6 processes and retain every result. Every
+aggregate p50 must be at most 150 ns; aggregate and per-message-type p99/p99.9
+must meet explicitly approved absolute ceilings. P90 and maximum are
+informational. Also run `perf stat` separately to record cycles, instructions,
+branches, branch misses, cache misses, dTLB load misses, page faults, context
+switches, and CPU migrations. Generic CI should gate correctness and bounded
+work, not wall-clock nanoseconds.
 
 ### Controlled EC2 preparation
 
@@ -434,8 +422,8 @@ scripts/setup_ec2.sh --run-tests
 ```
 
 Place the trace at
-`data/itch/unzipped/01302019.NASDAQ_ITCH50`, then verify it before either
-variant is run:
+`data/itch/unzipped/01302019.NASDAQ_ITCH50`, then verify it before the
+branch-6 run:
 
 ```bash
 test "$(sha256sum data/itch/unzipped/01302019.NASDAQ_ITCH50 |
@@ -483,87 +471,21 @@ not the boot command line by itself, is the acceptance fact. Likewise, THP
 policy is only a prerequisite: the harness proves the redesign's actual
 full-extent `AnonHugePages` residency after its ready gate.
 
-### Build the pinned branch-5 baseline
+### Run branch-6 acceptance
 
-Create the compatibility port as one named-branch commit in a separate
-worktree. This avoids a detached `HEAD` and keeps the redesign worktree
-available for the candidate run:
-
-```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-BASELINE_ROOT="$(dirname "${REPO_ROOT}")/astra-feed-engine-branch5-native-v1"
-BASELINE_BRANCH=5-to-add-numa-acceptance
-PINNED_BRANCH5=324d81a15ee52cc72f68873a1ced122923406df2
-PORT_PATCH="${REPO_ROOT}/compat/branch5_native_v1/branch5-native-port.patch"
-BRANCH5_CAPACITY_EVIDENCE="${REPO_ROOT}/compat/branch5_native_v1/capacity-evidence-01302019.txt"
-
-test "$(sha256sum "${PORT_PATCH}" | awk '{print $1}')" = \
-  914fde914dca97def9964059581ae8ce98dfce7a24b8d7659a183231a4093f7d
-test "$(sha256sum "${BRANCH5_CAPACITY_EVIDENCE}" | awk '{print $1}')" = \
-  05f21a7c0db648028feb2cc006440ae5fb4431fa1f3685bc1404ddad610b4282
-git cat-file -e "${PINNED_BRANCH5}^{commit}"
-git worktree add -b "${BASELINE_BRANCH}" "${BASELINE_ROOT}" \
-  "${PINNED_BRANCH5}"
-git -C "${BASELINE_ROOT}" apply --check "${PORT_PATCH}"
-git -C "${BASELINE_ROOT}" apply --index "${PORT_PATCH}"
-git -C "${BASELINE_ROOT}" commit \
-  -m 'Add branch5 native acceptance compatibility port'
-test "$(git -C "${BASELINE_ROOT}" rev-parse HEAD^)" = "${PINNED_BRANCH5}"
-test "$(git -C "${BASELINE_ROOT}" rev-parse 'HEAD^{tree}')" = \
-  492938730e6db91e84bdb1f8e25152536e81dbc0
-bash "${BASELINE_ROOT}/scripts/build_branch5_native_replay.sh"
-```
-
-The four capacity arguments below are the pinned canonical branch-5 policy,
-not tuning suggestions. Partial or different values are invalid. With the
-pinned trace they prepare 8,713 books and describe 34,858 native ranges totaling
-62,404,952,064 bytes. The 64 GiB admission value conservatively covers those
-ranges; the default 16 GiB reserve is additional. The compatibility package's
-canonical
-[`capacity-evidence-01302019.txt`](compat/branch5_native_v1/capacity-evidence-01302019.txt)
-at SHA-256
-`05f21a7c0db648028feb2cc006440ae5fb4431fa1f3685bc1404ddad610b4282`
-is the authority for these values; its derivation is retained in
-[`capacity-evidence.md`](compat/branch5_native_v1/capacity-evidence.md).
-
-### Run and compare the two variants
-
-Run the baseline with deliberately non-gating `UINT64_MAX` latency ceilings.
-This makes the retained branch-5 distributions the baseline rather than
-silently applying the redesign target to the historical implementation:
-
-```bash
-"${REPO_ROOT}/scripts/run_order_book_acceptance.sh" \
-  --binary "${BASELINE_ROOT}/build/branch5-native-release/benchmarks/astra_itch_book_replay_benchmark" \
-  --expect-hot-arena-schema branch5_native_v1 \
-  --trace "${REPO_ROOT}/data/itch/unzipped/01302019.NASDAQ_ITCH50" \
-  --cpu "${CPU}" \
-  --numa-node "${NODE}" \
-  --expect-records 368366634 \
-  --expect-bytes 11245883092 \
-  --default-order-capacity 65536 \
-  --price-node-capacity 163840 \
-  --price-leaf-capacity 1048576 \
-  --price-level-capacity 2097152 \
-  --sample-capacity 8388608 \
-  --planned-bytes 68719476736 \
-  --reserve-bytes 17179869184 \
-  --max-p50-ns 18446744073709551615 \
-  --max-p99-ns 18446744073709551615 \
-  --max-p99-9-ns 18446744073709551615 \
-  --correctness-digest
-```
-
-Before the candidate run, commit the redesign on its named branch and require a
-clean worktree. Rebuild from that commit, then run the same schedule. The p50
-ceiling is real; the tail ceilings are intentionally non-gating here because
-the cross-artifact comparator below gates every candidate p99 and p99.9 against
-the corresponding worst retained branch-5 value:
+Commit branch 6 and require a clean worktree before an authoritative run. Build
+the replay benchmark in Release mode, then supply approved absolute p99 and
+p99.9 ceilings for this workload:
 
 ```bash
 test "$(git branch --show-current)" = 6-redesign-order-book-data-structure
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
-cmake --build build/release --target astra_itch_book_replay_benchmark --clean-first
+
+P99_LIMIT_NS=<approved-absolute-p99-limit>
+P999_LIMIT_NS=<approved-absolute-p99.9-limit>
+
+cmake --build build/release \
+  --target astra_itch_book_replay_benchmark --clean-first
 
 scripts/run_order_book_acceptance.sh \
   --binary build/release/benchmarks/astra_itch_book_replay_benchmark \
@@ -576,112 +498,24 @@ scripts/run_order_book_acceptance.sh \
   --sample-capacity 8388608 \
   --reserve-bytes 17179869184 \
   --max-p50-ns 150 \
-  --max-p99-ns 18446744073709551615 \
-  --max-p99-9-ns 18446744073709551615 \
+  --max-p99-ns "${P99_LIMIT_NS}" \
+  --max-p99-9-ns "${P999_LIMIT_NS}" \
   --correctness-digest
 ```
 
-Both commands print an `artifacts=...` path. Retain those two paths; a harness
-`PASS` for the baseline means only that its run and evidence are valid, not that
-branch 5 met a performance target.
+The harness evaluates only the supplied branch-6 binary. It runs at least five
+fresh latency processes, requires every run to pass, retains each result and a
+worst-of-all-runs summary, and performs physical and semantic digest checks in
+separate processes. It verifies the exact trace, sampling schedule, storage
+plan, clean-source reproducible build, CPU/NUMA placement, resident memory,
+huge-page mappings, and post-warmup fault counters before accepting latency
+data. A separate `perf stat` process records hardware counters without
+contaminating the accepted latency population.
 
-The script evaluates only the supplied binary and ceilings; it does not run or
-compare another branch. It runs at least five latency processes and requires
-every one to pass, retains every stdout/stderr and a worst-of-all-runs summary,
-then performs both implementation and semantic digest discovery and
-verification in separate processes when requested. The storage-plan, ready,
-and final records must identify one supported hot-arena schema, and the ready
-and final records must identify the exact fixed sampling schedule, interval,
-and warmup. Before a live run the harness asks the binary for
-`--storage-plan-only`, verifies every run against that exact capacity plan,
-checks that its total equals the schema-declared mapped extents, and requires
-the selected node and every finite visible cgroup ancestor to cover it plus a
-16 GiB reserve. It also requires x86_64,
-`numactl`, a named non-detached clean Git branch, and a CMake `Release` build
-with identifiable compiler metadata. The existing build directory is discovery
-evidence, not proof that its executable came from that source. The harness
-exports the verified commit with `git archive`, configures a fresh temporary
-out-of-tree graph under an empty recorded build environment, and performs a
-clean-first build of only `astra_itch_book_replay_benchmark`. The supplied,
-freshly built, and both archived executables must be byte-for-byte identical
-before any run starts. The same target-level proof applies to the reviewed
-branch-5 compatibility commit. It verifies CPU/node placement and that
-the candidate CPU belongs to Linux's domain-isolated CPU list; when a scaling
-governor is exposed, it must be `performance`. The harness rejects enabled swap
-by default, enforces zero post-warmup faults and resident sample storage, and
-records boot/CPU identity, topology, inherited binding, overcommit, commit,
-cgroup, and THP state. After the ready marker, each
-retained full `smaps`, `smaps_rollup`, and `numa_maps` snapshot must report zero
-swapped pages, anonymous resident bytes and NUMA pages covering the plan, and at
-least 99% of anonymous pages on the chosen node. For `redesign_v1`, each of the
-eleven exact named arena VMAs must additionally be 2 MiB aligned, wholly
-reported as `AnonHugePages`, and wholly resident on the requested node. The
-monitor validates those files before releasing the benchmark's start gate;
-failed or unavailable evidence terminates the still-blocked process.
-
-The backend-specific replay drivers implement the same trace, sampling,
-digest, post-System-S ready/start-gate, and output contracts. The harness
-accepts the pinned baseline adapter only when it declares
-`hot_arena_schema=branch5_native_v1`. That backend does not claim
-the redesign's eleven VMAs or THP guarantees. After replaying the `R`/System-`S`
-startup prelude, it seals the prepared-book universe and atomically writes a
-`branch5_native_ranges_v1` manifest for its six shared price vectors and four
-allocator-backed vector spans per prepared locate. The harness recomputes the
-manifest digest, checks deterministic kind/locate ordering and storage-plan
-sizes, proves every positive span lies in anonymous process VMAs, and applies
-the process-wide 99% NUMA gate without double-counting shared heap pages.
-Because branch-5 per-book capacity is unknown before that prelude, a live
-baseline run must supply a conservative `--planned-bytes` admission bound; the
-ready snapshot must still cover the complete manifest byte total. Unknown,
-empty, or cross-record schema identities fail closed.
-
-`book_universe_sealed=1` is evidence about the branch-5 compatibility adapter,
-not the redesign lifecycle. The redesign never seals directory membership:
-repeated and genuinely new `R` messages remain supported after `SS` and through
-system-event `E`, until terminal system-event `C`.
-
-After producing both artifact directories on the same controlled host, run the
-fail-closed comparator:
-
-```bash
-scripts/compare_order_book_acceptance.sh \
-  --baseline-dir <branch5-artifact-dir> \
-  --candidate-dir <redesign-artifact-dir> \
-  --expect-baseline-branch 5-to-add-numa-acceptance \
-  --expect-baseline-commit <branch5-port-commit> \
-  --expect-candidate-branch 6-redesign-order-book-data-structure \
-  --expect-candidate-commit <redesign-commit> \
-  --expect-candidate-capacity-evidence-sha256 1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3 \
-  --expect-trace-sha256 1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3 \
-  --expect-records 368366634 \
-  --expect-bytes 11245883092
-```
-
-For the built-in pinned candidate, the approved capacity-evidence SHA is the
-pinned trace SHA shown on the next line; the comparator also exact-checks the
-built-in profiler identity, three capacities, profiled demands, and
-minimum/effective headrooms. For a custom candidate it is the independently
-approved SHA-256 of the canonical capacity manifest.
-
-A separate default-required `perf stat` process records the approved
-hardware-counter set without contaminating accepted latency distributions.
-Every live run unconditionally hashes the trace before and after replay; the
-legacy `--hash-trace` option is a compatibility no-op. Artifacts archive the
-tested binary, acceptance harness, hot-path verifier and its disassembly report,
-the custom capacity evidence manifest when present,
-the exact exported source-tree archive, fresh-built binary, NUL-delimited build
-argv, configure/build logs, fresh and supplied `CMakeCache.txt` files, available
-build graphs/compile commands, compiler version, complete pre-build/post-build/
-post-run Git state, and pre/post hashes and file state for every live input.
-Provenance version 2 and the comparator both require the clean-source build
-attestation; a stale or manually substituted executable cannot become
-acceptable merely by updating its standalone hashes. Acceptance also fails if
-the trace, binary, harness, verifier, build cache, branch, commit, or worktree
-changes. The final `manifest.sha256` covers every
-regular artifact and can be checked with `sha256sum -c manifest.sha256`. A
-comparison parses only private temporary copies whose manifests must match the
-stable source manifests before and after copying; ensure `TMPDIR` has room for
-both artifact directories.
+The redesign does not seal directory membership at System Event `S`: repeated
+and genuinely new Stock Directory `R` messages remain supported afterward,
+including after System Event `E`. Order mutations `A/F/E/C/X/D/U` remain
+active through that phase. Only System Event `C` is terminal.
 
 A conservative `--planned-bytes` override may raise, but never lower, the
 binary-derived plan; `--reserve-bytes` adjusts headroom. `--dry-run` validates
@@ -696,10 +530,14 @@ cycle/latency acceptance gate.
 
 ## Linux A/B Replay
 
+For the AWS secondary-ENI DPDK path, use
+[`docs/dpdk-aws-ec2-setup.md`](docs/dpdk-aws-ec2-setup.md). The commands below
+exercise the ordinary Linux UDP receiver.
+
 This runbook assumes:
 
 - engine host: runs `md_engine`
-- sender host: runs two `itch_moldudp_sender` processes through
+- sender host: runs the synchronized redundant feeder through
   `scripts/run_itch_ab_senders.sh`
 - ITCH file: `data/itch/unzipped/01302019.NASDAQ_ITCH50`
 - packet shape: `20` ITCH messages per MoldUDP64 packet
@@ -851,44 +689,12 @@ line_b_kernel_drops=0
 For a completed sender stream, `sender next_seq` should match receiver
 `channel_next_seq`. If the sender is interrupted first, a small tail delta is
 normal. Persistent `GapDetected`, nonzero kernel drops, or a large
-sender/receiver sequence gap means the run should not be used as a clean latency
-baseline.
+sender/receiver sequence gap means the run should not be used as a clean
+latency result.
 
-## Historical transport results
+## Recording a branch-6 result
 
-The results below predate the redesigned global order table and paged price
-store. They document the A/B transport test shape, but they are not acceptance
-evidence for this branch. Re-run the commands above on the fixed EC2 setup
-before publishing a redesign comparison.
-
-### Full-Day Flat Replay
-
-`recv`, A/B lines, `20` messages per packet, `ASTRA_PREMARKET_SECONDS=600`.
-
-| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
-|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |    `102437301` | `170 ns` | `570 ns` | `1535 ns` | `1935 ns` |
-|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `116 ns` | `310 ns` | `1023 ns` | `1775 ns` |
-
-### Timestamp-Shaped Replay
-
-`recv`, A/B lines, `20` messages per packet,
-`ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`.
-
-| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
-|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` |  `899 ns` | `3759 ns` |
-|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` |  `870 ns` | `1423 ns` |
-|          `100000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `150 ns` | `541 ns` | `1727 ns` | `2127 ns` |
-
-These retained tables contain percentile columns only, not a maximum-latency
-column. They are historical packet-path context and must not be used as the
-book-only acceptance distribution.
-
-## Test Environment
-
-```text
-Sender: c7i.4xlarge with 100 GB gp3 EBS
-Engine: r7iz.8xlarge
-Transport: regular UDP recv, redundant A/B lines
-```
+Retain the complete build provenance, host topology and policy, engine log,
+sender log, trace SHA-256, command line, and all reported percentiles and loss
+counters. Results from earlier data structures are intentionally not carried
+forward as branch-6 evidence.
