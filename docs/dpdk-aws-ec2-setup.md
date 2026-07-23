@@ -88,26 +88,32 @@ the resolved PCI address is `0000:27:00.0` or belongs to the SSH interface.
 
 ## 4. Build and inspect the branch-6 storage plan
 
-Keep the DPDK build separate from the ordinary UDP build:
+Both EC2 roles use one build directory named `build` on their respective
+hosts. The receiver configures its `build` with DPDK enabled; the external
+sender later configures its own `build` with DPDK disabled. Do not force a
+different generator when reusing an existing `build` directory:
 
 ```bash
-cmake -S . -B build-dpdk -G Ninja \
+cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DASTRA_BUILD_APPS=ON \
-  -DASTRA_BUILD_TESTS=OFF \
+  -DASTRA_BUILD_TESTS=ON \
   -DASTRA_BUILD_BENCHMARKS=OFF \
   -DASTRA_ENABLE_DPDK=ON
 
-cmake --build build-dpdk \
-  --target md_engine itch_moldudp_sender \
-  --clean-first -j"$(nproc)"
+cmake --build build --clean-first -j"$(nproc)"
+ctest --test-dir build --output-on-failure
 
 ASTRA_BOOK_CAPACITY_PROFILE=nasdaq-itch-20190130-acceptance-v1 \
-  ./build-dpdk/md_engine --book-storage-plan-only
+  ./build/md_engine --book-storage-plan-only
 ```
 
 The last command must report
 `planned_storage_bytes=196062740480`.
+
+If `build` already uses Unix Makefiles, omit `-G Ninja`. If it already uses
+Ninja, omitting `-G` also preserves Ninja. Delete and recreate generated build
+directories only when intentionally changing generators.
 
 ## 5. Reserve DPDK hugepages
 
@@ -147,15 +153,21 @@ sudo ip addr flush dev "$FEED_IFACE"
 sudo ip link set "$FEED_IFACE" down
 ```
 
-Prefer normal VFIO/IOMMU isolation:
+Try normal VFIO/IOMMU isolation first:
 
 ```bash
 sudo modprobe vfio-pci
 sudo "$DPDK_DEVBIND" --bind=vfio-pci "$FEED_PCI"
 ```
 
-If that fails specifically because IOMMU is unavailable, a dedicated benchmark
-instance may use unsafe no-IOMMU mode:
+The tested EC2 host reports:
+
+```text
+Error: IOMMU support is disabled, use --noiommu-mode for binding in noiommu mode
+```
+
+On this dedicated benchmark instance, enable unsafe no-IOMMU mode and repeat
+the binding with `--noiommu-mode`:
 
 ```bash
 sudo modprobe vfio enable_unsafe_noiommu_mode=1
@@ -175,10 +187,22 @@ sudo "$DPDK_DEVBIND" --status
 ip -br addr
 ```
 
+The successful tested state is:
+
+```text
+DPDK-compatible:
+  0000:28:00.0 drv=vfio-pci unused=ena
+
+Kernel:
+  0000:27:00.0 if=enp39s0 drv=ena *Active*
+```
+
+`enp40s0` no longer appears in `ip -br addr` while DPDK owns it. Stop if
+`enp39s0` disappears or `0000:27:00.0` is no longer using `ena`.
+
 ## 7. Start the branch-6 DPDK engine
 
-Start the engine first and wait for `Engine started`. Prefaulting 182.598 GiB
-can take a while:
+Start the engine first:
 
 ```bash
 sudo env \
@@ -210,6 +234,22 @@ throughput. In `packet` mode, the latency sample starts after
 mutation. It is a branch-6 processing-hot-path measurement, not kernel-versus-
 DPDK transport timing.
 
+Successful initialization on the tested host includes:
+
+```text
+EAL: Detected CPU lcores: 32
+EAL: Detected NUMA nodes: 1
+EAL: Selected IOVA mode 'PA'
+EAL: Using IOMMU type 8 (No-IOMMU)
+cpu_affinity status=applied cpu=2 phase=post_dpdk_eal
+planned_storage_bytes=196062740480
+```
+
+After `book_storage_plan`, the process maps and prefaults approximately
+182.598 GiB on NUMA node 0. A long period without new output at that point is
+expected. Do not interrupt the engine or start the sender until both
+`book_storage ...` and `Engine started ...` appear.
+
 ## 8. Start the external sender
 
 Run this on the sender EC2 instance, not on the DPDK receiver host. Security
@@ -227,6 +267,16 @@ git switch 6-redesign-order-book-data-structure
 TRACE="$PWD/data/itch/unzipped/01302019.NASDAQ_ITCH50"
 test "$(sha256sum "$TRACE" | awk '{print $1}')" = \
   1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3
+
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DASTRA_BUILD_APPS=ON \
+  -DASTRA_BUILD_TESTS=ON \
+  -DASTRA_BUILD_BENCHMARKS=OFF \
+  -DASTRA_ENABLE_DPDK=OFF
+
+cmake --build build --clean-first -j"$(nproc)"
+ctest --test-dir build --output-on-failure
 
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
@@ -295,6 +345,11 @@ and book behavior but is not DPDK or deterministic EC2 latency evidence.
 
 - `Package 'libdpdk' not found`: install `libdpdk-dev` and verify
   `pkg-config --modversion libdpdk`.
+- `generator Ninja does not match Unix Makefiles`: omit `-G Ninja` when
+  reusing `build`, or recreate `build` before intentionally changing
+  generators.
+- `IOMMU support is disabled`: on a dedicated benchmark host only, use the
+  documented unsafe VFIO no-IOMMU procedure and bind with `--noiommu-mode`.
 - `no DPDK Ethernet ports are available`: check the VFIO binding and that the
   EAL allowlist exactly matches `$FEED_PCI`.
 - Engine receives nothing: verify the sender targets `172.31.32.18`, both UDP

@@ -293,7 +293,9 @@ TEST(OrderBookTest, HandlesPricesMillionsOfTicksApartOnOneSide) {
 
 TEST(OrderBookTest, StandaloneCapacitySupportsMoreThan256DistinctPricePages) {
   constexpr std::uint32_t page_count = 257;
-  OrderBook book(42, 300);
+  static_assert(OrderBook::kDefaultOrderPoolSize == 512u);
+  OrderBook book(42);
+  ASSERT_EQ(book.orderCapacity(), 512u);
 
   for (std::uint32_t page_index = 0; page_index < page_count; ++page_index) {
     ASSERT_EQ(book.addOrder(static_cast<std::uint64_t>(page_index) + 1,
@@ -302,6 +304,7 @@ TEST(OrderBookTest, StandaloneCapacitySupportsMoreThan256DistinctPricePages) {
   }
 
   EXPECT_EQ(book.liveOrderCount(), page_count);
+  EXPECT_EQ(book.allocationFailures(), 0u);
   EXPECT_EQ(book.getTopOfBook().bid_price, (page_count - 1) << 16);
 }
 

@@ -184,13 +184,13 @@ capacities fail construction before feed processing.
 ## Build and correctness tests
 
 ```bash
-cmake -S . -B build/release \
+cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DASTRA_BUILD_APPS=ON \
   -DASTRA_BUILD_TESTS=ON \
   -DASTRA_BUILD_BENCHMARKS=ON
-cmake --build build/release -j
-ctest --test-dir build/release --output-on-failure
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
 The book tests include full-domain prices (`0` and `UINT32_MAX`), 64-bit level
@@ -237,7 +237,7 @@ The synthetic benchmark times ten bounded mutation/lookup shapes without UDP
 or file I/O:
 
 ```bash
-build/release/benchmarks/astra_order_book_benchmark \
+build/benchmarks/astra_order_book_benchmark \
   --iterations=100000 \
   --gate=direct_partial_execute:150:300:600 \
   --gate=remove_cross_page_best:150:300:600
@@ -277,7 +277,7 @@ Profile the trace's capacity requirements without constructing the production
 book:
 
 ```bash
-build/release/benchmarks/astra_itch_trace_profile \
+build/benchmarks/astra_itch_trace_profile \
   data/itch/unzipped/01302019.NASDAQ_ITCH50
 ```
 
@@ -286,7 +286,7 @@ message-to-book timing:
 
 ```bash
 numactl --physcpubind=2 --membind=0 \
-  build/release/benchmarks/astra_itch_book_replay_benchmark \
+  build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   --prefault \
   --sample-every=64 \
@@ -374,7 +374,7 @@ state intentionally changes cache state and must not be mixed into an accepted
 latency run:
 
 ```bash
-build/release/benchmarks/astra_itch_book_replay_benchmark \
+build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   --sample-every=1024 \
   --min-samples=1000 \
@@ -484,11 +484,11 @@ test -z "$(git status --porcelain=v1 --untracked-files=all)"
 P99_LIMIT_NS=<approved-absolute-p99-limit>
 P999_LIMIT_NS=<approved-absolute-p99.9-limit>
 
-cmake --build build/release \
+cmake --build build \
   --target astra_itch_book_replay_benchmark --clean-first
 
 scripts/run_order_book_acceptance.sh \
-  --binary build/release/benchmarks/astra_itch_book_replay_benchmark \
+  --binary build/benchmarks/astra_itch_book_replay_benchmark \
   --expect-hot-arena-schema redesign_v1 \
   --trace data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   --cpu "${CPU}" \
@@ -553,7 +553,7 @@ ASTRA_UDP_DROP_METRICS=on \
 ASTRA_LATENCY_METRICS=on \
 ASTRA_BOOK_CAPACITY_PROFILE=nasdaq-itch-20190130-acceptance-v1 \
 ASTRA_BOOK_PREFAULT=on \
-./build/release/md_engine 0.0.0.0 9000 0.0.0.0 9001
+./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
 ```
 
 `ASTRA_LATENCY_METRICS=off` disables packet-level latency recording. Keep it on

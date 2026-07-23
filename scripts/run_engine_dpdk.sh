@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}/.."
-BUILD_DIR="${ASTRA_DPDK_BUILD_DIR:-${ROOT_DIR}/build-dpdk}"
+BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/md_engine"
 BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
 SKIP_BUILD="${ASTRA_DPDK_SKIP_BUILD:-off}"
@@ -133,7 +133,7 @@ case "${SKIP_BUILD}" in
       -S "${ROOT_DIR}"
       -B "${BUILD_DIR}"
       -DASTRA_BUILD_APPS=ON
-      -DASTRA_BUILD_TESTS=OFF
+      -DASTRA_BUILD_TESTS=ON
       -DASTRA_BUILD_BENCHMARKS=OFF
       -DASTRA_ENABLE_DPDK=ON
       "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"

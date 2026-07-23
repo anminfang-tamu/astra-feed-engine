@@ -17,7 +17,11 @@ class BookManager;
 // Managed books own no per-symbol hash table, FIFO, or price window.
 class OrderBook {
 public:
-  static constexpr std::size_t kDefaultOrderPoolSize = 64u * 1024u;
+  // Focused standalone tests use this compatibility capacity. Production
+  // books receive their process-wide capacities from BookManager and never
+  // use this default. Keeping the standalone value bounded avoids reserving
+  // tens of thousands of 2 MiB price pages in every unit-test process.
+  static constexpr std::size_t kDefaultOrderPoolSize = 512u;
 
   // Compatibility/standalone constructor used by focused unit tests.  The
   // production path injects manager-owned process-wide stores.

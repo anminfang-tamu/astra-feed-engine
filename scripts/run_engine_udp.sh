@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}/.."
-BUILD_DIR="${ASTRA_UDP_BUILD_DIR:-${ROOT_DIR}/build/release}"
+BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/md_engine"
 BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
 
@@ -121,7 +121,7 @@ build_numa_command() {
 echo "Configuring UDP md_engine (build_type=${BUILD_TYPE})..."
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
   -DASTRA_BUILD_APPS=ON \
-  -DASTRA_BUILD_TESTS=OFF \
+  -DASTRA_BUILD_TESTS=ON \
   -DASTRA_BUILD_BENCHMARKS=OFF \
   -DASTRA_ENABLE_DPDK=OFF \
   "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" \
