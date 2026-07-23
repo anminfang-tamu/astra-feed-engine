@@ -172,20 +172,24 @@ std::size_t UdpBatchReceiver::receiveBatch() noexcept {
   ++syscall_count_;
   const std::size_t count = static_cast<std::size_t>(n);
 
+  std::size_t accepted = 0;
   for (std::size_t i = 0; i < count; ++i) {
     recordKernelDrops(msgs_[i].msg_hdr);
 
-    std::size_t size = msgs_[i].msg_len;
-    if (size > kMaxPacketSize) [[unlikely]] {
+    const std::size_t size = msgs_[i].msg_len;
+    const bool kernel_reported_truncation =
+        (msgs_[i].msg_hdr.msg_flags & MSG_TRUNC) != 0;
+    if (shouldDropDatagram(size, kernel_reported_truncation)) [[unlikely]] {
       ++truncated_count_;
-      size = kMaxPacketSize;
+      continue;
     }
 
-    pending_[i] = PacketView{buffers_[i].data(), size, receive_start_ticks};
+    pending_[accepted++] =
+        PacketView{buffers_[i].data(), size, receive_start_ticks};
   }
 
-  pending_count_ = count;
-  return count;
+  pending_count_ = accepted;
+  return accepted;
 #endif
 }
 

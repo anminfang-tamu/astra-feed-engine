@@ -34,9 +34,13 @@ private:
                                       uint64_t first_seq, uint16_t msg_count,
                                       uint64_t start_seq,
                                       uint64_t receive_start_ticks);
+  DecodeStatus validateSequencedPacket(const std::byte *data, std::size_t size,
+                                       uint16_t msg_count) const noexcept;
   DecodeResult drainGapBuffer();
+  DecodeResult terminalFailure(DecodeStatus status) noexcept;
 
   bool first_packet_seen_{false};
+  DecodeStatus terminal_status_{DecodeStatus::Ok};
   // bool stage_timing_enabled_{false};
   // DecodeStageTiming last_timing_;
   ChannelState channel_;

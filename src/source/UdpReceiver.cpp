@@ -27,12 +27,14 @@ inline bool is_multicast(const struct in_addr &addr) noexcept {
   throw std::runtime_error(std::string(what) + ": " + std::strerror(errno));
 }
 
+#ifdef SO_RXQ_OVFL
 bool env_flag_enabled(const char *value) noexcept {
   if (value == nullptr)
     return false;
   return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
          std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0;
 }
+#endif
 
 } // namespace
 

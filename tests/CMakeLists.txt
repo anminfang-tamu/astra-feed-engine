@@ -17,7 +17,12 @@ endif()
 
 add_executable(astra_tests
     book/BookManagerTest.cpp
+    book/BookStorageFootprintTest.cpp
+    book/HotArenaAlignmentTest.cpp
+    book/OrderBookModelTest.cpp
     book/OrderBookTest.cpp
+    book/OrderTableTest.cpp
+    book/PriceLevelStoreTest.cpp
     codec/MoldUdpDecoderTest.cpp
     engine/MarketDataEngineTest.cpp
     metrics/LatencyRecorderTest.cpp
@@ -26,7 +31,9 @@ add_executable(astra_tests
     source/UdpReceiverTest.cpp
     utils/BitmapTest.cpp
     utils/CpuAffinityTest.cpp
-    utils/OrderIdMapTest.cpp
+    utils/FixedMmapArrayTest.cpp
+    utils/MappedArrayTest.cpp
+    utils/MappedObjectArrayTest.cpp
 )
 
 target_link_libraries(astra_tests
@@ -37,3 +44,12 @@ target_link_libraries(astra_tests
 
 include(GoogleTest)
 gtest_discover_tests(astra_tests)
+
+if(TARGET md_engine)
+    add_test(
+        NAME MdEngineCapacityConfigTest
+        COMMAND bash
+                ${CMAKE_CURRENT_SOURCE_DIR}/book/MdEngineCapacityConfigTest.sh
+                $<TARGET_FILE:md_engine>
+    )
+endif()

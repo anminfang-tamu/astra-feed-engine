@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 
 class GapBuffer {
 public:
@@ -117,9 +118,12 @@ private:
   static_assert((kCapacity & kMask) == 0);
 
   struct Slot {
-    bool occupied{false};
-    SequencedPacket packet{};
+    bool occupied;
+    SequencedPacket packet;
   };
+
+  static_assert(std::is_trivial_v<Slot>);
+  static_assert(std::is_trivially_copyable_v<Slot>);
 
   static uint64_t hash(uint64_t value) noexcept {
     value ^= value >> 33;

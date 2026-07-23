@@ -16,7 +16,7 @@ namespace astra::symbol {
 // reserved/invalid.
 class StockDirectory {
 public:
-  static constexpr std::uint16_t kMaxLocate = kMaxStockLocate;
+  static constexpr std::size_t kMaxLocate = kStockLocateSlots;
 
   // Populate from a parsed Stock Directory ('R') message.
   void set(std::uint16_t locate, const StockDirectoryEntry &entry) noexcept {

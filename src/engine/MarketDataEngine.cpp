@@ -34,7 +34,8 @@ void MarketDataEngine::run() {
       break;
     }
     if (result.status != DecodeStatus::Ok) {
-      if (config_.stop_on_decode_error)
+      if (isTerminalDecodeFailure(result.status) ||
+          config_.stop_on_decode_error)
         stop();
       continue;
     }

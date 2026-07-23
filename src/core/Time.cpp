@@ -4,15 +4,12 @@
 #include <ctime>
 #include <limits>
 
-#if !defined(__linux__)
-#error "Astra timing uses Linux rdtsc calibration only"
-#endif
-
-#if !defined(__x86_64__) && !defined(__i386__)
-#error "Astra timing requires x86/x86_64 rdtsc support"
-#endif
-
+#if defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
+#define ASTRA_HAS_RDTSC 1
+#else
+#define ASTRA_HAS_RDTSC 0
+#endif
 
 namespace {
 
@@ -84,15 +81,29 @@ TimeCalibration calibrateTime() noexcept {
 
 uint64_t nowNs() {
   timespec ts;
+#if defined(CLOCK_MONOTONIC_RAW)
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#else
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
 
   return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ull +
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
 uint64_t rdtsc() {
+#if ASTRA_HAS_RDTSC
   unsigned aux;
-  return __rdtscp(&aux);
+  const uint64_t ticks = __rdtscp(&aux);
+  // RDTSCP orders older instructions; LFENCE prevents a measured operation
+  // from beginning before the timestamp read has completed.
+  _mm_lfence();
+  return ticks;
+#else
+  // Portable correctness/test fallback.  Linux x86 production still compiles
+  // to RDTSCP above; non-x86 runs must not be used for the EC2 cycle gate.
+  return nowNs();
+#endif
 }
 
 const TimeCalibration &timeCalibration() {

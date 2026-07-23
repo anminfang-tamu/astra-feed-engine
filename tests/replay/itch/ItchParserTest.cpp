@@ -61,12 +61,35 @@ Bytes msgAdd(uint64_t oid, char side, uint32_t qty, std::string_view sym,
   return b;
 }
 
+Bytes msgAttributedAdd(uint64_t oid, char side, uint32_t qty,
+                       std::string_view sym, uint32_t price,
+                       uint16_t locate = 1) {
+  Bytes b = msgAdd(oid, side, qty, sym, price, locate);
+  b[0] = std::byte{'F'};
+  appendU8(b, 'M');
+  appendU8(b, 'P');
+  appendU8(b, 'I');
+  appendU8(b, 'D');
+  return b;
+}
+
 Bytes msgExecute(uint64_t oid, uint32_t qty, uint64_t match = 9001,
                  uint16_t locate = 1) {
   Bytes b = commonMsg('E', locate);
   appendU64(b, oid);
   appendU32(b, qty);
   appendU64(b, match);
+  return b;
+}
+
+Bytes msgExecuteWithPrice(uint64_t oid, uint32_t qty, uint32_t price,
+                          uint64_t match = 9001, uint16_t locate = 1) {
+  Bytes b = commonMsg('C', locate);
+  appendU64(b, oid);
+  appendU32(b, qty);
+  appendU64(b, match);
+  appendU8(b, 'Y');
+  appendU32(b, price);
   return b;
 }
 
@@ -99,12 +122,14 @@ Bytes msgBrokenTrade(uint64_t match = 9001, uint16_t locate = 1) {
   return b;
 }
 
-Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1) {
+Bytes msgStockDirectory(std::string_view sym, uint16_t locate = 1,
+                        char financial_status = 'N',
+                        uint32_t round_lot_size = 100) {
   Bytes b = commonMsg('R', locate);
   appendStock(b, sym);
   appendU8(b, 'Q'); // market category
-  appendU8(b, 'N'); // financial status
-  appendU32(b, 100);
+  appendU8(b, static_cast<uint8_t>(financial_status));
+  appendU32(b, round_lot_size);
   appendU8(b, 'N'); // round lots only
   appendU8(b, 'C'); // issue classification
   appendU8(b, ' ');
@@ -127,8 +152,21 @@ struct Fixture {
   astra::symbol::StockDirectory symbols;
   BookManager books;
   ItchParser parser{symbols, books, /*channel_id=*/2};
+  bool system_hours_started{false};
 
   void send(const Bytes &b) { parser.handleMessage(asSpan(b)); }
+
+  void add(uint64_t oid, char side, uint32_t qty, std::string_view sym,
+           uint32_t price, uint16_t locate = 1) {
+    if (!symbols.isRegistered(locate)) {
+      send(msgStockDirectory(sym, locate));
+    }
+    if (!system_hours_started) {
+      send(msgSystemEvent('S'));
+      system_hours_started = true;
+    }
+    send(msgAdd(oid, side, qty, sym, price, locate));
+  }
 
   TopOfBook top(uint16_t locate = 1) const {
     const OrderBook *book = books.getOrderBook(locate);
@@ -140,7 +178,7 @@ struct Fixture {
 
 TEST(ItchParserTest, AddOrderUpdatesBook) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
+  f.add(555, 'B', 100, "AAPL", 1905900);
 
   const TopOfBook t = f.top();
   EXPECT_EQ(t.bid_price, 1905900u);
@@ -154,7 +192,7 @@ TEST(ItchParserTest, AddOrderUpdatesBook) {
 
 TEST(ItchParserTest, ExecutionReducesOrderQuantity) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "MSFT", 4102500));
+  f.add(555, 'S', 100, "MSFT", 4102500);
   f.send(msgExecute(555, 40));
 
   const TopOfBook t = f.top();
@@ -164,7 +202,7 @@ TEST(ItchParserTest, ExecutionReducesOrderQuantity) {
 
 TEST(ItchParserTest, FullExecutionRemovesOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "MSFT", 4102500));
+  f.add(555, 'S', 100, "MSFT", 4102500);
   f.send(msgExecute(555, 100));
 
   const TopOfBook t = f.top();
@@ -174,7 +212,7 @@ TEST(ItchParserTest, FullExecutionRemovesOrder) {
 
 TEST(ItchParserTest, CancelSharesReducesQuantity) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "NVDA", 9231250));
+  f.add(555, 'B', 100, "NVDA", 9231250);
   f.send(msgCancel(555, 25));
 
   const TopOfBook t = f.top();
@@ -182,19 +220,21 @@ TEST(ItchParserTest, CancelSharesReducesQuantity) {
   EXPECT_EQ(t.bid_qty, 75u);
 }
 
-TEST(ItchParserTest, CancelAllSharesRemovesOrder) {
+TEST(ItchParserTest, FullCancelIsRejectedAndDeleteRemainsDistinct) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "NVDA", 9231250));
+  f.add(555, 'B', 100, "NVDA", 9231250);
   f.send(msgCancel(555, 100));
 
-  const TopOfBook t = f.top();
-  EXPECT_EQ(t.bid_price, 0u);
-  EXPECT_EQ(t.bid_qty, 0u);
+  EXPECT_EQ(f.top().bid_qty, 100u);
+  EXPECT_FALSE(f.parser.lastError().empty());
+
+  f.send(msgDelete(555));
+  EXPECT_EQ(f.top().bid_qty, 0u);
 }
 
 TEST(ItchParserTest, DeleteRemovesOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "TSLA", 2510000));
+  f.add(555, 'B', 100, "TSLA", 2510000);
   f.send(msgDelete(555));
 
   const TopOfBook t = f.top();
@@ -204,7 +244,7 @@ TEST(ItchParserTest, DeleteRemovesOrder) {
 
 TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "AMZN", 1873400));
+  f.add(555, 'S', 100, "AMZN", 1873400);
   f.send(msgReplace(555, 556, 25, 1873600));
 
   const TopOfBook t = f.top();
@@ -218,7 +258,7 @@ TEST(ItchParserTest, ReplaceMovesToNewPriceAndQty) {
 
 TEST(ItchParserTest, BrokenTradeIsSkippedWithoutMatchHistory) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
+  f.add(555, 'B', 100, "AAPL", 1905900);
   f.send(msgExecute(555, 40, 9001));
   f.send(msgBrokenTrade(9001));
 
@@ -230,7 +270,7 @@ TEST(ItchParserTest, BrokenTradeIsSkippedWithoutMatchHistory) {
 
 TEST(ItchParserTest, BrokenTradeDoesNotRecreateFullyExecutedOrder) {
   Fixture f;
-  f.send(msgAdd(555, 'S', 100, "AAPL", 1905900));
+  f.add(555, 'S', 100, "AAPL", 1905900);
   f.send(msgExecute(555, 100, 9001));
   f.send(msgBrokenTrade(9001));
 
@@ -249,8 +289,8 @@ TEST(ItchParserTest, UnknownExecutionIsSkipped) {
 
 TEST(ItchParserTest, StockLocateRoutesToCorrectBook) {
   Fixture f;
-  f.send(msgAdd(1, 'B', 100, "AAPL", 500, /*locate=*/1));
-  f.send(msgAdd(2, 'S', 50, "MSFT", 400, /*locate=*/2));
+  f.add(1, 'B', 100, "AAPL", 500, /*locate=*/1);
+  f.add(2, 'S', 50, "MSFT", 400, /*locate=*/2);
 
   EXPECT_EQ(f.top(1).bid_price, 500u);
   EXPECT_EQ(f.top(2).ask_price, 400u);
@@ -279,6 +319,38 @@ TEST(ItchParserTest, SystemEventAdvancesChannelPhase) {
 
   f.send(msgSystemEvent('Q'));
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+
+  f.send(msgSystemEvent('M'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostMarketHours);
+
+  f.send(msgSystemEvent('E'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+
+  f.send(msgSystemEvent('C'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::EndOfMessages);
+}
+
+TEST(ItchParserTest, BackwardSystemEventIsRejectedWithoutPhaseRegression) {
+  Fixture f;
+  f.send(msgSystemEvent('O'));
+  f.send(msgSystemEvent('S'));
+  f.send(msgSystemEvent('Q'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+
+  f.send(msgSystemEvent('S'));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+  EXPECT_EQ(f.parser.lastError(), "out-of-order system event");
+}
+
+TEST(ItchParserTest, UnknownSystemEventCodeIsRejected) {
+  Fixture f;
+  f.send(msgSystemEvent('O'));
+
+  f.send(msgSystemEvent('Z'));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::StartupDirectorySpin);
+  EXPECT_EQ(f.parser.lastError(), "unsupported system event code");
 }
 
 TEST(ItchParserTest, SystemHoursStartCreatesDirectoryBooks) {
@@ -311,13 +383,235 @@ TEST(ItchParserTest, StockDirectoryDuringSystemHoursCreatesBookImmediately) {
   EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
 }
 
-TEST(ItchParserTest, ResetClearsState) {
+TEST(ItchParserTest, OrderExecutedWithPriceUsesIndependentWireHandler) {
   Fixture f;
-  f.send(msgAdd(555, 'B', 100, "AAPL", 1905900));
-  f.parser.reset();
-  // Parser reset does not own order-book state; execution still routes there.
-  f.send(msgExecute(555, 100, 9001));
-  EXPECT_FALSE(f.parser.lastMessageSkipped());
-  f.send(msgBrokenTrade(9001));
-  EXPECT_TRUE(f.parser.lastMessageSkipped());
+  f.add(555, 'B', 100, "AAPL", 1905900);
+
+  f.send(msgExecuteWithPrice(555, 40, 1906000));
+
+  EXPECT_EQ(f.top().bid_qty, 60u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, RepeatedStockDirectoryAfterSsRefreshesMetadataInPlace) {
+  Fixture f;
+  f.send(msgStockDirectory("CFG-D", 1335, 'N', 100));
+  f.send(msgSystemEvent('S'));
+  const OrderBook *original_book = f.books.getOrderBook(1335);
+  ASSERT_NE(original_book, nullptr);
+
+  f.send(msgStockDirectory("CFG-D", 1335, 'D', 50));
+
+  EXPECT_EQ(f.books.getOrderBook(1335), original_book);
+  ASSERT_NE(f.symbols.get(1335), nullptr);
+  EXPECT_EQ(f.symbols.get(1335)->fin_status, 'D');
+  EXPECT_EQ(f.symbols.get(1335)->round_lot_size, 50u);
+  EXPECT_EQ(f.symbols.size(), 1u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, RepeatedLateDirectoryPreservesLiveBookState) {
+  Fixture f;
+  f.add(555, 'B', 100, "CFG-D", 2'500'000, 1335);
+  const OrderBook *const original_book = f.books.getOrderBook(1335);
+  ASSERT_NE(original_book, nullptr);
+
+  f.send(msgStockDirectory("CFG-D", 1335, 'D', 50));
+
+  EXPECT_EQ(f.books.getOrderBook(1335), original_book);
+  EXPECT_TRUE(f.top(1335).has_bid);
+  EXPECT_EQ(f.top(1335).bid_price, 2'500'000u);
+  EXPECT_EQ(f.top(1335).bid_qty, 100u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, NewStockDirectoryAfterSsPreparesBookImmediately) {
+  Fixture f;
+  f.send(msgStockDirectory("AAPL", 7));
+  f.send(msgSystemEvent('S'));
+  f.send(msgSystemEvent('Q'));
+
+  f.send(msgStockDirectory("MSFT", 8));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::MarketHours);
+  ASSERT_NE(f.books.getOrderBook(8), nullptr);
+  EXPECT_STREQ(f.symbols.ticker(8), "MSFT");
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, ConflictingRepeatedStockDirectoryIsRejected) {
+  Fixture f;
+  f.send(msgStockDirectory("AAPL", 7));
+  f.send(msgSystemEvent('S'));
+  const OrderBook *original_book = f.books.getOrderBook(7);
+
+  f.send(msgStockDirectory("MSFT", 7));
+
+  EXPECT_EQ(f.books.getOrderBook(7), original_book);
+  EXPECT_STREQ(f.symbols.ticker(7), "AAPL");
+  EXPECT_FALSE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, DeleteRemainsActiveAfterEndOfSystemHours) {
+  Fixture f;
+  f.add(555, 'B', 100, "AAPL", 1905900);
+  f.send(msgSystemEvent('E'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+
+  f.send(msgDelete(555));
+
+  EXPECT_EQ(f.top().bid_qty, 0u);
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  f.send(msgSystemEvent('C'));
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::EndOfMessages);
+}
+
+TEST(ItchParserTest, SystemEventEndOfHoursDoesNotMutateBook) {
+  Fixture f;
+  f.add(555, 'S', 100, "AAPL", 1'905'900);
+  const TopOfBook before = f.top();
+
+  f.send(msgSystemEvent('E'));
+
+  const TopOfBook after = f.top();
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_EQ(after.ask_price, before.ask_price);
+  EXPECT_EQ(after.ask_qty, before.ask_qty);
+  EXPECT_EQ(after.has_ask, before.has_ask);
+}
+
+TEST(ItchParserTest, OrderExecutionRemainsActiveAfterEndOfSystemHours) {
+  Fixture f;
+  f.add(555, 'S', 100, "AAPL", 1'905'900);
+  f.send(msgSystemEvent('E'));
+
+  // This is message type E, not an S message carrying event code E.
+  f.send(msgExecute(555, 40));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_EQ(f.top().ask_qty, 60u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest,
+     OrderExecutionWithPriceRemainsActiveAfterEndOfSystemHours) {
+  Fixture f;
+  f.add(555, 'B', 100, "AAPL", 1'905'900);
+  f.send(msgSystemEvent('E'));
+
+  // Message type C remains a distinct order execution handler.  Only an S
+  // message carrying event code C ends the ITCH stream.
+  f.send(msgExecuteWithPrice(555, 25, 1'906'000));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_EQ(f.top().bid_qty, 75u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, EveryOrderMutationRemainsActiveAfterEndOfSystemHours) {
+  Fixture f;
+  f.add(1, 'B', 100, "AAPL", 100);
+  f.send(msgSystemEvent('E'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+
+  f.send(msgAdd(2, 'S', 80, "AAPL", 200));
+  f.send(msgAttributedAdd(3, 'S', 70, "AAPL", 300));
+  f.send(msgCancel(1, 10));
+  f.send(msgReplace(2, 4, 60, 250));
+  f.send(msgExecute(1, 40));
+  f.send(msgExecuteWithPrice(1, 25, 101));
+  f.send(msgDelete(3));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_TRUE(f.parser.lastError().empty());
+  EXPECT_EQ(f.top().bid_qty, 25u);
+  EXPECT_EQ(f.top().ask_price, 250u);
+  EXPECT_EQ(f.top().ask_qty, 60u);
+}
+
+TEST(ItchParserTest,
+     DirectoryRefreshAndNewLocateRemainAvailableAfterEndOfSystemHours) {
+  Fixture f;
+  f.send(msgStockDirectory("AAPL", 7, 'N', 100));
+  f.send(msgSystemEvent('S'));
+  f.send(msgSystemEvent('Q'));
+  f.send(msgSystemEvent('M'));
+  f.send(msgSystemEvent('E'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  const OrderBook *const original_book = f.books.getOrderBook(7);
+  ASSERT_NE(original_book, nullptr);
+
+  // A repeated R remains an administrative metadata refresh after SE; it
+  // must neither clear nor replace the already prepared book descriptor.
+  f.send(msgStockDirectory("AAPL", 7, 'D', 50));
+  EXPECT_EQ(f.books.getOrderBook(7), original_book);
+  ASSERT_NE(f.symbols.get(7), nullptr);
+  EXPECT_EQ(f.symbols.get(7)->fin_status, 'D');
+  EXPECT_EQ(f.symbols.get(7)->round_lot_size, 50u);
+
+  // The fixed descriptor universe also permits a genuinely new late locate.
+  // Its order-message E handler remains independent of system-event SE.
+  f.send(msgStockDirectory("MSFT", 8));
+  ASSERT_NE(f.books.getOrderBook(8), nullptr);
+  f.send(msgAdd(777, 'S', 100, "MSFT", 4'102'500, 8));
+  f.send(msgExecute(777, 40, 9'001, 8));
+
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostSystemHours);
+  EXPECT_EQ(f.top(8).ask_price, 4'102'500u);
+  EXPECT_EQ(f.top(8).ask_qty, 60u);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, EndOfMessagesIsTerminalForBookAndDirectoryMutations) {
+  Fixture f;
+  f.add(555, 'B', 100, "AAPL", 1'905'900);
+  f.send(msgSystemEvent('E'));
+  f.send(msgSystemEvent('C'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::EndOfMessages);
+
+  f.send(msgExecute(555, 25));
+  EXPECT_EQ(f.top().bid_qty, 100u);
+  EXPECT_FALSE(f.parser.lastError().empty());
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::EndOfMessages);
+
+  f.send(msgStockDirectory("MSFT", 8));
+  EXPECT_EQ(f.books.getOrderBook(8), nullptr);
+  EXPECT_FALSE(f.symbols.isRegistered(8));
+  EXPECT_FALSE(f.parser.lastError().empty());
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::EndOfMessages);
+}
+
+TEST(ItchParserTest, LateDirectoryAndPostMarketExecutionRemainActive) {
+  Fixture f;
+  f.send(msgStockDirectory("AAPL", 7));
+  f.send(msgSystemEvent('S'));
+
+  // SS freezes hot-path preparation, but it must not seal directory
+  // membership. A genuinely new late R is prepared on the admin path.
+  f.send(msgStockDirectory("MSFT", 8));
+  ASSERT_NE(f.books.getOrderBook(8), nullptr);
+  f.send(msgAdd(555, 'S', 100, "MSFT", 4102500, 8));
+  ASSERT_EQ(f.top(8).ask_qty, 100u);
+
+  f.send(msgSystemEvent('Q'));
+  f.send(msgSystemEvent('M'));
+  ASSERT_EQ(f.parser.channelPhase(), ChannelPhase::PostMarketHours);
+
+  // Message type E is Order Executed. It remains a book mutation after the
+  // system-event M (End of Market Hours).
+  f.send(msgExecute(555, 40, 9001, 8));
+
+  EXPECT_EQ(f.top(8).ask_qty, 60u);
+  EXPECT_EQ(f.parser.channelPhase(), ChannelPhase::PostMarketHours);
+  EXPECT_TRUE(f.parser.lastError().empty());
+}
+
+TEST(ItchParserTest, SupportsMaximumWireStockLocate) {
+  Fixture f;
+  constexpr uint16_t kMaxWireLocate = UINT16_MAX;
+
+  f.add(555, 'B', 100, "MAXLOC", 1905900, kMaxWireLocate);
+
+  EXPECT_TRUE(f.symbols.isRegistered(kMaxWireLocate));
+  EXPECT_EQ(f.top(kMaxWireLocate).bid_qty, 100u);
 }

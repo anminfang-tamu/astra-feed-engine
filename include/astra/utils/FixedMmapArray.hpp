@@ -2,7 +2,10 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
+#include <new>
 #include <sys/mman.h>
 #include <type_traits>
 
@@ -10,7 +13,10 @@ template <typename T>
 class FixedMmapArray {
 public:
   explicit FixedMmapArray(std::size_t count) noexcept
-      : count_(count), bytes_(count * sizeof(T)), data_(map(bytes_)) {
+      : count_(count), bytes_(checkedBytes(count)),
+        data_(map(count_, bytes_)) {
+    static_assert(std::is_trivial_v<T>);
+    static_assert(std::is_trivially_copyable_v<T>);
     static_assert(std::is_trivially_destructible_v<T>);
   }
 
@@ -53,12 +59,32 @@ private:
 #error "FixedMmapArray requires MAP_ANONYMOUS or MAP_ANON"
 #endif
 
-  static T *map(std::size_t bytes) noexcept {
+  static std::size_t checkedBytes(std::size_t count) noexcept {
+    if (count > std::numeric_limits<std::size_t>::max() / sizeof(T))
+      std::abort();
+    return count * sizeof(T);
+  }
+
+  static T *map(std::size_t count, std::size_t bytes) noexcept {
     if (bytes == 0) return nullptr;
     void *mapping = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                            MAP_PRIVATE | kAnonymousMapFlag, -1, 0);
     if (mapping == MAP_FAILED) std::abort();
-    return static_cast<T *>(mapping);
+    if (reinterpret_cast<std::uintptr_t>(mapping) % alignof(T) != 0) {
+      (void)::munmap(mapping, bytes);
+      std::abort();
+    }
+
+    // mmap provides suitably aligned storage, but it does not itself begin a
+    // C++ T[] lifetime. Non-allocating placement array-new establishes one
+    // array spanning the mapping. T is trivial, so omitted () preserves the
+    // kernel's zero-filled pages without an element-by-element constructor.
+    T *const objects = ::new (mapping) T[count];
+    if (objects != mapping) {
+      (void)::munmap(mapping, bytes);
+      std::abort();
+    }
+    return objects;
   }
 
   void unmap() noexcept {

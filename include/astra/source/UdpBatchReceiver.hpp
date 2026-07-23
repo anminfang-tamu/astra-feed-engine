@@ -41,6 +41,11 @@ public:
 
   int fd() const noexcept { return fd_; }
 
+  static constexpr bool shouldDropDatagram(
+      std::size_t reported_size, bool kernel_reported_truncation) noexcept {
+    return kernel_reported_truncation || reported_size > kMaxPacketSize;
+  }
+
 private:
   std::size_t receiveBatch() noexcept;
 #ifdef __linux__

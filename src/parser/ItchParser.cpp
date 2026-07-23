@@ -1,17 +1,12 @@
 #include "astra/parser/ItchParser.hpp"
-#include "astra/book/BookCapacity.hpp"
-#include "astra/core/Time.hpp"
+#include "astra/protocol/ItchMessageLength.hpp"
 
 #include <cstring>
-#include <iostream>
 #include <string_view>
 
 namespace {
 
-constexpr std::size_t kStockOffset =
-    24; // offset of 8-char ticker in Add messages
 constexpr std::size_t kStockLen = 8;
-constexpr std::size_t kSystemEventLen = 12;
 constexpr std::size_t kSystemEventCodeOffset = 11;
 
 std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
@@ -59,22 +54,45 @@ bool ItchParser::handleMessage(std::span<const std::byte> msg) {
     return fail("empty ITCH message");
   }
 
+  const std::uint8_t expected_length =
+      astra::protocol::expectedItchMessageLength(msg[0]);
+  if (expected_length == 0)
+    return fail("unsupported ITCH message type");
+  if (msg.size() != expected_length)
+    return fail("invalid ITCH message length");
+  return dispatchMessage(msg);
+}
+
+bool ItchParser::handlePrevalidatedMessage(
+    std::span<const std::byte> msg) {
+  last_error_.clear();
+  last_message_skipped_ = false;
+  if (msg.empty())
+    return fail("empty prevalidated ITCH message");
+  return dispatchMessage(msg);
+}
+
+bool ItchParser::dispatchMessage(std::span<const std::byte> msg) {
   const char type = static_cast<char>(std::to_integer<uint8_t>(msg[0]));
-  const uint16_t locate = msg.size() >= 3 ? readU16BE(msg, 1) : 0;
+  const uint16_t locate = readU16BE(msg, 1);
+
+  if (channel_phase_ == ChannelPhase::EndOfMessages) {
+    return fail("ITCH message after end of messages");
+  }
 
   switch (type) {
   // Book-relevant messages
   case 'A':
-    handleAdd(msg, locate, false);
+    handleAdd(msg, locate);
     return !last_message_skipped_;
   case 'F':
-    handleAdd(msg, locate, true);
+    handleAdd(msg, locate);
     return !last_message_skipped_;
   case 'E':
-    handleExecution(msg, locate, false);
+    handleOrderExecuted(msg, locate);
     return !last_message_skipped_;
   case 'C':
-    handleExecution(msg, locate, true);
+    handleOrderExecutedWithPrice(msg, locate);
     return !last_message_skipped_;
   case 'X':
     handleCancel(msg, locate);
@@ -121,22 +139,18 @@ bool ItchParser::handleMessage(std::span<const std::byte> msg) {
 // [24-31] Stock
 // [32-35] Price
 // [36-39] Attribution (F only)
-void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
-                           bool with_mpid) {
-  const std::size_t required = with_mpid ? 40 : 36;
-  if (msg.size() < required) {
-    return (void)fail("truncated add order");
-  }
+void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate) {
 
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t qty = readU32BE(msg, 20);
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
 
-  if (!symbols_.isRegistered(locate)) {
-    return (void)skip();
-  }
-
-  books_.addOrder(locate, order_id, price, qty, (char)msg[19]);
+  // The manager's resident descriptor is the authoritative preparation bit.
+  // Avoid separate directory and parser-side flag reads on every hot add.
+  applyBookResult(books_.addOrder(locate, order_id, price, qty,
+                                  static_cast<char>(
+                                      std::to_integer<uint8_t>(msg[19]))),
+                  "add order");
 }
 
 // 'E' (31 bytes) / 'C' (36 bytes)
@@ -145,45 +159,41 @@ void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate,
 // [23-30] Match Number
 // [31]    Printable (C only)
 // [32-35] Execution Price (C only)
-void ItchParser::handleExecution(std::span<const std::byte> msg,
-                                 uint16_t locate, bool with_price) {
-  const std::size_t required = with_price ? 36 : 31;
-  if (msg.size() < required) {
-    return (void)fail("truncated execution");
-  }
+void ItchParser::handleOrderExecuted(std::span<const std::byte> msg,
+                                     uint16_t locate) {
+  applyExecution(msg, locate);
+}
 
+void ItchParser::handleOrderExecutedWithPrice(
+    std::span<const std::byte> msg, uint16_t locate) {
+  applyExecution(msg, locate);
+}
+
+void ItchParser::applyExecution(std::span<const std::byte> msg,
+                                uint16_t locate) {
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t executed_qty = readU32BE(msg, 19);
 
-  if (!books_.trade(locate, order_id, executed_qty)) {
-    return (void)skip();
-  }
-  // Execution part will be implemented later
+  applyBookResult(books_.executeOrder(locate, order_id, executed_qty),
+                  "order execution");
 }
 
 // 'X' (23 bytes)
 // [11-18] Order Reference Number
 // [19-22] Cancelled Shares
 void ItchParser::handleCancel(std::span<const std::byte> msg, uint16_t locate) {
-  if (msg.size() < 23) {
-    return (void)fail("truncated cancel");
-  }
-
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t canceled_qty = readU32BE(msg, 19);
 
-  books_.cancelShares(locate, order_id, canceled_qty);
+  applyBookResult(books_.cancelShares(locate, order_id, canceled_qty),
+                  "order cancel");
 }
 
 // 'D' (19 bytes)
 // [11-18] Order Reference Number
 void ItchParser::handleDelete(std::span<const std::byte> msg, uint16_t locate) {
-  if (msg.size() < 19) {
-    return (void)fail("truncated delete");
-  }
-
   const uint64_t order_id = readU64BE(msg, 11);
-  books_.deleteOrder(locate, order_id);
+  applyBookResult(books_.deleteOrder(locate, order_id), "order delete");
 }
 
 // 'U' (35 bytes)
@@ -193,25 +203,20 @@ void ItchParser::handleDelete(std::span<const std::byte> msg, uint16_t locate) {
 // [31-34] Price
 void ItchParser::handleReplace(std::span<const std::byte> msg,
                                uint16_t locate) {
-  if (msg.size() < 35) {
-    return (void)fail("truncated replace");
-  }
-
   const uint64_t old_id = readU64BE(msg, 11);
   const uint64_t new_id = readU64BE(msg, 19);
   const uint32_t new_qty = readU32BE(msg, 27);
   const uint64_t new_price = static_cast<uint64_t>(readU32BE(msg, 31));
 
-  books_.replaceOrder(locate, old_id, new_id, new_price, new_qty);
+  applyBookResult(
+      books_.replaceOrder(locate, old_id, new_id, new_price, new_qty),
+      "order replace");
 }
 
 // 'B' (19 bytes)
 // [11-18] Match Number
 void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t) {
-  if (msg.size() < 19) {
-    return (void)fail("truncated broken trade");
-  }
-
+  (void)msg;
   // Match-number history is not tracked in the parser.
   return (void)skip();
 }
@@ -226,12 +231,19 @@ void ItchParser::handleBrokenTrade(std::span<const std::byte> msg, uint16_t) {
 // [26]   Issue Classification
 // [29]   Authenticity ('P'=live, 'T'=test)
 void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
-  if (msg.size() < 39)
-    return;
   const uint16_t locate = readU16BE(msg, 1);
   const std::string_view sym = fixedText(msg, 11, kStockLen);
-  if (sym.empty() || locate == 0)
-    return;
+  if (sym.empty() || !astra::symbol::isValidStockLocate(locate)) {
+    return (void)fail("invalid stock-directory identity");
+  }
+
+  // A repeated R is a metadata refresh.  A ticker change for an existing
+  // locate is an identity conflict and must not retarget a live order book.
+  if (const auto *existing = symbols_.get(locate);
+      existing != nullptr && std::string_view(existing->ticker) != sym) {
+    return (void)fail("conflicting ticker for stock locate");
+  }
+
   if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
   }
@@ -249,7 +261,9 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
   symbols_.set(locate, entry);
-  books_.setBookCapacityTier(locate, astra::book_capacity::tierForTicker(sym));
+  if (books_prepared_ && !createRegisteredBook(locate)) {
+    return (void)fail("unable to prepare stock-directory book");
+  }
 }
 
 // 'S' (12 bytes) — System Event
@@ -258,38 +272,51 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
 //      'Q' Start of Market Hours, 'M' End of Market Hours,
 //      'E' End of System Hours, 'C' End of Messages.
 void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
-  if (msg.size() < kSystemEventLen) {
-    return (void)fail("truncated system event");
-  }
-
   const char event_code =
       static_cast<char>(std::to_integer<uint8_t>(msg[kSystemEventCodeOffset]));
   switch (event_code) {
   case 'O':
-    channel_phase_ = ChannelPhase::StartupDirectorySpin;
+    (void)advancePhase(ChannelPhase::StartupDirectorySpin);
     break;
   case 'S':
     handleSystemHoursStart();
     break;
   case 'Q':
-    channel_phase_ = ChannelPhase::MarketHours;
+    (void)advancePhase(ChannelPhase::MarketHours);
     break;
   case 'M':
-    channel_phase_ = ChannelPhase::SystemHours;
+    (void)advancePhase(ChannelPhase::PostMarketHours);
     break;
   case 'E':
+    (void)advancePhase(ChannelPhase::PostSystemHours);
+    break;
   case 'C':
-    channel_phase_ = ChannelPhase::WaitingStartOfMessages;
+    (void)advancePhase(ChannelPhase::EndOfMessages);
     break;
   default:
-    markStartupAdminMessage(event_code);
+    (void)fail("unsupported system event code");
     break;
   }
 }
 
-void ItchParser::handleSystemHoursStart() noexcept {
-  channel_phase_ = ChannelPhase::SystemHours;
-  createRegisteredBooks();
+void ItchParser::handleSystemHoursStart() {
+  if (!advancePhase(ChannelPhase::SystemHours))
+    return;
+  if (books_prepared_)
+    return;
+  books_prepared_ = true;
+  if (!createRegisteredBooks()) {
+    (void)fail("unable to prepare registered books");
+  }
+}
+
+bool ItchParser::advancePhase(ChannelPhase next_phase) {
+  if (static_cast<unsigned>(next_phase) <
+      static_cast<unsigned>(channel_phase_)) {
+    return fail("out-of-order system event");
+  }
+  channel_phase_ = next_phase;
+  return true;
 }
 
 void ItchParser::markStartupAdminMessage(char type) noexcept {
@@ -299,28 +326,45 @@ void ItchParser::markStartupAdminMessage(char type) noexcept {
   }
 }
 
-void ItchParser::createRegisteredBook(uint16_t locate) noexcept {
+bool ItchParser::createRegisteredBook(uint16_t locate) noexcept {
   if (!astra::symbol::isValidStockLocate(locate) ||
-      prepared_book_by_locate_[locate] || !symbols_.isRegistered(locate)) {
+      !symbols_.isRegistered(locate)) {
+    return false;
+  }
+  if (books_.getOrCreate(locate) == nullptr) {
+    return false;
+  }
+  return true;
+}
+
+bool ItchParser::createRegisteredBooks() noexcept {
+  bool success = true;
+  for (std::size_t slot = 1;
+       slot < astra::symbol::StockDirectory::kMaxLocate; ++slot) {
+    const auto locate = static_cast<uint16_t>(slot);
+    if (symbols_.isRegistered(locate)) {
+      success = createRegisteredBook(locate) && success;
+    }
+  }
+  return success;
+}
+
+void ItchParser::applyBookResult(astra::book::MutationResult result,
+                                 std::string_view operation) {
+  if (result == astra::book::MutationResult::Applied)
     return;
-  }
-
-  (void)books_.getOrCreate(locate);
-  prepared_book_by_locate_[locate] = true;
+  [[unlikely]] applyBookFailure(result, operation);
 }
 
-void ItchParser::createRegisteredBooks() noexcept {
-  for (uint16_t locate = 1; locate < astra::symbol::StockDirectory::kMaxLocate;
-       ++locate) {
-    createRegisteredBook(locate);
-  }
-}
-
-void ItchParser::reset() {
-  channel_phase_ = ChannelPhase::WaitingStartOfMessages;
-  last_message_skipped_ = false;
-  last_error_.clear();
-  prepared_book_by_locate_.fill(false);
+void ItchParser::applyBookFailure(astra::book::MutationResult result,
+                                  std::string_view operation) {
+  // This is the sole mutation-error formatting boundary. Keeping it cold and
+  // non-inlined lets the successful A/F/E/C/X/D/U closure remain strictly
+  // allocation-free while preserving a useful terminal decoder error.
+  last_message_skipped_ = true;
+  last_error_.assign(operation.data(), operation.size());
+  last_error_.append(": ");
+  last_error_.append(astra::book::mutationResultName(result));
 }
 
 void ItchParser::setChannelId(uint8_t id) { channel_id_ = id; }
@@ -338,7 +382,11 @@ bool ItchParser::skip() {
   last_message_skipped_ = true;
   return false;
 }
-bool ItchParser::fail(std::string error) {
-  last_error_ = std::move(error);
+bool ItchParser::fail(std::string_view error) {
+  // Literal wire/lifecycle failures arrive here without constructing a
+  // std::string in the hot parser caller. Any allocation is confined to this
+  // explicitly cold boundary.
+  last_message_skipped_ = true;
+  last_error_.assign(error.data(), error.size());
   return false;
 }

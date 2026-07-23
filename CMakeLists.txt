@@ -15,9 +15,11 @@ option(ASTRA_ENABLE_DPDK      "Build DPDK receiver support" OFF)
 find_library(ZLIB_LIBRARY z REQUIRED)
 
 add_library(astra_feed_engine STATIC
+    src/book/BookCapacityProfile.cpp
     src/book/BookManager.cpp
     src/book/OrderBook.cpp
-    src/book/PriceLevel.cpp
+    src/book/OrderTable.cpp
+    src/book/PriceLevelStore.cpp
     src/codec/MoldUdpDecoder.cpp
     src/core/Config.cpp
     src/core/Time.cpp
@@ -30,7 +32,7 @@ add_library(astra_feed_engine STATIC
     src/publish/NullPublisher.cpp
     src/replay/GzipLineReader.cpp
     src/replay/itch/ItchMoldUdpSource.cpp
-    src/replay/itch/ItchParser.cpp
+    src/parser/ItchParser.cpp
     src/sequencing/SequenceTracker.cpp
     src/source/DualUdpBatchReceiver.cpp
     src/source/DualUdpReceiver.cpp
@@ -85,4 +87,8 @@ endif()
 if(ASTRA_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(ASTRA_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()

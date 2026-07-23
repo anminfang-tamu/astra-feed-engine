@@ -1,5 +1,6 @@
 #include "astra/source/UdpReceiver.hpp"
 #include "astra/source/PacketView.hpp"
+#include "astra/source/UdpBatchReceiver.hpp"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -95,4 +96,12 @@ TEST_F(UdpReceiverTest, MultiplePacketsReceivedInOrder) {
 
 TEST_F(UdpReceiverTest, ThrowsOnInvalidIpAddress) {
   EXPECT_THROW(UdpReceiver("not_an_ip", kPort), std::runtime_error);
+}
+
+TEST(UdpBatchReceiverPolicyTest, DropsRatherThanClampsTruncatedDatagrams) {
+  EXPECT_FALSE(UdpBatchReceiver::shouldDropDatagram(
+      UdpBatchReceiver::kMaxPacketSize, false));
+  EXPECT_TRUE(UdpBatchReceiver::shouldDropDatagram(
+      UdpBatchReceiver::kMaxPacketSize + 1, false));
+  EXPECT_TRUE(UdpBatchReceiver::shouldDropDatagram(128, true));
 }

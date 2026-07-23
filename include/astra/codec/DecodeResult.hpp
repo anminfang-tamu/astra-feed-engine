@@ -13,7 +13,27 @@ enum class DecodeStatus {
   Heartbeat,
   EndOfStream,
   InvalidSequence,
+  InvalidSession,
+  InvalidItchMessage,
+  IncompleteSession,
 };
+
+// These failures make MoldUdpDecoder sticky-invalid because continuing would
+// apply later sequence numbers to state whose continuity or wire validity is
+// no longer trustworthy. Production must stop even when best-effort handling
+// is enabled for transient datagram errors.
+constexpr bool isTerminalDecodeFailure(DecodeStatus status) noexcept {
+  switch (status) {
+  case DecodeStatus::InvalidSize:
+  case DecodeStatus::InvalidSequence:
+  case DecodeStatus::InvalidSession:
+  case DecodeStatus::InvalidItchMessage:
+  case DecodeStatus::IncompleteSession:
+    return true;
+  default:
+    return false;
+  }
+}
 
 struct DecodeResult {
   DecodeStatus status{DecodeStatus::Ok};
