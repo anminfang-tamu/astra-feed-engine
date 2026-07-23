@@ -1,4 +1,5 @@
 #include "astra/protocol/PacketHeader.hpp"
+#include "astra/protocol/MoldUdpControlPacket.hpp"
 #include "astra/source/UdpSender.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 #include "replay/itch/ItchMoldUdpSource.hpp"
@@ -27,6 +28,10 @@ namespace {
 std::atomic<bool> g_running{true};
 constexpr uint64_t kDefaultLineBDelayNs = 1'000;
 constexpr uint64_t kMaxLineBDelayNs = 1'000'000'000;
+constexpr uint64_t kDefaultStartupHeartbeatCount = 100;
+constexpr uint64_t kDefaultStartupHeartbeatIntervalMs = 10;
+constexpr uint64_t kMaxStartupHeartbeatCount = 1'000'000;
+constexpr uint64_t kMaxStartupHeartbeatIntervalMs = 60'000;
 
 void onSignal(int) { g_running.store(false, std::memory_order_relaxed); }
 
@@ -102,29 +107,6 @@ uint64_t readU64BE(const std::byte *p) {
     for (int i = 0; i < 8; ++i)
         v = (v << 8) | std::to_integer<uint8_t>(p[i]);
     return v;
-}
-
-std::array<std::byte, MoldUdpPacketHeader::kHeaderSize>
-makeEndOfSessionPacket(std::string_view session, uint64_t next_sequence) {
-    std::array<std::byte, MoldUdpPacketHeader::kHeaderSize> packet{};
-    for (std::size_t i = 0; i < MoldUdpPacketHeader::kSessionSize; ++i) {
-        packet[i] =
-            i < session.size()
-                ? static_cast<std::byte>(
-                      static_cast<unsigned char>(session[i]))
-                : std::byte{' '};
-    }
-    for (int i = 7; i >= 0; --i) {
-        packet[MoldUdpPacketHeader::kSessionSize +
-               static_cast<std::size_t>(i)] =
-            static_cast<std::byte>(next_sequence & 0xffu);
-        next_sequence >>= 8;
-    }
-    packet[18] = static_cast<std::byte>(
-        MoldUdpPacketHeader::kEndOfSessionMessageCount >> 8);
-    packet[19] = static_cast<std::byte>(
-        MoldUdpPacketHeader::kEndOfSessionMessageCount & 0xffu);
-    return packet;
 }
 
 uint64_t readU48BE(const std::byte *p) {
@@ -575,7 +557,11 @@ int main(int argc, char *argv[]) {
                   << "  redundant CPU affinity: set both ASTRA_CPU_A and"
                      " ASTRA_CPU_B to distinct CPUs\n"
                   << "  redundant line skew: ASTRA_LINE_B_DELAY_NS"
-                     " (default 1000; 0 disables)\n";
+                     " (default 1000; 0 disables)\n"
+                  << "  cold-path preamble: ASTRA_STARTUP_HEARTBEAT_COUNT"
+                     " (default 100) and"
+                     " ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS"
+                     " (default 10; count 0 disables)\n";
         return EXIT_FAILURE;
     }
 
@@ -630,6 +616,9 @@ int main(int argc, char *argv[]) {
     int cpu_a = -1;
     int cpu_b = -1;
     uint64_t line_b_delay_ns = kDefaultLineBDelayNs;
+    uint64_t startup_heartbeat_count = kDefaultStartupHeartbeatCount;
+    uint64_t startup_heartbeat_interval_ms =
+        kDefaultStartupHeartbeatIntervalMs;
     if (redundant) {
         const char *cpu_a_env = std::getenv("ASTRA_CPU_A");
         const char *cpu_b_env = std::getenv("ASTRA_CPU_B");
@@ -664,6 +653,29 @@ int main(int argc, char *argv[]) {
                              " 0 through 1000000000\n";
                 return EXIT_FAILURE;
             }
+        }
+    }
+
+    if (const char *count_env =
+            std::getenv("ASTRA_STARTUP_HEARTBEAT_COUNT")) {
+        if (!parseU64Strict(count_env, startup_heartbeat_count) ||
+            startup_heartbeat_count > kMaxStartupHeartbeatCount) {
+            std::cerr << "ASTRA_STARTUP_HEARTBEAT_COUNT must be an integer"
+                         " from 0 through "
+                      << kMaxStartupHeartbeatCount << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+    if (const char *interval_env =
+            std::getenv("ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS")) {
+        if (!parseU64Strict(interval_env, startup_heartbeat_interval_ms) ||
+            startup_heartbeat_interval_ms >
+                kMaxStartupHeartbeatIntervalMs) {
+            std::cerr
+                << "ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS must be an integer"
+                   " from 0 through "
+                << kMaxStartupHeartbeatIntervalMs << "\n";
+            return EXIT_FAILURE;
         }
     }
 
@@ -780,6 +792,9 @@ int main(int argc, char *argv[]) {
         }
         if (ss_pause_seconds > 0)
             std::cout << "  ss_pause_seconds=" << ss_pause_seconds;
+        std::cout << "  startup_heartbeats=" << startup_heartbeat_count
+                  << " startup_heartbeat_interval_ms="
+                  << startup_heartbeat_interval_ms;
         std::cout << "\n  (press Ctrl+C to stop)\n";
 
         const auto interval =
@@ -803,7 +818,53 @@ int main(int argc, char *argv[]) {
         uint64_t logical_messages = 0;
         uint64_t logical_first_seq = 0;
         uint64_t logical_next_seq = 0;
+        uint64_t startup_heartbeats_sent = 0;
         PacketView packet;
+
+        if (startup_heartbeat_count != 0) {
+            const auto startup_heartbeat =
+                astra::protocol::makeMoldHeartbeatPacket(
+                    session, source.nextSequence());
+            auto heartbeat_deadline = std::chrono::steady_clock::now();
+            const auto heartbeat_interval = std::chrono::milliseconds(
+                startup_heartbeat_interval_ms);
+
+            for (uint64_t index = 0;
+                 index < startup_heartbeat_count &&
+                 g_running.load(std::memory_order_relaxed);
+                 ++index) {
+                ++logical_packets;
+                logical_next_seq = source.nextSequence();
+
+                if (redundant_sender != nullptr) {
+                    const uint64_t line_a_packets_before =
+                        redundant_sender->line(0).packets_sent;
+                    const uint64_t line_b_packets_before =
+                        redundant_sender->line(1).packets_sent;
+                    redundant_sender->send(startup_heartbeat.data(),
+                                           startup_heartbeat.size(), 0);
+                    if (redundant_sender->line(0).packets_sent ==
+                            line_a_packets_before + 1 &&
+                        redundant_sender->line(1).packets_sent ==
+                            line_b_packets_before + 1) {
+                        ++startup_heartbeats_sent;
+                    }
+                } else if (sender_a->send(startup_heartbeat.data(),
+                                          startup_heartbeat.size())) {
+                    ++line_a_pkts_sent;
+                    ++startup_heartbeats_sent;
+                } else {
+                    ++line_a_send_failures;
+                }
+
+                if (heartbeat_interval.count() > 0) {
+                    heartbeat_deadline += heartbeat_interval;
+                    if (!sleepUntilOrStopped(heartbeat_deadline))
+                        break;
+                }
+            }
+            next_send = std::chrono::steady_clock::now();
+        }
 
         while (g_running.load(std::memory_order_relaxed)) {
             if (!source.next(packet)) break;
@@ -891,7 +952,8 @@ int main(int argc, char *argv[]) {
         if (source.completed()) {
             const uint64_t end_sequence = source.nextSequence();
             const auto end_packet =
-                makeEndOfSessionPacket(session, end_sequence);
+                astra::protocol::makeMoldEndOfSessionPacket(
+                    session, end_sequence);
             ++logical_packets;
             if (logical_first_seq == 0)
                 logical_first_seq = end_sequence;
@@ -949,6 +1011,8 @@ int main(int argc, char *argv[]) {
                       << line_b_delay_overruns
                       << " logical_packets=" << logical_packets
                       << " logical_messages=" << logical_messages
+                      << " startup_heartbeats_sent="
+                      << startup_heartbeats_sent
                       << " first_seq=" << logical_first_seq
                       << " next_seq=" << logical_next_seq
                       << " end_of_session_sent="
@@ -957,6 +1021,8 @@ int main(int argc, char *argv[]) {
             std::cout << "sender_stats completion=" << completion
                       << " pkts_sent=" << line_a_pkts_sent
                       << " msgs_sent=" << line_a_msgs_sent
+                      << " startup_heartbeats_sent="
+                      << startup_heartbeats_sent
                       << " first_seq=" << logical_first_seq
                       << " next_seq=" << logical_next_seq
                       << " send_failures=" << line_a_send_failures

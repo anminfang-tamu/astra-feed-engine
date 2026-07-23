@@ -547,9 +547,12 @@ private:
     const auto *frame = reinterpret_cast<const std::byte *>(
         rte_pktmbuf_mtod(mbuf, const void *));
 
-    if (flow_filter_)
-      return parseFast(frame, frame_len);
-    return parseGeneral(frame, frame_len);
+    // Hardware flow steering is optional. The fast parser independently
+    // validates Ethernet, IPv4, UDP, and both configured endpoints, so the
+    // ordinary untagged/option-free path remains safe when a PMD (including
+    // AWS ENA) cannot enable rte_flow isolation. VLAN and IPv4-option frames
+    // still fall through to parseGeneral().
+    return parseFast(frame, frame_len);
   }
 
   ParsedPacket parseFast(const std::byte *frame,
@@ -562,13 +565,16 @@ private:
     constexpr std::size_t payload_offset =
         udp_offset + sizeof(struct rte_udp_hdr);
 
-    if (frame_len < payload_offset)
+    if (frame_len < sizeof(struct rte_ether_hdr))
       return {ParseStatus::Malformed, nullptr, 0, 0, true};
 
     const auto *ether =
         reinterpret_cast<const struct rte_ether_hdr *>(frame);
     if (rte_be_to_cpu_16(ether->ether_type) != RTE_ETHER_TYPE_IPV4)
       return parseGeneral(frame, frame_len);
+
+    if (frame_len < payload_offset)
+      return {ParseStatus::Malformed, nullptr, 0, 0, true};
 
     const auto *ipv4 = reinterpret_cast<const struct rte_ipv4_hdr *>(
         frame + sizeof(struct rte_ether_hdr));

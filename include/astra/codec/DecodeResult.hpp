@@ -18,6 +18,36 @@ enum class DecodeStatus {
   IncompleteSession,
 };
 
+constexpr const char *decodeStatusName(DecodeStatus status) noexcept {
+  switch (status) {
+  case DecodeStatus::Ok:
+    return "Ok";
+  case DecodeStatus::PacketTooSmall:
+    return "PacketTooSmall";
+  case DecodeStatus::InvalidMessageType:
+    return "InvalidMessageType";
+  case DecodeStatus::InvalidSize:
+    return "InvalidSize";
+  case DecodeStatus::UnSupportedVersion:
+    return "UnSupportedVersion";
+  case DecodeStatus::InvalidOrderSide:
+    return "InvalidOrderSide";
+  case DecodeStatus::Heartbeat:
+    return "Heartbeat";
+  case DecodeStatus::EndOfStream:
+    return "EndOfStream";
+  case DecodeStatus::InvalidSequence:
+    return "InvalidSequence";
+  case DecodeStatus::InvalidSession:
+    return "InvalidSession";
+  case DecodeStatus::InvalidItchMessage:
+    return "InvalidItchMessage";
+  case DecodeStatus::IncompleteSession:
+    return "IncompleteSession";
+  }
+  return "Unknown";
+}
+
 // These failures make MoldUdpDecoder sticky-invalid because continuing would
 // apply later sequence numbers to state whose continuity or wire validity is
 // no longer trustworthy. Production must stop even when best-effort handling

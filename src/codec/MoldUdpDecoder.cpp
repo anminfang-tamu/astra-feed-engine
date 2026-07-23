@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <span>
+#include <string_view>
 
 namespace {
 
@@ -22,12 +23,31 @@ void mergeLatency(DecodeResult &target, const DecodeResult &source) noexcept {
   target.latency_sample_count += source.latency_sample_count;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((cold, noinline))
+#endif
+void reportMessageFailure(std::uint64_t packet_first_seq,
+                          std::uint64_t message_seq, char message_type,
+                          std::uint16_t stock_locate,
+                          std::string_view detail) {
+  std::cerr << "decoder_message_failure"
+            << " status="
+            << decodeStatusName(DecodeStatus::InvalidItchMessage)
+            << " packet_first_seq=" << packet_first_seq
+            << " message_seq=" << message_seq
+            << " message_type=" << message_type
+            << " stock_locate=" << stock_locate
+            << " detail=\"" << detail << "\"\n";
+}
+
 } // namespace
 
 MoldUdpDecoder::MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
-                               BookManager &books, uint8_t channel_id)
+                               BookManager &books, uint8_t channel_id,
+                               std::uint64_t initial_expected_sequence)
     : parser_(symbols, books, channel_id) {
   channel_.channel_id = channel_id;
+  channel_.next_expected_seq = initial_expected_sequence;
 }
 
 uint16_t MoldUdpDecoder::readU16BE(const std::byte *p) noexcept {
@@ -65,7 +85,6 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (!first_packet_seen_) {
     first_packet_seen_ = true;
     channel_.setSession(reinterpret_cast<const char *>(packet.data));
-    channel_.next_expected_seq = first_seq;
   } else if (!channel_.sessionMatches(
                  reinterpret_cast<const char *>(packet.data))) {
     // One process owns exactly one Mold session.  Do not use generation tags
@@ -255,7 +274,13 @@ DecodeResult MoldUdpDecoder::processSequencedPacket(
       parser_.handlePrevalidatedMessage(
           std::span<const std::byte>(data + offset, msg_len));
       channel_.phase = parser_.channelPhase();
-      if (!parser_.lastError().empty()) {
+      if (!parser_.lastError().empty()) [[unlikely]] {
+        const char message_type =
+            static_cast<char>(std::to_integer<std::uint8_t>(data[offset]));
+        const std::uint16_t stock_locate =
+            readU16BE(data + offset + 1);
+        reportMessageFailure(first_seq, message_seq, message_type,
+                             stock_locate, parser_.lastError());
         channel_.status = ChannelHealth::Invalid;
         return {DecodeStatus::InvalidItchMessage};
       }

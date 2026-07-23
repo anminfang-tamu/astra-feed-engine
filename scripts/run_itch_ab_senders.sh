@@ -21,6 +21,8 @@ PREMARKET_SPEEDUP="${11:-${ASTRA_PREMARKET_SPEEDUP:-1}}"
 CPU_A="${ASTRA_CPU_A:-}"
 CPU_B="${ASTRA_CPU_B:-}"
 LINE_B_DELAY_NS="${ASTRA_LINE_B_DELAY_NS:-1000}"
+STARTUP_HEARTBEAT_COUNT="${ASTRA_STARTUP_HEARTBEAT_COUNT:-100}"
+STARTUP_HEARTBEAT_INTERVAL_MS="${ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS:-10}"
 NUMA_NODE="${ASTRA_NUMA_NODE:-}"
 NUMA_MEM_POLICY="${ASTRA_NUMA_MEM_POLICY:-membind}"
 
@@ -51,6 +53,8 @@ if ((${#LINE_B_DELAY_NS} > 10)) ||
   exit 2
 fi
 export ASTRA_LINE_B_DELAY_NS="${LINE_B_DELAY_NS}"
+export ASTRA_STARTUP_HEARTBEAT_COUNT="${STARTUP_HEARTBEAT_COUNT}"
+export ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS="${STARTUP_HEARTBEAT_INTERVAL_MS}"
 
 echo "Configuring synchronized ITCH A/B feeder (build_type=${BUILD_TYPE})..."
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
@@ -175,6 +179,7 @@ echo "  msgs_per_packet=${MSGS_PER_PACKET} session='${SESSION}' rate=${PKTS_PER_
 echo "  premarket_seconds=${PREMARKET_SECONDS}"
 echo "  ss_pause_seconds=${SS_PAUSE_SECONDS}"
 echo "  line_b_delay_ns=${LINE_B_DELAY_NS}"
+echo "  startup_heartbeats=${STARTUP_HEARTBEAT_COUNT} interval_ms=${STARTUP_HEARTBEAT_INTERVAL_MS}"
 if [[ -n "${PREMARKET_REPLAY_MODE}" ]]; then
   echo "  premarket_replay_mode=${PREMARKET_REPLAY_MODE} premarket_speedup=${PREMARKET_SPEEDUP}"
 fi

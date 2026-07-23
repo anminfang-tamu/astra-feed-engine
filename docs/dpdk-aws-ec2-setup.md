@@ -281,6 +281,8 @@ ctest --test-dir build --output-on-failure
 ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
 ASTRA_LINE_B_DELAY_NS=1000 \
+ASTRA_STARTUP_HEARTBEAT_COUNT=100 \
+ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS=10 \
 ASTRA_PREMARKET_REPLAY_MODE=off \
 ASTRA_SS_PAUSE_SECONDS=120 \
 ./scripts/run_itch_ab_senders.sh \
@@ -293,6 +295,13 @@ ASTRA_SS_PAUSE_SECONDS=120 \
   50000
 ```
 
+The one-second Mold heartbeat preamble repeatedly advertises next sequence
+`1` without advancing the stream. It warms the sender's route/neighbor path
+and binds the receiver to the session before the first sequenced ITCH packet.
+The heartbeat samples are excluded from latency statistics. Keep the preamble
+enabled for EC2 acceptance; its count and interval are explicit so a different
+network can tune them without changing code.
+
 The full trace exercises the late Stock Directory `R` after `SS` and order
 cleanup after system-event `E`. Branch 6 keeps those paths active; only
 system-event `C` is terminal.
@@ -302,9 +311,10 @@ system-event `C` is terminal.
 A clean full-trace run has:
 
 ```text
-sender completion=complete
+sender_stats completion=complete
 line_a_send_failures=0
 line_b_send_failures=0
+startup_heartbeats_sent=100
 first_seq=1
 next_seq=368366635
 end_of_session_sent=true
@@ -315,6 +325,11 @@ imissed=0
 ierrors=0
 rx_nombuf=0
 ```
+
+With `ASTRA_DPDK_FLOW_FILTER=off`, ordinary untagged IPv4/UDP feed frames still
+use the independently validated software fast parser. `fast_path` should
+therefore dominate; `fallback_path` is reserved for VLAN or IPv4-option
+frames and unrelated non-fast-path traffic.
 
 Both processes must exit with status zero. Retain the complete sender and
 engine logs. Any gap, malformed packet, capacity failure, DPDK
@@ -348,6 +363,10 @@ and book behavior but is not DPDK or deterministic EC2 latency evidence.
 - `generator Ninja does not match Unix Makefiles`: omit `-G Ninja` when
   reusing `build`, or recreate `build` before intentionally changing
   generators.
+- `Gap meet channel_expected_seq=1 packet_first_seq=...`: the first sequenced
+  datagram arrived before sequence 1. Stop both processes, retain both logs,
+  and rerun with the startup heartbeat preamble enabled. The decoder never
+  infers a new starting sequence from an arbitrary first datagram.
 - `IOMMU support is disabled`: on a dedicated benchmark host only, use the
   documented unsafe VFIO no-IOMMU procedure and bind with `--noiommu-mode`.
 - `no DPDK Ethernet ports are available`: check the VFIO binding and that the

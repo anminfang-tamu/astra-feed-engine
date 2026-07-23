@@ -2,6 +2,7 @@
 #include "astra/channel/ChannelHealth.hpp"
 #include "astra/codec/MoldUdpDecoder.hpp"
 #include "astra/core/Time.hpp"
+#include "astra/protocol/MoldUdpControlPacket.hpp"
 #include "astra/source/PacketView.hpp"
 #include "astra/symbol/StockDirectory.hpp"
 
@@ -129,6 +130,106 @@ PacketView view(const Bytes &b) {
 }
 
 } // namespace
+
+TEST(MoldUdpDecoderTest,
+     FirstObservedAheadPacketDoesNotRebaseExpectedSequence) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books;
+  MoldUdpDecoder decoder(symbols, books, 3);
+
+  const Bytes directory = stockDirectoryMessage(1, "AAPL");
+  const Bytes ahead =
+      moldPacket(2, std::span<const Bytes>(&directory, 1));
+
+  const DecodeResult gap = decoder.processPacket(view(ahead));
+
+  EXPECT_EQ(gap.status, DecodeStatus::Ok);
+  EXPECT_TRUE(gap.had_gap);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::GapDetected);
+  EXPECT_EQ(decoder.channelState().gap_buffer.size(), 1u);
+  EXPECT_EQ(symbols.size(), 0u);
+
+  const Bytes start = systemEventMessage('O');
+  const DecodeResult recovered =
+      decoder.processPacket(view(moldPacket(
+          1, std::span<const Bytes>(&start, 1))));
+
+  EXPECT_EQ(recovered.status, DecodeStatus::Ok);
+  EXPECT_TRUE(recovered.had_gap);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 3u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  EXPECT_TRUE(decoder.channelState().gap_buffer.empty());
+  EXPECT_EQ(symbols.size(), 1u);
+}
+
+TEST(MoldUdpDecoderTest, ExplicitInitialSequenceIsHonored) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books;
+  constexpr std::uint64_t initial_sequence = 42;
+  MoldUdpDecoder decoder(symbols, books, 3, initial_sequence);
+
+  const Bytes start = systemEventMessage('O');
+  const DecodeResult result =
+      decoder.processPacket(view(moldPacket(
+          initial_sequence, std::span<const Bytes>(&start, 1))));
+
+  EXPECT_EQ(result.status, DecodeStatus::Ok);
+  EXPECT_FALSE(result.had_gap);
+  EXPECT_EQ(decoder.channelState().next_expected_seq,
+            initial_sequence + 1);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+}
+
+TEST(MoldUdpDecoderTest,
+     StartupHeartbeatBindsSessionWithoutAdvancingOrSampling) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books;
+  MoldUdpDecoder decoder(symbols, books, 3);
+  const auto heartbeat =
+      astra::protocol::makeMoldHeartbeatPacket("ASTRA", 1);
+
+  const PacketView heartbeat_view{
+      heartbeat.data(), heartbeat.size(), rdtsc()};
+  const DecodeResult first = decoder.processPacket(heartbeat_view);
+  const DecodeResult duplicate = decoder.processPacket(heartbeat_view);
+
+  EXPECT_EQ(first.status, DecodeStatus::Ok);
+  EXPECT_EQ(first.latency_sample_count, 0u);
+  EXPECT_EQ(duplicate.status, DecodeStatus::Ok);
+  EXPECT_EQ(duplicate.latency_sample_count, 0u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+
+  const std::array<Bytes, 2> setup_messages{
+      stockDirectoryMessage(1, "AAPL"), systemEventMessage('S')};
+  const DecodeResult setup =
+      decoder.processPacket(view(moldPacket(1, setup_messages)));
+
+  EXPECT_EQ(setup.status, DecodeStatus::Ok);
+  EXPECT_EQ(setup.latency_sample_count, 2u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 3u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::Good);
+  EXPECT_EQ(symbols.size(), 1u);
+  EXPECT_NE(books.getOrderBook(1), nullptr);
+}
+
+TEST(MoldUdpDecoderTest, FirstAheadHeartbeatDoesNotRebaseExpectedSequence) {
+  astra::symbol::StockDirectory symbols;
+  BookManager books;
+  MoldUdpDecoder decoder(symbols, books, 3);
+  const std::span<const Bytes> no_messages;
+
+  const DecodeResult result =
+      decoder.processPacket(view(moldPacket(21, no_messages)));
+
+  EXPECT_EQ(result.status, DecodeStatus::Ok);
+  EXPECT_TRUE(result.had_gap);
+  EXPECT_EQ(result.latency_sample_count, 0u);
+  EXPECT_EQ(decoder.channelState().next_expected_seq, 1u);
+  EXPECT_EQ(decoder.channelState().heartbeat_next_seq_high_watermark, 21u);
+  EXPECT_EQ(decoder.channelState().status, ChannelHealth::GapDetected);
+}
 
 TEST(MoldUdpDecoderTest, BuffersOutOfOrderPacketsUntilGapIsFilled) {
   astra::symbol::StockDirectory symbols;

@@ -596,6 +596,13 @@ ASTRA_SS_PAUSE_SECONDS=30 \
 The final `10000` is the normal packet rate per line outside the timestamp-paced
 pre-market window.
 
+The sender begins with 100 Mold heartbeat packets at 10 ms intervals by
+default. They all advertise next sequence 1 without advancing the replay,
+warming a cold network path before the first ITCH record. Override
+`ASTRA_STARTUP_HEARTBEAT_COUNT` and
+`ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS`, or set the count to 0 for an already
+controlled local path. Heartbeats are not latency samples.
+
 ## Replay Modes
 
 ### Timestamp Mode

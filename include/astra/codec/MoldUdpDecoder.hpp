@@ -16,8 +16,17 @@
 // No intermediate structs — raw bytes go straight to the order book.
 class MoldUdpDecoder : public IPacketProcessor {
 public:
+  // A decoder never infers continuity from the first datagram it happens to
+  // receive. Full-session NASDAQ replay starts at 1; a re-numbered test stream
+  // that still contains the complete lifecycle may provide its authoritative
+  // first sequence explicitly. This option does not restore mid-session book
+  // or parser state.
+  static constexpr std::uint64_t kDefaultInitialSequence = 1;
+
   explicit MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
-                          BookManager &books, uint8_t channel_id = 0);
+                          BookManager &books, uint8_t channel_id = 0,
+                          std::uint64_t initial_expected_sequence =
+                              kDefaultInitialSequence);
 
   DecodeResult processPacket(const PacketView &packet) override;
   const DecodeStageTiming *lastStageTiming() const noexcept override;
