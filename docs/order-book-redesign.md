@@ -197,9 +197,10 @@ state.
 
 The batched UDP path now drops a whole datagram when `MSG_TRUNC` is set or the
 reported size exceeds its buffer, matching the scalar receiver rather than
-forwarding a clamped prefix. The broader transport audit is not fully closed:
-gap-buffer replacement and remaining packet-size/interface normalization are
-follow-on work, not properties of the book data structure.
+forwarding a clamped prefix. Kernel, replay, DPDK, and gap storage now share
+the 2,048-byte packet limit. The remaining gap-buffer replacement and
+multi-interface kernel-receiver policy are transport follow-on work, not
+properties of the book data structure.
 
 ### Other project-wide deterministic-latency risks
 
@@ -208,23 +209,17 @@ follow-on work, not properties of the book data structure.
   1,048,575 slots. The bound is finite but far too large and data-dependent for
   a deterministic recovery path. Index a fixed recovery ring directly by
   sequence number and store the full sequence/generation in each slot.
-- Kernel, replay, DPDK, and gap storage disagree on maximum packet size.  One
-  deployment frame limit must be used everywhere; oversized datagrams are
-  dropped whole.
 - `md_engine` now exits when explicitly requested CPU affinity cannot be
   established. Standalone benchmark binaries still require external pinning,
   for example `numactl --physcpubind=<cpu> --membind=<node>`.
-- EAL/network initialization can change affinity after memory has been touched.
-  Initialize EAL/network first, establish and verify final CPU/NUMA placement,
-  then allocate and pre-fault arenas.
 - Kernel multicast uses `INADDR_ANY`; redundant-feed deployments on multiple
   ENIs need an explicit interface address/index.
-- Branch-5 DPDK flow-off parsing assumes fixed Ethernet/IPv4/UDP offsets and
-  does not validate endpoints.  It also supports only one port/queue and cannot
-  distinguish equal UDP ports on different multicast groups.
-- Socket buffer, busy-poll, batch, DPDK descriptor, and mempool values are
-  unexplained constants.  They should be validated startup settings and the
-  effective kernel values should be reported.
+- DPDK initializes EAL before book construction, reapplies the requested CPU
+  after EAL, and validates fixed-offset frames before falling back to the
+  general VLAN/IPv4/UDP parser even when hardware flow filtering is off.
+  Descriptor, mempool, burst, port, and queue settings are validated and
+  reported. Effective kernel socket buffer and busy-poll settings still need
+  equivalent reporting on the ordinary UDP path.
 - `ASTRA_BUILD_BENCHMARKS` now builds the trace profiler, the synthetic
   order-book microbenchmark, and the full parser/book replay benchmark. The
   benchmark boundary and configuration must still be recorded with every

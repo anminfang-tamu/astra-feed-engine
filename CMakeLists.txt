@@ -35,8 +35,6 @@ if(ASTRA_ENABLE_IPO)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
-find_library(ZLIB_LIBRARY z REQUIRED)
-
 add_library(astra_feed_engine STATIC
     src/book/BookCapacityProfile.cpp
     src/book/BookManager.cpp
@@ -44,29 +42,18 @@ add_library(astra_feed_engine STATIC
     src/book/OrderTable.cpp
     src/book/PriceLevelStore.cpp
     src/codec/MoldUdpDecoder.cpp
-    src/core/Config.cpp
     src/core/Time.cpp
     src/engine/MarketDataEngine.cpp
-    src/metrics/Histogram.cpp
     src/metrics/LatencyRecorder.cpp
-    src/metrics/MetricsReporter.cpp
     src/metrics/StageLatencyRecorder.cpp
-    src/publish/ConsolePublisher.cpp
-    src/publish/NullPublisher.cpp
-    src/replay/GzipLineReader.cpp
     src/replay/itch/ItchMoldUdpSource.cpp
     src/parser/ItchParser.cpp
-    src/sequencing/SequenceTracker.cpp
     src/source/DualUdpBatchReceiver.cpp
     src/source/DualUdpReceiver.cpp
     src/source/UdpBatchReceiver.cpp
     src/source/UdpReceiver.cpp
     src/source/UdpSender.cpp
-    src/strategy/SimpleStrategy.cpp
     src/utils/CpuAffinity.cpp
-    src/utils/Logger.cpp
-    src/utils/MemoryPool.cpp
-    src/utils/RingBuffer.cpp
 )
 
 add_library(astra::feed_engine ALIAS astra_feed_engine)
@@ -80,11 +67,6 @@ endif()
 target_include_directories(astra_feed_engine
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
-)
-
-target_link_libraries(astra_feed_engine
-    PRIVATE
-        ${ZLIB_LIBRARY}
 )
 
 target_compile_options(astra_feed_engine

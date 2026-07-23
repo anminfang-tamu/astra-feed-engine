@@ -137,7 +137,6 @@ install_apt_packages() {
     procps
     tar
     unzip
-    zlib1g-dev
   )
 
   local acceptance_packages=(

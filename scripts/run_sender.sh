@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Single-process synchronized MoldUDP64/ITCH sender for redundant A/B lines.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -6,6 +7,48 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/itch_moldudp_sender"
 BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/run_sender.sh [itch_file] [dest_ip] [port_a] [port_b] \
+    [messages_per_packet] [session] [packets_per_second] \
+    [premarket_seconds] [ss_pause_seconds] \
+    [premarket_replay_mode] [premarket_speedup]
+
+Defaults:
+  itch_file             data/itch/unzipped/01302019.NASDAQ_ITCH50
+  dest_ip               127.0.0.1
+  port_a / port_b       9000 / 9001
+  messages_per_packet   20
+  session               "ASTRA     "
+  packets_per_second    5000 per line
+
+Useful environment:
+  ASTRA_CPU_A=3
+  ASTRA_CPU_B=4
+  ASTRA_LINE_B_DELAY_NS=1000
+  ASTRA_STARTUP_HEARTBEAT_COUNT=100
+  ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS=10
+  ASTRA_PREMARKET_REPLAY_MODE=off
+  ASTRA_PREMARKET_SPEEDUP=1
+  ASTRA_SS_PAUSE_SECONDS=120
+  ASTRA_NUMA_NODE=0
+  ASTRA_NUMA_MEM_POLICY=membind
+  ASTRA_BUILD_TYPE=Release
+  ASTRA_ENABLE_IPO=OFF
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if (($# > 11)); then
+  echo "Too many arguments." >&2
+  usage >&2
+  exit 2
+fi
 
 ITCH_FILE="${1:-${ROOT_DIR}/data/itch/unzipped/01302019.NASDAQ_ITCH50}"
 DEST_IP="${2:-127.0.0.1}"

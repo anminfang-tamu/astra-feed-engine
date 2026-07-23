@@ -29,8 +29,9 @@ correctness invariants, storage plan, and acceptance procedure are in
   memory plan at startup. The checked-in 2019 trace profile is an acceptance
   fixture, not a universal production capacity forecast.
 - Validate the complete live transport path separately. `recvmmsg`, socket
-  buffering, redundant-feed recovery, and any future DPDK path are outside
-  the book-only latency distribution and must not be conflated with it.
+  buffering, redundant-feed recovery, and DPDK are outside the book-only
+  latency distribution and must not be conflated with it. The current DPDK
+  load-sweep observations are recorded separately in the README.
 - Retain separate `perf stat` evidence for cache/TLB misses, faults, context
   switches, and migrations. Instrumentation runs are diagnostic and are not
   members of the accepted latency population.

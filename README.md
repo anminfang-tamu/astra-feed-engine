@@ -4,6 +4,10 @@ AstraFeed is a low-latency C++ market data feed handler for MoldUDP64-wrapped
 NASDAQ ITCH 5.0 replay. The primary benchmark setup uses redundant A/B UDP
 sender lines feeding one `md_engine` receiver.
 
+The detailed branch-6 architecture, design rationale, and acceptance contract
+are in
+[`docs/order-book-redesign.md`](docs/order-book-redesign.md).
+
 ## Order-book architecture
 
 The order book is process-wide and single-writer:
@@ -528,6 +532,66 @@ RDTSCP; on other architectures it uses the monotonic clock fallback. Therefore
 non-x86 hosts can run tests and benchmarks, but they are not valid for the EC2
 cycle/latency acceptance gate.
 
+## Recorded EC2 DPDK full-trace observations
+
+The following are single-run receiver observations recorded on 2026-07-23 for
+the complete pinned 2019-01-30 trace at clean Release commit
+`ea08c29863e95bde693240c7ae011308173e3212` (`ipo=OFF`). They use CPU 2 on
+NUMA node 0, `membind`, the pinned prefaulted capacity profile, DPDK burst 8,
+8,192 RX descriptors, a 65,535-entry mempool, packet latency mode, flow
+filtering off, and 20 ITCH messages per MoldUDP64 data packet. The rate is the
+sender's configured target per line, not measured achieved throughput. If the
+sender meets that target, the nominal logical rates are 2, 3, and 4 million
+ITCH messages/s; redundant A/B traffic approximately doubles the physical
+packet rate without doubling the logical message rate.
+
+| Configured rate per line (packet/s) | Nominal logical messages/s | Mean (ns) | Min (ns) | p50 (ns) | p90 (ns) | p99 (ns) | p99.9 (ns) | p99.99 (ns) | Max (ns) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 2,000,000 | 129.13 | 5 | 127 | 175 | 231 | 553 | 682 | 9,552 |
+| 150,000 | 3,000,000 | 123.74 | 5 | 121 | 167 | 220 | 586 | 689 | 10,186 |
+| 200,000 | 4,000,000 | 122.15 | 5 | 120 | 166 | 219 | 611 | 719 | 9,499 |
+
+Every row ended with 8,713 symbols,
+`channel_next_seq=368366635`, `channel_status_name=Good`,
+`latency count=368366634`, and `invalid=0`. The packet-path evidence was:
+
+| Configured rate per line (packet/s) | Line A packets | Line B packets | Fast path | Fallback path | Filtered |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 18,418,433 | 18,418,432 | 36,836,865 | 6 | 6 |
+| 150,000 | 18,418,433 | 18,418,432 | 36,836,865 | 5 | 5 |
+| 200,000 | 18,418,433 | 18,418,431 | 36,836,864 | 6 | 6 |
+
+All three rows reported `malformed=0`, `imissed=0`, `ierrors=0`, and
+`rx_nombuf=0`. The fast-path count equals the accepted A/B packet counts; the
+small fallback population was filtered. Line A delivered the complete stream,
+including 18,418,332 data packets, 100 startup heartbeats, and the
+end-of-session marker. The engine stops as soon as one valid end marker is
+decoded and does not drain late redundant tail frames, which explains the
+small B-side tail delta without implying logical message loss. A retained
+sender log is still required to distinguish that shutdown behavior from a
+B-side send or upstream failure.
+
+At 200,000 packet/s per line, mean through p99 improved by 0.45% to 1.29%
+relative to 150,000, while p99.9 and p99.99 increased by 4.27% and 4.35%.
+Across the three observations the central distribution improves with rate, but
+the deep tails rise monotonically. This is not a loss or saturation result, but
+it means 200,000 is not unambiguously better when deterministic tail latency
+has priority.
+
+In `ASTRA_DPDK_LATENCY_MODE=packet`, timing starts after the RX burst returns
+and covers frame parsing, Mold validation/sequencing, ITCH dispatch, and book
+work. Each accepted packet's elapsed processing time is divided by its newly
+processed message count and entered with that weight. These values are
+therefore amortized processing nanoseconds per logical message, not individual
+message, NIC, network, RX-queue, or sender-to-book latency. Duplicate packets,
+startup heartbeats, and the end marker do not contribute latency samples.
+
+These observations are useful load-sweep evidence, not the controlled
+deterministic-latency acceptance record. Repeat each rate in fresh processes,
+retain every engine and sender log (including elapsed time, send failures, and
+`line_b_delay_overruns`), and compare worst-of-run p99.9/p99.99 rather than
+averaging percentiles.
+
 ## Linux A/B Replay
 
 For the AWS secondary-ENI DPDK path, use
@@ -538,7 +602,7 @@ This runbook assumes:
 
 - engine host: runs `md_engine`
 - sender host: runs the synchronized redundant feeder through
-  `scripts/run_itch_ab_senders.sh`
+  `scripts/run_sender.sh`
 - ITCH file: `data/itch/unzipped/01302019.NASDAQ_ITCH50`
 - packet shape: `20` ITCH messages per MoldUDP64 packet
 
@@ -583,7 +647,7 @@ ASTRA_CPU_B=4 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=30 \
-./scripts/run_itch_ab_senders.sh \
+./scripts/run_sender.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
   9000 \
@@ -640,7 +704,7 @@ ASTRA_CPU_A=3 \
 ASTRA_CPU_B=4 \
 ASTRA_PREMARKET_SECONDS=600 \
 ASTRA_SS_PAUSE_SECONDS=120 \
-./scripts/run_itch_ab_senders.sh \
+./scripts/run_sender.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
   9000 \
@@ -659,7 +723,7 @@ testing.
 The wrapper also supports positional controls:
 
 ```text
-run_itch_ab_senders.sh \
+run_sender.sh \
   <itch_file> <dest_ip> <port_a> <port_b> \
   <msgs_per_packet> <session> <pkt_per_second> \
   [premarket_seconds] [ss_pause_seconds] [premarket_replay_mode] [premarket_speedup]
@@ -673,7 +737,7 @@ ASTRA_CPU_B=4 \
 ASTRA_PREMARKET_REPLAY_MODE=timestamp \
 ASTRA_PREMARKET_SPEEDUP=33 \
 ASTRA_SS_PAUSE_SECONDS=120 \
-./scripts/run_itch_ab_senders.sh \
+./scripts/run_sender.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.91 \
   9000 \

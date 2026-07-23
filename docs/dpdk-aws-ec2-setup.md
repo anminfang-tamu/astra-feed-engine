@@ -62,7 +62,7 @@ changes; apply them only on a dedicated benchmark instance.
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  build-essential cmake git ninja-build pkg-config zlib1g-dev \
+  build-essential cmake git ninja-build pkg-config \
   numactl ethtool dpdk dpdk-dev libdpdk-dev
 
 pkg-config --modversion libdpdk
@@ -259,7 +259,7 @@ MoldUDP64 packet to line A and line B before advancing:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake git zlib1g-dev numactl
+sudo apt-get install -y build-essential cmake git numactl
 
 cd ~/astra-feed-engine
 git switch 6-redesign-order-book-data-structure
@@ -285,7 +285,7 @@ ASTRA_STARTUP_HEARTBEAT_COUNT=100 \
 ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS=10 \
 ASTRA_PREMARKET_REPLAY_MODE=off \
 ASTRA_SS_PAUSE_SECONDS=120 \
-./scripts/run_itch_ab_senders.sh \
+./scripts/run_sender.sh \
   ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   172.31.32.18 \
   9000 \

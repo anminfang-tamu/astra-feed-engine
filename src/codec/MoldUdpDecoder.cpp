@@ -1,7 +1,6 @@
 #include "astra/codec/MoldUdpDecoder.hpp"
 #include "astra/core/Time.hpp"
 #include "astra/protocol/ItchMessageLength.hpp"
-#include "astra/utils/DebugTrace.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -327,9 +326,6 @@ DecodeStatus MoldUdpDecoder::validateSequencedPacket(
 DecodeResult MoldUdpDecoder::drainGapBuffer() {
   DecodeResult aggregate{DecodeStatus::Ok};
   for (;;) {
-    // ASTRA_TRACE("decoder drain gap expected=%llu",
-    //             static_cast<unsigned long
-    //             long>(channel_.next_expected_seq));
     // A bridge packet can advance expected into the middle of a packet that
     // was buffered earlier. Search the bounded set of valid packet starts at
     // or below expected and process only its unseen tail. This also removes a
@@ -364,9 +360,6 @@ DecodeResult MoldUdpDecoder::drainGapBuffer() {
     if (erased_stale_packet)
       continue;
     if (packet == nullptr) {
-      // ASTRA_TRACE("decoder drain none expected=%llu",
-      //             static_cast<unsigned long
-      //             long>(channel_.next_expected_seq));
       return aggregate;
     }
 
