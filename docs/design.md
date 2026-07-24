@@ -1,4 +1,4 @@
-# Order-book redesign: implemented architecture and acceptance plan
+# AstraFeed design and acceptance plan
 
 ## Implemented decision
 
@@ -64,13 +64,13 @@ cannot prove that it will never occur.
 Build and run the reproducible trace profiler with:
 
 ```sh
-cmake -S . -B build/perf \
+cmake -S . -B build \
   -DASTRA_BUILD_APPS=OFF \
   -DASTRA_BUILD_TESTS=OFF \
   -DASTRA_BUILD_BENCHMARKS=ON \
   -DCMAKE_BUILD_TYPE=Release
-cmake --build build/perf --target astra_itch_trace_profile -j
-build/perf/benchmarks/astra_itch_trace_profile data/itch/unzipped/01302019.NASDAQ_ITCH50
+cmake --build build --target astra_itch_trace_profile -j
+build/benchmarks/astra_itch_trace_profile data/itch/unzipped/01302019.NASDAQ_ITCH50
 ```
 
 ## Findings that drove the redesign
@@ -476,14 +476,26 @@ Before mapping any arena, the engine prints `book_capacity_profile` with the
 evidence hash and minimum/effective headroom, followed by `book_storage_plan`.
 `md_engine --book-storage-plan-only` performs those checks and exits before
 mapping. The evidence file is canonical ASCII with one final LF and exactly
-these ordered keys: `schema=astra_book_capacity_evidence_v1`, `profile_name`,
-`corpus_manifest_sha256`, `profiler_sha256`, `order_direct_slots`,
-`order_fallback_buckets`, `price_page_capacity`, `profiled_max_order_ref`,
-`profiled_unique_price_pages`, `minimum_direct_order_headroom`, and
-`minimum_price_page_headroom`. Extra/reordered fields, CRLF, leading-zero
-integers, and non-ASCII input fail closed. Parsed values are authoritative and
-every duplicated environment value must match, binding startup to the approved
-multi-day evidence rather than an unverified hash-shaped label.
+these ordered keys:
+
+```text
+schema=astra_book_capacity_evidence_v1
+profile_name=<audit-safe profile token>
+corpus_manifest_sha256=<64 lowercase hex>
+profiler_sha256=<64 lowercase hex>
+order_direct_slots=<canonical positive integer>
+order_fallback_buckets=<canonical positive integer>
+price_page_capacity=<canonical positive integer>
+profiled_max_order_ref=<canonical positive integer>
+profiled_unique_price_pages=<canonical positive integer>
+minimum_direct_order_headroom=<canonical positive integer>
+minimum_price_page_headroom=<canonical positive integer>
+```
+
+Extra/reordered fields, CRLF, leading-zero integers, and non-ASCII input fail
+closed. Parsed values are authoritative and every duplicated environment value
+must match, binding startup to the approved multi-day evidence rather than an
+unverified hash-shaped label.
 
 The replay binary takes the same three book capacities at runtime through
 `--direct-order-slots=N`, `--fallback-buckets=N`, and
@@ -524,25 +536,96 @@ remains blocked at a start gate until those artifacts and the configured sample
 schedule pass validation; only then does the monitor release timed replay. It
 does not infer completion from total RSS or treat THP policy as actual backing.
 
+## Live A/B replay and transport measurement
+
+The live topology has one `md_engine` process and one synchronized sender
+process. The sender reads one length-prefixed ITCH stream, sends each logical
+MoldUDP64 packet to line A, publishes the same buffer to the dedicated line-B
+thread, and waits for B to finish before advancing. The default B target is
+1,000 ns after A. Running two independent sender processes is not equivalent:
+they would not share sequence, pacing, or completion state.
+
+`scripts/run_sender.sh` is the sole sender entry point. It begins with 100 Mold
+heartbeats at 10 ms intervals by default. Every heartbeat advertises next
+sequence 1 without advancing the source and contributes no latency sample.
+This preamble warms route/neighbor state and binds the receiver to the Mold
+session before sequenced traffic.
+
+The sender supports three pre-market policies:
+
+- `ASTRA_PREMARKET_REPLAY_MODE=off` uses the configured flat packet rate,
+  apart from an optional pause immediately after `SS`.
+- `ASTRA_PREMARKET_REPLAY_MODE=timestamp` follows ITCH timestamps between
+  `SS` and `SQ`, divided by `ASTRA_PREMARKET_SPEEDUP`. The pinned trace spans
+  about 5.5 hours in that interval, so speedups 10, 33, and 165 take roughly
+  33, 10, and 2 minutes.
+- `ASTRA_PREMARKET_SECONDS=N` spreads the `SS`-to-`SQ` segment evenly over
+  `N` seconds for a smoother deterministic stress window.
+
+Use `scripts/run_sender.sh --help` for the positional interface and all
+environment controls. The operational DPDK ENI/VFIO/hugepage procedure is kept
+separately in
+[`dpdk-aws-ec2-setup.md`](dpdk-aws-ec2-setup.md).
+
+The ordinary UDP runner supports scalar `recv` and Linux
+`recvmmsg`/`batch` modes. `ASTRA_UDP_DROP_METRICS=on` enables kernel overflow
+reporting. A clean completed run requires sender completion and end-marker
+success, matching sender/receiver next sequence, `channel_status_name=Good`,
+the exact trace latency count, and zero malformed/drop/error counters.
+
+The decoder accepts a Mold end marker only after exact sequence recovery and
+terminal ITCH system event `C`. The first valid marker from either redundant
+line stops the engine; it intentionally does not drain late duplicate tail
+frames, so receiver A/B packet totals can differ slightly even when the entire
+logical stream completed.
+
+In `ASTRA_DPDK_LATENCY_MODE=packet`, timing begins after
+`rte_eth_rx_burst()` returns. It covers frame parsing, Mold validation and
+sequencing, ITCH dispatch, and book mutation. The elapsed packet processing
+time is divided by the number of newly processed messages and entered with
+that weight. The reported distribution is therefore amortized CPU processing
+nanoseconds per logical message. It excludes NIC, network, RX-queue, and
+sender-to-book latency; duplicate A/B packets, heartbeats, and the end marker
+produce no latency samples.
+
+For the three recorded 2026-07-23 load points, every run reached sequence
+368,366,635 with 368,366,634 latency samples, 8,713 symbols, a healthy channel,
+and zero malformed, missed, error, or no-buffer counts. Packet-path evidence
+was:
+
+| Configured rate per line (packet/s) | Line A packets | Line B packets | Fast path | Fallback/filtered |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 18,418,433 | 18,418,432 | 36,836,865 | 6 |
+| 150,000 | 18,418,433 | 18,418,432 | 36,836,865 | 5 |
+| 200,000 | 18,418,433 | 18,418,431 | 36,836,864 | 6 |
+
+The central distribution improved as configured rate increased, but the deep
+tails rose: from 150,000 to 200,000 packet/s per line, mean through p99
+improved by 0.45% to 1.29%, while p99.9 and p99.99 worsened by 4.27% and
+4.35%. These are single-run observations rather than deterministic acceptance
+evidence. Repeat fresh processes, retain every sender and engine log (including
+elapsed time, send failures, and `line_b_delay_overruns`), and compare the
+worst repeated tail rather than averaging percentiles.
+
 ## Reproducible measurement commands
 
 Build release binaries and tests:
 
 ```sh
-cmake -S . -B build/perf \
+cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DASTRA_BUILD_APPS=ON \
   -DASTRA_BUILD_TESTS=ON \
   -DASTRA_BUILD_BENCHMARKS=ON
-cmake --build build/perf -j
-ctest --test-dir build/perf --output-on-failure
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
 Run the synthetic mutation benchmark. Repeat the named gate option to enforce
 separate ceilings on the distributions that represent the accepted workload:
 
 ```sh
-build/perf/benchmarks/astra_order_book_benchmark \
+build/benchmarks/astra_order_book_benchmark \
   --iterations=100000 \
   --gate=direct_partial_execute:150:300:600 \
   --gate=remove_cross_page_best:150:300:600
@@ -583,7 +666,7 @@ NUMA node on the selected instance:
 
 ```sh
 numactl --physcpubind=2 --membind=0 \
-  build/perf/benchmarks/astra_itch_book_replay_benchmark \
+  build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   --prefault \
   --sample-every=64 \
@@ -636,7 +719,7 @@ layout. Because those reads alter cache state, do not enable them in a
 published timing run:
 
 ```sh
-build/perf/benchmarks/astra_itch_book_replay_benchmark \
+build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
   --sample-every=1024 \
   --min-samples=1000 \
@@ -783,7 +866,7 @@ Recommended hardware-counter capture:
 perf stat -e cycles,instructions,branches,branch-misses,cache-misses,\
 dTLB-loads,dTLB-load-misses,page-faults,context-switches,cpu-migrations \
   numactl --physcpubind=2 --membind=0 \
-  build/perf/benchmarks/astra_order_book_benchmark --iterations=100000
+  build/benchmarks/astra_order_book_benchmark --iterations=100000
 ```
 
 The `--max-*-p50-ns` options are convenience gates, not substitutes for the

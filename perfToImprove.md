@@ -3,7 +3,7 @@
 This file is retained only as a record of the review that motivated branch
 `6-redesign-order-book-data-structure`. The authoritative architecture,
 correctness invariants, storage plan, and acceptance procedure are in
-[`docs/order-book-redesign.md`](docs/order-book-redesign.md).
+[`docs/design.md`](docs/design.md).
 
 ## Findings resolved by the redesign
 
