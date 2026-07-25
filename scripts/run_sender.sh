@@ -7,17 +7,17 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 BUILD_DIR="${ROOT_DIR}/build"
 BINARY="${BUILD_DIR}/itch_moldudp_sender"
 BUILD_TYPE="${ASTRA_BUILD_TYPE:-Release}"
+SKIP_BUILD="${ASTRA_SENDER_SKIP_BUILD:-off}"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  ./scripts/run_sender.sh [itch_file] [dest_ip] [port_a] [port_b] \
+  ./scripts/run_sender.sh <itch_file> [dest_ip] [port_a] [port_b] \
     [messages_per_packet] [session] [packets_per_second] \
     [premarket_seconds] [ss_pause_seconds] \
     [premarket_replay_mode] [premarket_speedup]
 
 Defaults:
-  itch_file             data/itch/unzipped/01302019.NASDAQ_ITCH50
   dest_ip               127.0.0.1
   port_a / port_b       9000 / 9001
   messages_per_packet   20
@@ -28,8 +28,13 @@ Useful environment:
   ASTRA_CPU_A=3
   ASTRA_CPU_B=4
   ASTRA_LINE_B_DELAY_NS=1000
-  ASTRA_STARTUP_HEARTBEAT_COUNT=100
-  ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS=10
+  ASTRA_STARTUP_HEARTBEAT_COUNT=0
+  ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS=1000
+  ASTRA_HEARTBEAT_INTERVAL_MS=1000
+  ASTRA_EOS_PACKET_COUNT=10
+  ASTRA_EOS_INTERVAL_MS=100
+  ASTRA_BINARYFILE_COMPLETION=strict
+    # use legacy-sc-eof only for a separately verified SC+EOF capture
   ASTRA_PREMARKET_REPLAY_MODE=off
   ASTRA_PREMARKET_SPEEDUP=1
   ASTRA_SS_PAUSE_SECONDS=120
@@ -37,6 +42,7 @@ Useful environment:
   ASTRA_NUMA_MEM_POLICY=membind
   ASTRA_BUILD_TYPE=Release
   ASTRA_ENABLE_IPO=OFF
+  ASTRA_SENDER_SKIP_BUILD=on  # launch the already-tested binary
 USAGE
 }
 
@@ -44,13 +50,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
-if (($# > 11)); then
-  echo "Too many arguments." >&2
+if (($# < 1 || $# > 11)); then
+  echo "An explicit ITCH file is required." >&2
   usage >&2
   exit 2
 fi
 
-ITCH_FILE="${1:-${ROOT_DIR}/data/itch/unzipped/01302019.NASDAQ_ITCH50}"
+ITCH_FILE="$1"
 DEST_IP="${2:-127.0.0.1}"
 PORT_A="${3:-9000}"
 PORT_B="${4:-9001}"
@@ -64,8 +70,12 @@ PREMARKET_SPEEDUP="${11:-${ASTRA_PREMARKET_SPEEDUP:-1}}"
 CPU_A="${ASTRA_CPU_A:-}"
 CPU_B="${ASTRA_CPU_B:-}"
 LINE_B_DELAY_NS="${ASTRA_LINE_B_DELAY_NS:-1000}"
-STARTUP_HEARTBEAT_COUNT="${ASTRA_STARTUP_HEARTBEAT_COUNT:-100}"
-STARTUP_HEARTBEAT_INTERVAL_MS="${ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS:-10}"
+STARTUP_HEARTBEAT_COUNT="${ASTRA_STARTUP_HEARTBEAT_COUNT:-0}"
+STARTUP_HEARTBEAT_INTERVAL_MS="${ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS:-1000}"
+HEARTBEAT_INTERVAL_MS="${ASTRA_HEARTBEAT_INTERVAL_MS:-1000}"
+EOS_PACKET_COUNT="${ASTRA_EOS_PACKET_COUNT:-10}"
+EOS_INTERVAL_MS="${ASTRA_EOS_INTERVAL_MS:-100}"
+BINARYFILE_COMPLETION="${ASTRA_BINARYFILE_COMPLETION:-strict}"
 NUMA_NODE="${ASTRA_NUMA_NODE:-}"
 NUMA_MEM_POLICY="${ASTRA_NUMA_MEM_POLICY:-membind}"
 
@@ -98,17 +108,36 @@ fi
 export ASTRA_LINE_B_DELAY_NS="${LINE_B_DELAY_NS}"
 export ASTRA_STARTUP_HEARTBEAT_COUNT="${STARTUP_HEARTBEAT_COUNT}"
 export ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS="${STARTUP_HEARTBEAT_INTERVAL_MS}"
+export ASTRA_HEARTBEAT_INTERVAL_MS="${HEARTBEAT_INTERVAL_MS}"
+export ASTRA_EOS_PACKET_COUNT="${EOS_PACKET_COUNT}"
+export ASTRA_EOS_INTERVAL_MS="${EOS_INTERVAL_MS}"
+export ASTRA_BINARYFILE_COMPLETION="${BINARYFILE_COMPLETION}"
 
-echo "Configuring synchronized ITCH A/B feeder (build_type=${BUILD_TYPE})..."
-cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
-  -DASTRA_BUILD_APPS=ON \
-  -DASTRA_BUILD_TESTS=ON \
-  -DASTRA_BUILD_BENCHMARKS=OFF \
-  -DASTRA_ENABLE_DPDK=OFF \
-  "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" \
-  "-DASTRA_ENABLE_IPO=${ASTRA_ENABLE_IPO:-OFF}"
-cmake --build "${BUILD_DIR}" --target itch_moldudp_sender \
-  -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+case "${SKIP_BUILD}" in
+  0|false|off|no)
+    echo "Configuring synchronized ITCH A/B feeder (build_type=${BUILD_TYPE})..."
+    cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
+      -DASTRA_BUILD_APPS=ON \
+      -DASTRA_BUILD_TESTS=ON \
+      -DASTRA_BUILD_BENCHMARKS=OFF \
+      -DASTRA_ENABLE_DPDK=OFF \
+      "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" \
+      "-DASTRA_ENABLE_IPO=${ASTRA_ENABLE_IPO:-OFF}"
+    cmake --build "${BUILD_DIR}" --target itch_moldudp_sender \
+      -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+    ;;
+  1|true|on|yes)
+    if [[ ! -x "${BINARY}" ]]; then
+      echo "ASTRA_SENDER_SKIP_BUILD=on but sender binary is missing: ${BINARY}" >&2
+      exit 1
+    fi
+    echo "Using prebuilt synchronized ITCH A/B feeder: ${BINARY}"
+    ;;
+  *)
+    echo "Unknown ASTRA_SENDER_SKIP_BUILD value: ${SKIP_BUILD}" >&2
+    exit 2
+    ;;
+esac
 
 git_sha="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
 git_sha="${git_sha:-unknown}"
@@ -223,6 +252,9 @@ echo "  premarket_seconds=${PREMARKET_SECONDS}"
 echo "  ss_pause_seconds=${SS_PAUSE_SECONDS}"
 echo "  line_b_delay_ns=${LINE_B_DELAY_NS}"
 echo "  startup_heartbeats=${STARTUP_HEARTBEAT_COUNT} interval_ms=${STARTUP_HEARTBEAT_INTERVAL_MS}"
+echo "  heartbeat_interval_ms=${HEARTBEAT_INTERVAL_MS}"
+echo "  eos_packet_count=${EOS_PACKET_COUNT} eos_interval_ms=${EOS_INTERVAL_MS}"
+echo "  binaryfile_completion=${BINARYFILE_COMPLETION}"
 if [[ -n "${PREMARKET_REPLAY_MODE}" ]]; then
   echo "  premarket_replay_mode=${PREMARKET_REPLAY_MODE} premarket_speedup=${PREMARKET_SPEEDUP}"
 fi

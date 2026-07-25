@@ -6,6 +6,9 @@
 namespace astra::book {
 
 inline constexpr std::uint8_t kOrderStateActive = 1u << 0;
+// Nasdaq order reference numbers are day-unique. Keep this bit after an order
+// becomes dead so a malformed later A/F/U cannot reuse the same reference.
+inline constexpr std::uint8_t kOrderStateSeen = 1u << 1;
 
 struct alignas(16) OrderState {
   std::uint32_t qty;
@@ -22,6 +25,10 @@ struct alignas(16) OrderState {
 
 constexpr bool isActive(const OrderState &state) noexcept {
   return (state.flags & kOrderStateActive) != 0;
+}
+
+constexpr bool wasSeen(const OrderState &state) noexcept {
+  return (state.flags & kOrderStateSeen) != 0;
 }
 
 static_assert(sizeof(OrderState) == 16);

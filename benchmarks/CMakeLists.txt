@@ -1,4 +1,5 @@
 add_executable(astra_itch_trace_profile ItchTraceProfile.cpp)
+target_link_libraries(astra_itch_trace_profile PRIVATE astra::feed_engine)
 target_compile_features(astra_itch_trace_profile PRIVATE cxx_std_20)
 target_compile_options(astra_itch_trace_profile PRIVATE -Wall -Wextra -Wpedantic)
 
@@ -16,30 +17,35 @@ target_compile_options(astra_itch_book_replay_benchmark PRIVATE
     -Wall -Wextra -Wpedantic)
 
 if(ASTRA_BUILD_TESTS)
-    find_package(Python3 QUIET COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-        add_test(
-            NAME OrderBookBenchmarkCliTest
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/OrderBookBenchmarkCliTest.py
-                    $<TARGET_FILE:astra_order_book_benchmark>)
-        set_tests_properties(OrderBookBenchmarkCliTest PROPERTIES TIMEOUT 30)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(
+        NAME OrderBookBenchmarkCliTest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/OrderBookBenchmarkCliTest.py
+                $<TARGET_FILE:astra_order_book_benchmark>)
+    set_tests_properties(OrderBookBenchmarkCliTest PROPERTIES TIMEOUT 30)
 
-        add_test(
-            NAME ItchBookReplayIdentityTest
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/ItchBookReplayIdentityTest.py
-                    $<TARGET_FILE:astra_itch_book_replay_benchmark>)
-        set_tests_properties(ItchBookReplayIdentityTest PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME ItchBookReplayIdentityTest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/ItchBookReplayIdentityTest.py
+                $<TARGET_FILE:astra_itch_book_replay_benchmark>)
+    set_tests_properties(ItchBookReplayIdentityTest PROPERTIES TIMEOUT 30)
 
-    endif()
+    add_test(
+        NAME ItchTraceProfileBinaryFileTest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/ItchTraceProfileBinaryFileTest.py
+                $<TARGET_FILE:astra_itch_trace_profile>)
+    set_tests_properties(ItchTraceProfileBinaryFileTest
+                         PROPERTIES TIMEOUT 30)
 
     # The verifier's symbol contract is intentionally tied to optimized code;
     # keep it out of Debug/multi-config test sets where inlining and helper
     # emission are materially different.
     find_program(ASTRA_BASH_EXECUTABLE bash)
     find_program(ASTRA_OBJDUMP_EXECUTABLE objdump)
-    if(Python3_Interpreter_FOUND AND ASTRA_BASH_EXECUTABLE)
+    if(ASTRA_BASH_EXECUTABLE)
         add_test(
             NAME OrderBookHotPathVerifierContractTest
             COMMAND ${Python3_EXECUTABLE}

@@ -106,8 +106,10 @@ public:
     return isActive(*state) ? state : nullptr;
   }
 
-  // reserve() never changes table state.  Once all other mutation resources
-  // have been preflighted, commit() publishes the record by setting active.
+  // reserve() never changes table state. A reference remains reserved for the
+  // entire session after erase because Nasdaq order references are day-unique.
+  // Once all other mutation resources have been preflighted, commit()
+  // publishes the record by setting active and seen.
   OrderSlotReservation reserve(std::uint64_t order_ref) const noexcept;
   MutationResult commit(const OrderSlotReservation &reservation,
                         OrderState state) noexcept;

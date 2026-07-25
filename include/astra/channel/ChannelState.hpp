@@ -19,6 +19,8 @@ struct ChannelState {
   // no packet body to buffer, so gap-buffer emptiness alone cannot prove that
   // recovery is complete.
   uint64_t heartbeat_next_seq_high_watermark = 0;
+  uint64_t identical_buffered_redundant_packets = 0;
+  uint64_t conflicting_buffered_redundant_packets = 0;
   ChannelHealth status = ChannelHealth::Good;
   ChannelPhase phase = ChannelPhase::WaitingStartOfMessages;
 

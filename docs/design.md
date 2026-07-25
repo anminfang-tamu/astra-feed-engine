@@ -5,7 +5,9 @@
 This branch replaces both the centered 65,536-level array and the branch-5
 multi-level pooled radix design.  The implementation now uses:
 
-1. a full-`uint32_t` price domain split into fixed page/level indices,
+1. a full-`uint32_t` internal price address space split into fixed page/level
+   indices, with wire-facing mutations limited to the valid ITCH Price(4) raw
+   range from 0 through 2,000,000,000,
 2. dense, stable aggregate pages allocated from a startup-sized resident arena,
 3. one authoritative global order table, with no per-book hash table and no
    FIFO order links, and
@@ -21,16 +23,16 @@ This branch was created from `main`, not from the tip of `5-to-add-numa`. The
 review examined both trees; the architecture below describes the code now in
 `OrderTable`, `PriceLevelStore`, `OrderBook`, and `BookManager`.
 
-## Evidence from the full-day trace
+## Historical 2019 full-day trace evidence
 
 `benchmarks/ItchTraceProfile.cpp` scans the raw length-prefixed ITCH file without
-constructing books.  The local `01302019.NASDAQ_ITCH50` capture contains
+constructing books. The local `01302019.NASDAQ_ITCH50` capture contains
 368,366,634 records and 11,245,883,092 bytes.
 The exact command, trace/profiler hashes, and complete stdout are retained in
 [`trace-profile-01302019.txt`](trace-profile-01302019.txt).
 
 Protocol widths, price limits, and lifecycle semantics in this review follow
-the [official Nasdaq TotalView-ITCH 5.0 specification](https://nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/NQTVITCHSpecification.pdf).
+the [official Nasdaq TotalView-ITCH 5.0 specification](https://www.nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/NQTVITCHspecification.pdf).
 
 | Measurement | Observed value | Design consequence |
 |---|---:|---|
@@ -48,8 +50,8 @@ the [official Nasdaq TotalView-ITCH 5.0 specification](https://nasdaqtrader.com/
 | Maximum pages for one symbol | 396 | Per-ticker hardcoded capacities are unnecessary. |
 | Maximum observed level quantity | 4,822,255 | It fits today, but aggregate quantity must still be `uint64_t`. |
 | Directory messages before/after `SS` | 8,713 / 1 | A post-`SS` directory message is real traffic. |
-| Messages after system event `E` | 31,547 | `E` cannot terminate book processing. |
-| Deletes after system event `E` | 31,546 | Cleanup mutations must remain enabled until system event `C`. |
+| Messages after system event `E` | 31,547 | The tail is 31,546 deletes followed by terminal system event `C`. |
+| Deletes after system event `E` | 31,546 | Nasdaq permits delete and broken-trade cleanup until system event `C`. |
 
 The 64.3% range statistic compares each price with its symbol's first observed
 price. It is a domain-pressure diagnostic, not the exact number the removed
@@ -70,17 +72,28 @@ cmake -S . -B build \
   -DASTRA_BUILD_BENCHMARKS=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target astra_itch_trace_profile -j
-build/benchmarks/astra_itch_trace_profile data/itch/unzipped/01302019.NASDAQ_ITCH50
+build/benchmarks/astra_itch_trace_profile \
+  data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  --allow-legacy-eof-after-sc
 ```
+
+The compatibility flag is explicit because this SHA-pinned 2019 capture ends
+physically after System Event `C` instead of carrying the BinaryFILE
+zero-length terminator. Strict mode remains the default for every input; a
+separately verified checksum may use compatibility only when it has the same
+SC-plus-physical-EOF condition. A filename must never select the legacy
+policy.
 
 ## Findings that drove the redesign
 
 ### Why branch 5 reached the right domain but retained a costly latency shape
 
-Branch 5 fixed several correctness issues worth preserving: it covers the full
-`uint32_t` price domain, uses `uint64_t` aggregate quantity, preflights radix
-creation, and preallocates shared pools. Its mutation path nevertheless contains
-several dependent accesses that can amplify cache-cold latency:
+Branch 5 fixed several correctness issues worth preserving: its storage covers
+the full `uint32_t` address space, it uses `uint64_t` aggregate quantity,
+preflights radix creation, and preallocates shared pools. Valid ITCH input is
+still narrower: Price(4) has a maximum raw value of 2,000,000,000. Its mutation
+path nevertheless contains several dependent accesses that can amplify
+cache-cold latency:
 
 1. linear-probe the per-book `LocalOrderRefMap`,
 2. dereference the per-book `OrderArena`,
@@ -109,9 +122,10 @@ An out-of-range add silently returns.  Replace is worse: it removes the old
 order before it validates the new price and ID, so a rejected destination can
 destroy valid state.
 
-The implemented replacement covers the complete raw-price type. Replace now
-reserves the new order slot and destination price page, validates arithmetic,
-and only then changes the original logical state.
+The implemented replacement covers the complete valid ITCH Price(4) range and
+rejects a raw price above 2,000,000,000 before mutation. Replace reserves the
+new order slot and destination price page, validates arithmetic, and only then
+changes the original logical state.
 
 ### Former aggregate arithmetic and mutation failures were unsafe
 
@@ -171,12 +185,58 @@ allocation.
 System-event `M` only moves the lifecycle to `PostMarketHours`; it does not
 disable order mutations. This is distinct from an `S` message whose event code
 is `E` (End of System Hours), which moves to `PostSystemHours` without changing
-book state. The parser continues to accept every `A/F/E/C/X/D/U` mutation in
-that phase, including message type `E` (Order Executed) and message type `C`
-(Order Executed With Price), so cleanup can finish. `SC` (the `S` message with
-event code `C`, End of Messages) is terminal: subsequent ITCH book, directory,
-and administrative messages are rejected. The parser does not perform an
-in-process book reset; the production contract ends that process/session there.
+book state. The specification names Order Delete `D` and Broken Trade `B` as
+possible after that event. The checksum-pinned 2026-06-12 Nasdaq archive also
+contains 12 valid partial Order Cancel `X` messages interleaved with 431,550
+deletes in its teardown tail. The parser therefore admits `X` and `D` against
+existing order state after `E` and accepts `B` as having no current-L2-book
+effect; it continues to reject adds, executions, replaces, directory traffic,
+and other administrative types. Match-number history is not retained, so `B`
+is not cross-validated. `SC` (the `S` message with event code `C`, End of
+Messages) is accepted only after the teardown tail leaves zero live orders, and
+is then terminal. Subsequent ITCH book, directory, and administrative messages
+are rejected. The parser does not perform an in-process book reset; the
+production contract ends that process/session there.
+
+### Per-symbol book and strategy-facing level contract
+
+Every valid nonzero locate registered by Stock Directory `R` owns one stable
+symbol identity and one independent book. Directories received before System
+Event `S` get persistent empty books at `S`; a new `R` later in the open
+lifecycle gets a book immediately from the preallocated descriptor arena.
+Locate zero and unregistered locates have no book. Reusing a locate for another
+ticker, registering one ticker at two locates, or sending `A`/`F` stock bytes
+that differ from the directory entry is terminally invalid rather than silently
+routing an order to the wrong book.
+
+The live engine performs a cold shutdown audit over the fixed locate domain.
+It compares directory membership, materialized descriptors, and prepared
+price-book state, verifies each descriptor's immutable locate against its
+fixed slot, reports committed monotonic pages and capacity failures, and fails
+completion on any generic mismatch. This audit is not on the mutation hot
+path.
+
+The internal book retains every active bid and ask price level across the valid
+ITCH Price(4) domain. `A`/`F` adds an order contribution, `E`/`C`/`X` reduces
+that referenced contribution, `D` subtracts the deleted order's remainder,
+and `U` atomically removes the old order contribution and adds its replacement.
+A level disappears only when its last order leaves. Bid traversal is descending
+and ask traversal ascending.
+The public snapshots expose best bid/ask and the best ten levels per side,
+including raw Price(4), `uint64_t` aggregate quantity, `uint32_t` order count,
+stock locate, and the exact 48-bit exchange timestamp from the latest
+successful mutation. A failed mutation does not advance that timestamp; every
+ITCH timestamp must be below 86,400,000,000,000 ns.
+
+Price remains an integer in raw Price(4) units throughout book storage and
+comparison; currency display is `raw / 10,000`. FIFO links are unnecessary for
+exact L2 reconstruction because every mutation names an order reference.
+Price-time queue position is a separate requirement for own-order fill
+simulation or a priority-ordered L3 queue. The repository does not yet wire a
+strategy callback or publication bus: `getTopOfBook()` and `getBookUpdate()`
+are internal query interfaces, not a complete strategy integration.
+`OrderBook::isTradable()` supplies a state helper, but no strategy path
+currently enforces it.
 
 ### Packet commit hardening status
 
@@ -187,6 +247,7 @@ uses a constexpr 256-entry message-length table:
 ```text
 S12 R39 H25 Y20 L26 V35 W12 K28 J35 h21
 A36 F40 E31 C36 X23 D19 U35 P44 Q40 B19 I50 N20
+O48
 ```
 
 Parser/book failures now propagate as `InvalidItchMessage`; session bytes are
@@ -198,9 +259,13 @@ state.
 The batched UDP path now drops a whole datagram when `MSG_TRUNC` is set or the
 reported size exceeds its buffer, matching the scalar receiver rather than
 forwarding a clamped prefix. Kernel, replay, DPDK, and gap storage now share
-the 2,048-byte packet limit. The remaining gap-buffer replacement and
-multi-interface kernel-receiver policy are transport follow-on work, not
-properties of the book data structure.
+the 2,048-byte packet limit. A same-sequence conflict while a packet is still
+buffered is detected without replacing the first copy. Already-processed late
+duplicates and processed prefixes of differently packetized overlaps cannot be
+compared because the decoder retains no processed-packet history. The remaining
+gap-buffer replacement and multi-interface
+kernel-receiver policy are transport follow-on work, not properties of the
+book data structure.
 
 ### Other project-wide deterministic-latency risks
 
@@ -217,9 +282,11 @@ properties of the book data structure.
 - DPDK initializes EAL before book construction, reapplies the requested CPU
   after EAL, and validates fixed-offset frames before falling back to the
   general VLAN/IPv4/UDP parser even when hardware flow filtering is off.
-  Descriptor, mempool, burst, port, and queue settings are validated and
-  reported. Effective kernel socket buffer and busy-poll settings still need
-  equivalent reporting on the ordinary UDP path.
+  Descriptor, mempool, burst, port, and queue settings are validated, but not
+  all effective values are currently reported; the deployment runbook pins
+  every setting explicitly and retains the launch environment. Effective
+  kernel socket buffer and busy-poll settings still need equivalent reporting
+  on the ordinary UDP path.
 - `ASTRA_BUILD_BENCHMARKS` now builds the trace profiler, the synthetic
   order-book microbenchmark, and the full parser/book replay benchmark. The
   benchmark boundary and configuration must still be recorded with every
@@ -263,8 +330,11 @@ level_index = price & 0xffff;
 
 These names always mean address components, not configured price-window
 boundaries. For example, raw `100000` becomes `page_index=1` and
-`level_index=34464`, and `(1 << 16) | 34464` reconstructs `100000`. The same
-split covers both `0` and `UINT32_MAX` without recentering.
+`level_index=34464`, and `(1 << 16) | 34464` reconstructs `100000`. The
+internal representation can address both `0` and `UINT32_MAX` without
+recentering, but the ITCH parser/book boundary accepts only raw Price(4) values
+through 2,000,000,000. `UINT32_MAX` is therefore an internal addressability
+boundary, not a valid ITCH price.
 
 A page contains separate dense arrays for the two sides:
 
@@ -378,8 +448,10 @@ The implemented hybrid exploits the available memory without narrowing the
 wire contract:
 
 - A startup-sized direct tier handles `order_ref < direct_limit` with one
-  indexed access.  A `2^29` limit costs 8 GiB and covers the observed maximum
-  with about 63% ID headroom.
+  indexed access. For the historical 2019 fixture, a `2^29` limit costs 8 GiB
+  and covers that fixture's observed maximum. Capacity is now profile-derived
+  at startup; the 2026 evidence requires 2,382,540,226 direct slots for maximum
+  reference 2,382,540,224 plus one effective headroom slot.
 - A fixed-capacity set-associative fallback stores arbitrary 64-bit references.
   Each key has one or two distinct candidate buckets, and each bucket has two
   32-byte ways. A lookup therefore examines at most four entries. Reservation
@@ -401,13 +473,14 @@ the order quantity is stored only after that succeeds. Replace preflights the
 new ID and destination page before changing the original. There is no per-book
 order map and no order FIFO.
 
-### Pinned acceptance-fixture budget for the 250 GB test instance
+### Pinned historical benchmark-fixture budget
 
 `estimateBookStorageFootprint()` calculates page-rounded mappings before any
-arena is constructed. For a 4 KiB Linux system page and the current 64-byte
-`std::optional<OrderBook>` descriptor-slot ABI, the pinned 2019-01-30 plan is:
+arena is constructed. For a 4 KiB Linux system page and the current 72-byte
+`std::optional<OrderBook>` descriptor-slot ABI, the historical 2019-01-30
+benchmark plan is:
 
-| Component | Pinned 2019 acceptance capacity | Exact mapped/planned bytes |
+| Component | Pinned 2019 benchmark capacity | Exact mapped/planned bytes |
 |---|---:|---:|
 | Direct order tier | `2^29` x 16 bytes | 8,589,934,592 |
 | Fixed fallback table | `2^20` x 64-byte buckets | 67,108,864 |
@@ -420,8 +493,8 @@ arena is constructed. For a 4 KiB Linux system page and the current 64-byte
 | Compact per-locate summaries | 65,536 x 32 bytes | 2,097,152 |
 | Per-locate, per-side occupancy bitmaps | 131,072 x 8,384 bytes | 1,098,907,648 |
 | **Mapped-array subtotal** |  | **196,058,546,176** |
-| Preallocated optional book descriptors | 65,536 x 64 bytes on this ABI | 4,194,304 |
-| **Planned book storage** |  | **196,062,740,480 bytes (182.598 GiB)** |
+| Preallocated optional book descriptors | 65,536 x 72 bytes = 4,718,592 logical bytes; 2 MiB-extent-rounded | 6,291,456 |
+| **Planned book storage** |  | **196,064,837,632 bytes (182.600 GiB)** |
 
 The 68,941 pages ever seen in the measured trace would occupy 134.65 GiB; the
 80,000-page mapping retains roughly 16% page-count headroom. The plan counts
@@ -431,14 +504,17 @@ buffers, the resident timed-sample vector, transport, gap recovery, process
 code, and the OS. System-page size and descriptor ABI can also change the exact
 total, so the target binary's `--storage-plan-only` output is authoritative.
 
-A nominal 250 GB host exposes about 232.8 GiB in total, but the acceptance
-command uses `numactl --membind=<one-node>`. The selected node's `MemTotal` and
-`MemFree`, plus cgroup headroom, must each cover the derived plan and the
-default 16 GiB reserve: 213,242,609,664 bytes (198.598 GiB) for the plan above.
+A nominal 250 GB host exposes about 232.8 GiB in total, but a NUMA-bound
+benchmark command uses `numactl --membind=<one-node>`. The selected node's
+`MemTotal` and `MemFree`, plus cgroup headroom, must each cover the derived plan and the
+default 16 GiB reserve: 213,244,706,816 bytes (198.600 GiB) for the plan above.
 A multi-node host can therefore have enough aggregate RAM and still be
 ineligible because no single node is large enough. Use a topology with one
 qualifying node or revise and reapprove the binding/admission policy; do not
 silently let an accepted run spill across nodes.
+
+This 250 GB discussion sizes only the pinned historical 2019 fixture; it does
+not size the 2026 corpus.
 
 Memory capacity values are runtime configuration validated at startup and then
 frozen. Price split, slot layout, alignment, at-most-two-bucket/two-way fallback
@@ -446,14 +522,8 @@ shape, message lengths, and wire field widths remain compile-time invariants.
 
 ## Runtime configuration
 
-`md_engine` deliberately has no production capacity default. Startup requires
-`ASTRA_BOOK_CAPACITY_PROFILE`. The exact
-`nasdaq-itch-20190130-acceptance-v1` value selects
-`BookManagerConfig::pinnedNasdaqItch20190130Acceptance()` and rejects capacity
-or evidence overrides. It preserves the pinned 80,000-page acceptance fixture
-without presenting it as a safe deployment default.
-
-Every other profile name is a custom deployment and requires all of
+`md_engine` deliberately has no production capacity default or built-in daily
+trace exception. Every profile name requires all of
 `ASTRA_BOOK_CAPACITY_EVIDENCE_FILE`,
 `ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256`, `ASTRA_ORDER_DIRECT_SLOTS`,
 `ASTRA_ORDER_FALLBACK_BUCKETS`, `ASTRA_PRICE_PAGE_CAPACITY`,
@@ -470,8 +540,8 @@ explicit, but aggregate occupancy cannot guarantee arbitrary hash collisions:
 an aliased one-bucket key can fail on its third contender, while a two-bucket
 key can fail on its fifth. Both fail loudly with bounded work.
 
-`ASTRA_BOOK_PREFAULT` defaults to `on` for custom profiles and may explicitly
-be set `off` for development. The pinned acceptance fixture requires it on.
+`ASTRA_BOOK_PREFAULT` defaults to `on` and may explicitly be set `off` for
+development.
 Before mapping any arena, the engine prints `book_capacity_profile` with the
 evidence hash and minimum/effective headroom, followed by `book_storage_plan`.
 `md_engine --book-storage-plan-only` performs those checks and exits before
@@ -479,10 +549,11 @@ mapping. The evidence file is canonical ASCII with one final LF and exactly
 these ordered keys:
 
 ```text
-schema=astra_book_capacity_evidence_v1
+schema=astra_book_capacity_evidence_v2
 profile_name=<audit-safe profile token>
 corpus_manifest_sha256=<64 lowercase hex>
 profiler_sha256=<64 lowercase hex>
+profile_output_sha256=<64 lowercase hex>
 order_direct_slots=<canonical positive integer>
 order_fallback_buckets=<canonical positive integer>
 price_page_capacity=<canonical positive integer>
@@ -494,24 +565,96 @@ minimum_price_page_headroom=<canonical positive integer>
 
 Extra/reordered fields, CRLF, leading-zero integers, and non-ASCII input fail
 closed. Parsed values are authoritative and every duplicated environment value
-must match, binding startup to the approved multi-day evidence rather than an
-unverified hash-shaped label.
+must match, binding startup to the approved evidence rather than an unverified
+hash-shaped label. The loader retains v1 compatibility for historical replay
+artifacts, but newly derived evidence is v2 and binds the exact profiler stdout
+as well as the trace and profiler executable. Derivation also re-executes that
+exact executable over the manifest's exact BinaryFILE label and requires
+byte-identical stdout before it writes the v2 evidence.
 
-The replay binary takes the same three book capacities at runtime through
+The replay binary has no built-in book capacity. It accepts either the
+checksum-bound `--capacity-profile-name`, `--capacity-evidence-file`, and
+`--capacity-evidence-sha256` trio, or all three explicit development values
 `--direct-order-slots=N`, `--fallback-buckets=N`, and
-`--price-page-capacity=N`; their defaults are `2^29`, `2^20`, and `80000`.
-These defaults are deliberately the pinned 2019 acceptance fixture, not a
-live-deployment sizing policy. Unlike `md_engine`, replay book prefaulting is
-opt-in through `--prefault`.
-Custom acceptance overrides also require `--capacity-profile-name`,
-`--capacity-evidence-file`, and `--capacity-evidence-sha256`. The replay uses
-the same in-process loader and repeats the computed identity in its storage
-plan, ready marker, and final record. Unbound overrides are development-only
-and cannot pass the live harness.
+`--price-page-capacity=N`. The evidence manifest is authoritative; any
+explicit capacities supplied with it are cross-checks and must match.
+Unlike `md_engine`, replay book prefaulting is opt-in through `--prefault`.
+The historical 2019 constants remain only in a benchmark/test fixture and are
+never selected implicitly. Explicit capacities without evidence are marked
+unbound development values and cannot pass the live harness. Acceptance always
+requires checksum-bound evidence and repeats the computed identity in its
+storage plan, ready marker, and final record.
 `--sample-capacity=N` separately sets the resident timed-sample capacity
 (default `8,388,608`, and never below `--min-samples`). The benchmark resizes,
 touches, and clears that vector before replay, independent of `--prefault`, so
 timed collection cannot grow or first-touch its storage.
+
+A newer trace must not reuse the pinned 2019 capacities, record/byte gates, or
+digests. Strict BinaryFILE completion is always the default. If the exact
+checksum is independently verified to end immediately after terminal System
+Event `C` without a zero-length terminator, that checksum may use the explicit
+SC-plus-physical-EOF compatibility flag; filename, provider, date, and age are
+irrelevant. Retain the exact trace and profiler hashes, derive the maximum order
+reference and lifetime unique `(stock_locate, page_index)` count with explicit
+headroom, and create a new canonical custom capacity evidence manifest/profile.
+Use that custom identity and its verified SHA-256 for both engine startup and
+acceptance replay. Any other strict-completion failure is an input-integrity
+finding to investigate.
+
+### 2026-06-12 full-day measurements
+
+The checksum-pinned official `S061226-v50` corpus contains 1,304,894,064 ITCH
+records in 41,662,444,846 BinaryFILE bytes. Its SHA-256 is
+`8aab04f1f6e1287ef73acd7405a5f8487b131a5c6a7ae0f5c8d6d134c2f32238`.
+The first complete semantic-profiler reconstruction exposed a real-world
+lifecycle difference:
+the specification names `B` and `D` as possible after system event `E`, while
+this official archive also has 12 valid partial `X` cancels. The first is
+302,101 ns after `E`, the last is 29,765,677 ns after `E`, and their
+first-to-last span is 29,463,576 ns. The parser and profiler now accept that
+narrow existing-order mutation, and tests retain an observed `D`-`X`-`D`
+interleaving.
+
+| Measurement | 2026 observed value |
+|---|---:|
+| Registered stock locates / maximum locate | 12,809 / 12,809 |
+| Symbols with displayed-order prices / registered locates with no displayed-order price | 12,782 / 27 |
+| New displayed-order references (`A` + `F` + `U` destinations) | 817,233,151 |
+| Prices outside the first 65,536-tick window | 443,014,638 |
+| Raw displayed-order price range | 1 to 1,999,999,900 |
+| Maximum order reference / references above `uint32_t` | 2,382,540,224 / 0 |
+| Live-order high-water mark | 6,677,709 |
+| Active side/price-level high-water mark | 1,823,303 |
+| Active locate/page high-water mark | 105,954 |
+| Lifetime unique locate/pages | 156,871 |
+| Maximum active pages for one symbol | 513 |
+| Maximum aggregate level quantity | 27,635,034 |
+| Directory messages before/after System Hours start | 12,809 / 0 |
+| Messages after system event `E` | 431,563 |
+| Post-`E` cancels / deletes / broken trades / terminal `SC` | 12 / 431,550 / 0 / 1 |
+| Final live orders / active levels / active pages | 0 / 0 / 0 |
+
+With no capacity headroom, the profiler's logical price-storage model alone is
+349,897,465,536 bytes. The deployable v2 evidence deliberately adds only the
+documented one direct-order slot, one price page, and one fallback bucket for
+checksum-pinned replay; those are not live-feed or multi-day reserves. The
+local
+[`book-capacity-evidence-S061226-v50.txt`](book-capacity-evidence-S061226-v50.txt),
+SHA-256
+`55f5ba91d10c74ff28da877c3665a97dca69fe1c5a6572f64332ea56c30a5516`,
+admits 2,382,540,226 direct slots, one fallback bucket, and 156,872 price
+pages. The matching
+[`book-storage-plan-S061226-v50.txt`](book-storage-plan-S061226-v50.txt),
+SHA-256
+`9d79fb39de911edcaebdba4761b1b5736105b4d7ee0a367c5a548de54dd76674`,
+reports 388,036,034,560 planned book-storage bytes (361.38671875 GiB).
+Plan plus the normal 16 GiB admission reserve is 405,215,903,744 bytes; adding
+the runbook's separate 4 GiB DPDK hugepage reserve reaches 409,510,871,040
+bytes before the OS and operational headroom. The profile's final active-page
+count is zero, while production page handles are monotonic: a successful full
+reconstruction is expected to finish with 156,871 committed page handles and
+zero active levels. The target Linux binary must regenerate and retain its own
+build-specific evidence binding and storage-plan output.
 
 `--storage-plan-only` validates the runtime book capacities, prints the
 `redesign_v1` schema, `system_page_bytes`, every arena's mapped extent, the
@@ -545,11 +688,25 @@ thread, and waits for B to finish before advancing. The default B target is
 1,000 ns after A. Running two independent sender processes is not equivalent:
 they would not share sequence, pacing, or completion state.
 
-`scripts/run_sender.sh` is the sole sender entry point. It begins with 100 Mold
-heartbeats at 10 ms intervals by default. Every heartbeat advertises next
-sequence 1 without advancing the source and contributes no latency sample.
-This preamble warms route/neighbor state and binds the receiver to the Mold
-session before sequenced traffic.
+`scripts/run_sender.sh` is the sole sender entry point. It does not send a
+startup-heartbeat preamble by default, so sequence 1 is the first traffic on
+the measured data path. An explicit nonzero
+`ASTRA_STARTUP_HEARTBEAT_COUNT` remains available for protocol and
+receiver-readiness tests, but it is not enabled for acceptance performance
+runs.
+
+`logical_packets` counts each sender packet once even though it is attempted on
+each configured line: startup heartbeats, periodic idle heartbeats, sequenced
+data packets, and repeated end-of-session packets. On a clean completed run it
+equals the sum of the corresponding successful control counters and the
+data-packet count. `logical_messages` counts only ITCH records, and only those
+data messages advance sequence. Periodic heartbeats default to one-second idle
+deadlines while pacing or an `SS` pause leaves the line idle; a data send wins
+an equal-deadline tie. Completion sends ten identical MoldUDP64 end-of-session
+packets by default, with at least 100 ms between successful sends. The receiver
+exits on the first valid end-of-session packet; the remaining copies improve
+UDP announcement reliability and are not expected to appear in receiver packet
+totals.
 
 The sender supports three pre-market policies:
 
@@ -558,9 +715,25 @@ The sender supports three pre-market policies:
 - `ASTRA_PREMARKET_REPLAY_MODE=timestamp` follows ITCH timestamps between
   `SS` and `SQ`, divided by `ASTRA_PREMARKET_SPEEDUP`. The pinned trace spans
   about 5.5 hours in that interval, so speedups 10, 33, and 165 take roughly
-  33, 10, and 2 minutes.
+  33, 10, and 2 minutes. The source switches to one ITCH message per synthetic
+  datagram in this interval and restores the configured packet ceiling after
+  `SQ`, so no later message is released on an earlier message's deadline.
 - `ASTRA_PREMARKET_SECONDS=N` spreads the `SS`-to-`SQ` segment evenly over
   `N` seconds for a smoother deterministic stress window.
+
+Synthetic packetization always ends a MoldUDP64 datagram at `SS` and `SQ`.
+Consequently, the configured pause or pacing transition is observed before
+any following ITCH record is transmitted, even when the ordinary
+messages-per-packet ceiling is larger than one.
+
+The ordinary `pkt/s` limiter is an upper bound rather than an average-rate
+catch-up scheduler. Its interval rounds upward to a steady-clock tick, and a
+late send rebases the next deadline so accumulated delay cannot become a
+back-to-back packet burst. Redundant replay currently shares one destination
+IP across two ports; equal ports are rejected. A failed physical submission
+stops replay immediately, does not commit the all-lines logical counters, and
+suppresses EOS. Once the source validates completion, ordinary pacing and idle
+heartbeats are bypassed and the EOS announcement begins immediately.
 
 Use `scripts/run_sender.sh --help` for the positional interface and all
 environment controls. The operational DPDK ENI/VFIO/hugepage procedure is kept
@@ -568,10 +741,14 @@ separately in
 [`dpdk-aws-ec2-setup.md`](dpdk-aws-ec2-setup.md).
 
 The ordinary UDP runner supports scalar `recv` and Linux
-`recvmmsg`/`batch` modes. `ASTRA_UDP_DROP_METRICS=on` enables kernel overflow
-reporting. A clean completed run requires sender completion and end-marker
-success, matching sender/receiver next sequence, `channel_status_name=Good`,
-the exact trace latency count, and zero malformed/drop/error counters.
+`recvmmsg`/`batch` modes. Scalar `recv` defaults kernel-drop telemetry off;
+`ASTRA_UDP_DROP_METRICS=on` requires Linux `SO_RXQ_OVFL`, and an invalid
+boolean, unsupported option, or setup failure is fatal. Linux batch mode
+always requires and enables `SO_RXQ_OVFL`. A clean completed run requires
+sender completion and end-marker success, matching sender/receiver next
+sequence, `channel_status_name=Good`, the exact trace latency count, and zero
+malformed/drop/error counters. A scalar zero reported with telemetry off is
+not valid no-drop evidence.
 
 The decoder accepts a Mold end marker only after exact sequence recovery and
 terminal ITCH system event `C`. The first valid marker from either redundant
@@ -599,6 +776,11 @@ was:
 | 150,000 | 18,418,433 | 18,418,432 | 36,836,865 | 5 |
 | 200,000 | 18,418,433 | 18,418,431 | 36,836,864 | 6 |
 
+These retained packet totals predate periodic idle heartbeats and repeated
+end-of-session announcements. They are historical evidence, not expected
+packet-count gates for the current sender; current validation uses the sender's
+component counters plus the exact sequenced message/next-sequence result.
+
 The central distribution improved as configured rate increased, but the deep
 tails rose: from 150,000 to 200,000 packet/s per line, mean through p99
 improved by 0.45% to 1.29%, while p99.9 and p99.99 worsened by 4.27% and
@@ -610,6 +792,10 @@ worst repeated tail rather than averaging percentiles.
 ## Reproducible measurement commands
 
 Build release binaries and tests:
+
+Python 3 is a required configure-time dependency whenever
+`ASTRA_BUILD_TESTS=ON`; Python-backed integration and provenance tests are not
+optional members of the correctness suite.
 
 ```sh
 cmake -S . -B build \
@@ -661,14 +847,20 @@ x86 RDTSCP acceptance clock. The legacy `--max-direct-p50-ns`,
 they cannot be combined with a named gate for the same workload.
 
 Run the full length-prefixed ITCH file through the parser and production book.
-The example CPU and node must be replaced with an isolated CPU and its local
-NUMA node on the selected instance:
+This explicitly historical 2019 command is fixture-only: it supplies all three
+reviewed values because the replay has no implicit capacity, but its unbound
+identity is not acceptance or deployment evidence. The example CPU and node
+must be replaced with an isolated CPU and its local NUMA node:
 
 ```sh
 numactl --physcpubind=2 --membind=0 \
   build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  --allow-legacy-eof-after-sc \
   --prefault \
+  --direct-order-slots=536870912 \
+  --fallback-buckets=1048576 \
+  --price-page-capacity=80000 \
   --sample-every=64 \
   --warmup-book-messages=1000000 \
   --min-samples=1000 \
@@ -721,14 +913,18 @@ published timing run:
 ```sh
 build/benchmarks/astra_itch_book_replay_benchmark \
   data/itch/unzipped/01302019.NASDAQ_ITCH50 \
+  --allow-legacy-eof-after-sc \
+  --direct-order-slots=536870912 \
+  --fallback-buckets=1048576 \
+  --price-page-capacity=80000 \
   --sample-every=1024 \
   --min-samples=1000 \
-  --expect-records=<exact-records> \
-  --expect-bytes=<exact-bytes> \
+  --expect-records=368366634 \
+  --expect-bytes=11245883092 \
   --mutation-digest
 # Repeat on the same trace with
-# --expect-mutation-digest=<physical value printed above>
-# --expect-semantic-mutation-digest=<semantic value printed above>.
+# --expect-mutation-digest=11602566873588607264
+# --expect-semantic-mutation-digest=13876319090171585636.
 ```
 
 The CLI rejects mutation-digest observation combined with any nonzero latency
@@ -757,7 +953,8 @@ Completed in this branch:
 1. Canonical parser consolidation, all 65,536 locate slots, late/repeated `R`
    handling through startup-preallocated descriptors after `SS`, independent
    system-event/order-message `E/C` behavior, and terminal `SC` enforcement.
-2. `PriceLevelStore`, side-separated 16-byte levels, full-domain roots,
+2. `PriceLevelStore`, side-separated 16-byte levels, full-`uint32_t`-
+   addressable roots with ITCH Price(4) admission capped at raw 2,000,000,000,
    monotonic page reservation, cached best prices, and bounded hierarchical
    bitmap search.
 3. One authoritative `OrderTable` with an indexed direct tier and a fixed
@@ -775,11 +972,12 @@ the Linux `recvmmsg`/NUMA deployment before final production rollout.
 
 ### Local verification recorded on 2026-07-22
 
-The current source built successfully in a `Release` configuration
-(`-O3 -DNDEBUG`) on macOS ARM64. All 197 Release CTest entries are accounted
-for: the 192 non-socket entries passed together, and all five `UdpReceiverTest`
-cases passed with loopback access. ASan and UBSan each passed 185 non-receiver
-GoogleTest entries plus the five receiver cases in a direct rerun.
+The source snapshot recorded on 2026-07-22 built successfully in a `Release`
+configuration (`-O3 -DNDEBUG`) on macOS ARM64. All 197 Release CTest entries
+in that snapshot are accounted for: the 192 non-socket entries passed together,
+and all five `UdpReceiverTest` cases passed with loopback access. ASan and UBSan
+each passed 185 non-receiver GoogleTest entries plus the five receiver cases in
+a direct rerun.
 
 The final Release replay binary, SHA-256
 `9ab0068a345e51485110ee91a1ce56101dd91291de8dde32f4d8ed9f5175af80`,
@@ -804,6 +1002,15 @@ named cold `fail()` and `applyBookFailure()` formatting boundaries may allocate.
 Standard-library/ABI/PLT bodies, symbol resolution, and those two named cold
 helpers remain explicit static-analysis trust boundaries.
 
+### Local verification recorded on 2026-07-24
+
+The reviewed macOS ARM64 tree passes 283/283 Release CTest entries and 282/282
+Debug entries with AddressSanitizer plus UndefinedBehaviorSanitizer. The one
+Release-only entry is the optimized disassembly contract. Applications,
+library, tests, and benchmarks also compile cleanly with
+`-Wall -Wextra -Wpedantic -Werror`. These runs include approved local UDP
+loopback integration; they do not execute Linux `recvmmsg` or DPDK.
+
 Portable-clock local benchmark runs completed, but their nanosecond values are
 not acceptance evidence and are intentionally not treated as proof of the
 150 ns target. Only a controlled x86 EC2/NUMA branch-6 run can establish that
@@ -816,9 +1023,10 @@ result.
   with zero live orders, and reach End of Messages. Physical and semantic
   mutation digests run in separate processes from latency measurement.
 - Lifecycle coverage includes repeated and new `R` after `SS`, directory
-  traffic after system-event `E`, order-message `E` and `C` as independent
-  mutations, cleanup through Post System Hours, and rejection of every message
-  after terminal system-event `C`.
+  traffic during the open lifecycle, order-message `E` and `C` as independent
+  mutations before End of System Hours, cancel/delete/broken-trade cleanup
+  through Post System Hours, a zero-live-order gate at `SC`, and rejection of
+  every message after terminal system-event `C`.
 - Direct order lookup examines one slot; fallback examines at most two two-way
   buckets. Existing-order `E/C/X/D` mutations need no price-root lookup.
   Bitmap predecessor/successor search and top-ten traversal retain their tested
@@ -856,9 +1064,11 @@ the run. The final `manifest.sha256` covers every retained artifact.
 
 Branch 6 never seals the stock-directory universe at `SS`. Its 65,536
 descriptor slots and backing arenas already exist, so late/repeated `R`
-messages remain an administrative path without hot-path growth. System event
-`E` moves lifecycle phase but does not stop `A/F/E/C/X/D/U`; only system
-event `C` is terminal.
+messages remain an administrative path without hot-path growth while the
+system is open. System event `E` admits only existing-order `X`/`D` teardown
+and `B`, matching the checksum-pinned 2026 archive while remaining narrower
+than the open-session mutation set. System event `C` additionally requires
+zero live orders and is terminal.
 
 Recommended hardware-counter capture:
 

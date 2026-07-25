@@ -38,6 +38,7 @@ SAMPLE_CAPACITY=""
 DISCOVER_DIGEST=0
 EXPECTED_MUTATION_DIGEST=""
 EXPECTED_SEMANTIC_MUTATION_DIGEST=""
+ALLOW_LEGACY_EOF_AFTER_SC=0
 ALLOW_SWAP=0
 RUN_PERF_STAT=1
 HASH_TRACE=0
@@ -178,12 +179,12 @@ Options:
   --sample-every N                Fixed-seed block size; default: 64.
   --warmup-book-messages N        Untimed book-message warmup; default: 1000000.
   --min-samples N                 Minimum aggregate samples; default: 1000.
-  --direct-order-slots N          Override the replay's direct-order capacity.
-  --fallback-buckets N            Override fallback bucket count.
-  --price-page-capacity N         Override price-page capacity.
-  --capacity-profile-name NAME    Custom redesign capacity-profile name.
-  --capacity-evidence-file FILE   Canonical custom capacity evidence manifest.
-  --capacity-evidence-sha256 HEX  Independently approved SHA-256 of FILE.
+  --direct-order-slots N          Optional cross-check of manifested capacity.
+  --fallback-buckets N            Optional cross-check of manifested capacity.
+  --price-page-capacity N         Optional cross-check of manifested capacity.
+  --capacity-profile-name NAME    Required redesign capacity-profile name.
+  --capacity-evidence-file FILE   Required canonical capacity evidence manifest.
+  --capacity-evidence-sha256 HEX  Required independently approved SHA-256.
   --sample-capacity N             Override pre-resident timed-sample capacity.
   --planned-bytes N               Optional conservative admission footprint.
                                   Must be at least the binary's storage plan;
@@ -196,6 +197,10 @@ Options:
                                   against this known digest.
   --expect-semantic-mutation-digest N
                                   Also gate the independent semantic digest.
+  --allow-legacy-eof-after-sc     Accept physical EOF immediately after a
+                                  System Event C. Use only when that exact
+                                  checksum is independently verified to end
+                                  SC+EOF; filename, date, and age are irrelevant.
   --allow-swap                    Record swap state but do not require SwapTotal=0.
   --no-perf-stat                  Explicitly skip the separate hardware-counter
                                   process. Full acceptance runs retain it by
@@ -644,6 +649,10 @@ while [[ $# -gt 0 ]]; do
       EXPECTED_SEMANTIC_MUTATION_DIGEST="$2"
       shift 2
       ;;
+    --allow-legacy-eof-after-sc)
+      ALLOW_LEGACY_EOF_AFTER_SC=1
+      shift
+      ;;
     --allow-swap)
       ALLOW_SWAP=1
       shift
@@ -693,9 +702,8 @@ CAPACITY_IDENTITY_FIELD_COUNT=0
   CAPACITY_IDENTITY_FIELD_COUNT=$((CAPACITY_IDENTITY_FIELD_COUNT + 1))
 [[ -n "${CAPACITY_EVIDENCE_SHA256}" ]] &&
   CAPACITY_IDENTITY_FIELD_COUNT=$((CAPACITY_IDENTITY_FIELD_COUNT + 1))
-if [[ "${CAPACITY_IDENTITY_FIELD_COUNT}" -ne 0 &&
-      "${CAPACITY_IDENTITY_FIELD_COUNT}" -ne 3 ]]; then
-  die "--capacity-profile-name, --capacity-evidence-file, and --capacity-evidence-sha256 must be supplied together"
+if [[ "${CAPACITY_IDENTITY_FIELD_COUNT}" -ne 3 ]]; then
+  die "--capacity-profile-name, --capacity-evidence-file, and --capacity-evidence-sha256 are required together; live acceptance has no built-in capacity profile"
 fi
 if [[ -n "${CAPACITY_EVIDENCE_SHA256}" ]] &&
    ! is_sha256 "${CAPACITY_EVIDENCE_SHA256}"; then
@@ -902,6 +910,9 @@ build_base_command() {
   if [[ "${#STORAGE_OPTIONS[@]}" -gt 0 ]]; then
     BASE_COMMAND+=("${STORAGE_OPTIONS[@]}")
   fi
+  if [[ "${ALLOW_LEGACY_EOF_AFTER_SC}" -eq 1 ]]; then
+    BASE_COMMAND+=(--allow-legacy-eof-after-sc)
+  fi
   BASE_COMMAND+=(
     "--sample-every=${SAMPLE_EVERY}"
     "--warmup-book-messages=${WARMUP_BOOK_MESSAGES}"
@@ -923,6 +934,9 @@ build_plan_command() {
   )
   if [[ "${#STORAGE_OPTIONS[@]}" -gt 0 ]]; then
     PLAN_COMMAND+=("${STORAGE_OPTIONS[@]}")
+  fi
+  if [[ "${ALLOW_LEGACY_EOF_AFTER_SC}" -eq 1 ]]; then
+    PLAN_COMMAND+=(--allow-legacy-eof-after-sc)
   fi
   PLAN_COMMAND+=("--min-samples=${MIN_SAMPLES}" --storage-plan-only)
 }
@@ -1194,42 +1208,39 @@ capture_file_state() {
   return 0
 }
 
-CAPACITY_EVIDENCE_POLICY=not_applicable_builtin
+CAPACITY_EVIDENCE_POLICY=canonical_manifest_pending
 CAPACITY_EVIDENCE_SHA256_BEFORE=not_applicable
 CAPACITY_EVIDENCE_STAT_BEFORE=not_applicable
 CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE=not_applicable
 CAPACITY_EVIDENCE_ARCHIVE_STAT_BEFORE=not_applicable
 CAPACITY_EVIDENCE_ARCHIVE=not_applicable
-if [[ -n "${CAPACITY_EVIDENCE_FILE}" ]]; then
-  CAPACITY_EVIDENCE_PROVENANCE_SOURCE="${CAPACITY_EVIDENCE_FILE}"
-  CAPACITY_EVIDENCE_EXPECTED_SHA256="${CAPACITY_EVIDENCE_SHA256}"
-  CAPACITY_EVIDENCE_POLICY=canonical_manifest_v1
-  if ! capture_file_state "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
-       "${PROVENANCE_DIR}/capacity-evidence-source-before.state"; then
-    preflight_fail "${FILE_STATE_ERROR}"
-  fi
-  CAPACITY_EVIDENCE_SHA256_BEFORE="${FILE_STATE_SHA256}"
-  CAPACITY_EVIDENCE_STAT_BEFORE="${FILE_STATE_STAT}"
-  if [[ "${CAPACITY_EVIDENCE_SHA256_BEFORE}" != \
-        "${CAPACITY_EVIDENCE_EXPECTED_SHA256}" ]]; then
-    preflight_fail "capacity evidence manifest differs from --capacity-evidence-sha256"
-  fi
-  CAPACITY_EVIDENCE_ARCHIVE="${PROVENANCE_DIR}/capacity-evidence-manifest.txt"
-  if ! cp --preserve=mode,timestamps -- \
-       "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
-       "${CAPACITY_EVIDENCE_ARCHIVE}"; then
-    preflight_fail "cannot archive capacity evidence manifest"
-  fi
-  if ! capture_file_state "${CAPACITY_EVIDENCE_ARCHIVE}" \
-       "${PROVENANCE_DIR}/capacity-evidence-archive-before.state"; then
-    preflight_fail "${FILE_STATE_ERROR}"
-  fi
-  CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE="${FILE_STATE_SHA256}"
-  CAPACITY_EVIDENCE_ARCHIVE_STAT_BEFORE="${FILE_STATE_STAT}"
-  if [[ "${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}" != \
-        "${CAPACITY_EVIDENCE_SHA256_BEFORE}" ]]; then
-    preflight_fail "archived capacity evidence manifest differs from source"
-  fi
+CAPACITY_EVIDENCE_PROVENANCE_SOURCE="${CAPACITY_EVIDENCE_FILE}"
+CAPACITY_EVIDENCE_EXPECTED_SHA256="${CAPACITY_EVIDENCE_SHA256}"
+if ! capture_file_state "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
+     "${PROVENANCE_DIR}/capacity-evidence-source-before.state"; then
+  preflight_fail "${FILE_STATE_ERROR}"
+fi
+CAPACITY_EVIDENCE_SHA256_BEFORE="${FILE_STATE_SHA256}"
+CAPACITY_EVIDENCE_STAT_BEFORE="${FILE_STATE_STAT}"
+if [[ "${CAPACITY_EVIDENCE_SHA256_BEFORE}" != \
+      "${CAPACITY_EVIDENCE_EXPECTED_SHA256}" ]]; then
+  preflight_fail "capacity evidence manifest differs from --capacity-evidence-sha256"
+fi
+CAPACITY_EVIDENCE_ARCHIVE="${PROVENANCE_DIR}/capacity-evidence-manifest.txt"
+if ! cp --preserve=mode,timestamps -- \
+     "${CAPACITY_EVIDENCE_PROVENANCE_SOURCE}" \
+     "${CAPACITY_EVIDENCE_ARCHIVE}"; then
+  preflight_fail "cannot archive capacity evidence manifest"
+fi
+if ! capture_file_state "${CAPACITY_EVIDENCE_ARCHIVE}" \
+     "${PROVENANCE_DIR}/capacity-evidence-archive-before.state"; then
+  preflight_fail "${FILE_STATE_ERROR}"
+fi
+CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE="${FILE_STATE_SHA256}"
+CAPACITY_EVIDENCE_ARCHIVE_STAT_BEFORE="${FILE_STATE_STAT}"
+if [[ "${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}" != \
+      "${CAPACITY_EVIDENCE_SHA256_BEFORE}" ]]; then
+  preflight_fail "archived capacity evidence manifest differs from source"
 fi
 
 if ! capture_file_state "${BINARY}" \
@@ -2019,6 +2030,7 @@ PLAN_CAPACITY_PROFILE_NAME=not_applicable
 PLAN_CAPACITY_EVIDENCE_SHA256=not_applicable
 PLAN_CAPACITY_CORPUS_MANIFEST_SHA256=not_applicable
 PLAN_CAPACITY_PROFILER_SHA256=not_applicable
+PLAN_CAPACITY_PROFILE_OUTPUT_SHA256=not_applicable
 PLAN_CAPACITY_PROFILED_MAX_ORDER_REF=not_applicable
 PLAN_CAPACITY_PROFILED_UNIQUE_PRICE_PAGES=not_applicable
 PLAN_CAPACITY_MINIMUM_DIRECT_HEADROOM=not_applicable
@@ -2029,6 +2041,7 @@ if [[ "${HOT_ARENA_POLICY}" == redesign_exact_v1 ]]; then
   for plan_key in capacity_profile_bound capacity_evidence_schema \
                   capacity_profile_name capacity_evidence_sha256 \
                   capacity_corpus_manifest_sha256 capacity_profiler_sha256 \
+                  capacity_profile_output_sha256 \
                   capacity_profiled_max_order_ref \
                   capacity_profiled_unique_price_pages \
                   capacity_minimum_direct_order_headroom \
@@ -2052,6 +2065,8 @@ if [[ "${HOT_ARENA_POLICY}" == redesign_exact_v1 ]]; then
         PLAN_CAPACITY_CORPUS_MANIFEST_SHA256="${RECORD_FIELD_VALUE}" ;;
       capacity_profiler_sha256)
         PLAN_CAPACITY_PROFILER_SHA256="${RECORD_FIELD_VALUE}" ;;
+      capacity_profile_output_sha256)
+        PLAN_CAPACITY_PROFILE_OUTPUT_SHA256="${RECORD_FIELD_VALUE}" ;;
       capacity_profiled_max_order_ref)
         PLAN_CAPACITY_PROFILED_MAX_ORDER_REF="${RECORD_FIELD_VALUE}" ;;
       capacity_profiled_unique_price_pages)
@@ -2084,32 +2099,30 @@ if [[ "${HOT_ARENA_POLICY}" == redesign_exact_v1 ]]; then
       preflight_fail "redesign capacity profile contains a nonpositive demand/headroom value"
     fi
   done
-  if [[ -n "${CAPACITY_EVIDENCE_FILE}" ]]; then
-    [[ "${PLAN_CAPACITY_EVIDENCE_SCHEMA}" == \
-       astra_book_capacity_evidence_v1 ]] ||
-      preflight_fail "custom capacity profile reported the wrong evidence schema"
-    [[ "${PLAN_CAPACITY_PROFILE_NAME}" == "${CAPACITY_PROFILE_NAME}" ]] ||
-      preflight_fail "custom capacity profile name differs from the request"
-    [[ "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
-       "${CAPACITY_EVIDENCE_SHA256}" &&
-       "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
-       "${CAPACITY_EVIDENCE_SHA256_BEFORE}" &&
-       "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
-       "${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}" ]] ||
-      preflight_fail "custom capacity profile identity differs from retained manifest"
-    CAPACITY_EVIDENCE_POLICY=canonical_manifest_v1
-  else
-    [[ "${PLAN_CAPACITY_EVIDENCE_SCHEMA}" == \
-       astra_pinned_trace_capacity_evidence_v1 &&
-       "${PLAN_CAPACITY_PROFILE_NAME}" == \
-       nasdaq-itch-20190130-acceptance-v1 &&
-       "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
-       "${TRACE_SHA256_BEFORE}" &&
-       "${PLAN_CAPACITY_CORPUS_MANIFEST_SHA256}" == \
-       "${TRACE_SHA256_BEFORE}" ]] ||
-      preflight_fail "built-in acceptance capacity profile differs from the pinned trace"
-    CAPACITY_EVIDENCE_POLICY=pinned_trace_builtin_v1
-  fi
+  case "${PLAN_CAPACITY_EVIDENCE_SCHEMA}" in
+    astra_book_capacity_evidence_v1)
+      CAPACITY_EVIDENCE_POLICY=canonical_manifest_v1
+      [[ "${PLAN_CAPACITY_PROFILE_OUTPUT_SHA256}" == not-recorded-v1 ]] ||
+        preflight_fail "v1 capacity profile reported unexpected profile-output provenance"
+      ;;
+    astra_book_capacity_evidence_v2)
+      CAPACITY_EVIDENCE_POLICY=canonical_manifest_v2
+      is_sha256 "${PLAN_CAPACITY_PROFILE_OUTPUT_SHA256}" ||
+        preflight_fail "v2 capacity profile lacks a valid profile-output SHA-256"
+      ;;
+    *)
+      preflight_fail "capacity profile reported the wrong evidence schema"
+      ;;
+  esac
+  [[ "${PLAN_CAPACITY_PROFILE_NAME}" == "${CAPACITY_PROFILE_NAME}" ]] ||
+    preflight_fail "capacity profile name differs from the request"
+  [[ "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
+     "${CAPACITY_EVIDENCE_SHA256}" &&
+     "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
+     "${CAPACITY_EVIDENCE_SHA256_BEFORE}" &&
+     "${PLAN_CAPACITY_EVIDENCE_SHA256}" == \
+     "${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}" ]] ||
+    preflight_fail "capacity profile identity differs from retained manifest"
 fi
 
 for plan_key in system_page_bytes prefault; do
@@ -2260,27 +2273,6 @@ if [[ "${HOT_ARENA_POLICY}" == redesign_exact_v1 ]]; then
   uint_ge "${computed_price_headroom}" \
       "${PLAN_CAPACITY_MINIMUM_PRICE_HEADROOM}" ||
     preflight_fail "capacity profile price headroom is below its minimum"
-
-  if [[ "${CAPACITY_EVIDENCE_POLICY}" == pinned_trace_builtin_v1 ]]; then
-    [[ "${PLAN_CAPACITY_PROFILER_SHA256}" == \
-       c7f468bd3bc784398626997329f01653ac54b8691af822419931f23e95907956 &&
-       "$(normalize_uint "${PLAN_CAPACITY_PROFILED_MAX_ORDER_REF}")" == \
-       329176641 &&
-       "$(normalize_uint "${PLAN_CAPACITY_PROFILED_UNIQUE_PRICE_PAGES}")" == \
-       68941 &&
-       "$(normalize_uint "${PLAN_CAPACITY_MINIMUM_DIRECT_HEADROOM}")" == \
-       207694270 &&
-       "$(normalize_uint "${PLAN_CAPACITY_EFFECTIVE_DIRECT_HEADROOM}")" == \
-       207694270 &&
-       "$(normalize_uint "${PLAN_CAPACITY_MINIMUM_PRICE_HEADROOM}")" == \
-       11059 &&
-       "$(normalize_uint "${PLAN_CAPACITY_EFFECTIVE_PRICE_HEADROOM}")" == \
-       11059 &&
-       "${PLAN_DIRECT_ORDER_SLOTS}" == 536870912 &&
-       "${PLAN_FALLBACK_BUCKETS}" == 1048576 &&
-       "${PLAN_PRICE_PAGE_CAPACITY}" == 80000 ]] ||
-      preflight_fail "built-in capacity fields differ from the reviewed pinned profile"
-  fi
 fi
 
 if [[ "${DERIVED_PLANNED_BYTES}" == 0 ]] ||
@@ -2480,6 +2472,7 @@ CPU_MODEL_NAME="$(cpuinfo_value 'model name' 2>/dev/null || true)"
   echo "capacity_evidence_sha256=${PLAN_CAPACITY_EVIDENCE_SHA256}"
   echo "capacity_corpus_manifest_sha256=${PLAN_CAPACITY_CORPUS_MANIFEST_SHA256}"
   echo "capacity_profiler_sha256=${PLAN_CAPACITY_PROFILER_SHA256}"
+  echo "capacity_profile_output_sha256=${PLAN_CAPACITY_PROFILE_OUTPUT_SHA256}"
   echo "capacity_evidence_source_sha256=${CAPACITY_EVIDENCE_SHA256_BEFORE}"
   echo "capacity_evidence_archive_sha256=${CAPACITY_EVIDENCE_ARCHIVE_SHA256_BEFORE}"
   echo "capacity_profiled_max_order_ref=${PLAN_CAPACITY_PROFILED_MAX_ORDER_REF}"
@@ -3378,6 +3371,7 @@ validate_capacity_identity_record() {
   for key in capacity_profile_bound capacity_evidence_schema \
              capacity_profile_name capacity_evidence_sha256 \
              capacity_corpus_manifest_sha256 capacity_profiler_sha256 \
+             capacity_profile_output_sha256 \
              capacity_profiled_max_order_ref \
              capacity_profiled_unique_price_pages \
              capacity_minimum_direct_order_headroom \
@@ -3397,6 +3391,8 @@ validate_capacity_identity_record() {
         expected="${PLAN_CAPACITY_CORPUS_MANIFEST_SHA256}" ;;
       capacity_profiler_sha256)
         expected="${PLAN_CAPACITY_PROFILER_SHA256}" ;;
+      capacity_profile_output_sha256)
+        expected="${PLAN_CAPACITY_PROFILE_OUTPUT_SHA256}" ;;
       capacity_profiled_max_order_ref)
         expected="${PLAN_CAPACITY_PROFILED_MAX_ORDER_REF}" ;;
       capacity_profiled_unique_price_pages)

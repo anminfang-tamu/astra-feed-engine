@@ -33,6 +33,10 @@ public:
   void setStageTimingEnabled(bool enabled) noexcept;
   const ChannelState &channelState() const noexcept { return channel_; }
   ChannelState &channelState() noexcept { return channel_; }
+  DecodeStatus terminalStatus() const noexcept { return terminal_status_; }
+  bool endOfStreamAccepted() const noexcept {
+    return terminal_status_ == DecodeStatus::EndOfStream;
+  }
 
 private:
   static uint16_t readU16BE(const std::byte *p) noexcept;
@@ -46,9 +50,11 @@ private:
   DecodeStatus validateSequencedPacket(const std::byte *data, std::size_t size,
                                        uint16_t msg_count) const noexcept;
   DecodeResult drainGapBuffer();
+  DecodeStatus resolvePendingEndOfStream() noexcept;
   DecodeResult terminalFailure(DecodeStatus status) noexcept;
 
   bool first_packet_seen_{false};
+  std::uint64_t pending_end_sequence_{0};
   DecodeStatus terminal_status_{DecodeStatus::Ok};
   // bool stage_timing_enabled_{false};
   // DecodeStageTiming last_timing_;

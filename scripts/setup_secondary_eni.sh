@@ -496,9 +496,12 @@ Secondary ENI setup complete.
 Use the secondary ENI private IP as the sender destination, and keep md_engine
 bound to 0.0.0.0:
 
-  ASTRA_BOOK_CAPACITY_PROFILE=nasdaq-itch-20190130-acceptance-v1 \\
+  ASTRA_BOOK_CAPACITY_PROFILE=<checksum-backed-profile> \\
   ASTRA_BOOK_PREFAULT=on \\
   ./scripts/run_engine_udp.sh 0.0.0.0 9000 0.0.0.0 9001
+
+For a custom profile, also provide its canonical evidence file, SHA-256, and
+the exact capacity/evidence/headroom environment documented in the runbook.
 
 For NUMA reporting on this interface:
 

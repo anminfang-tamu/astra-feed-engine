@@ -1,0 +1,16 @@
+schema=astra_itch_trace_manifest_v1
+source_url=https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/S061226-v50.txt.gz
+trade_date=2026-06-12
+downloaded_date=2026-07-24
+compressed_path=data/itch/raw/S061226-v50.txt.gz
+compressed_bytes=17894268560
+compressed_sha256=1f9d35e12120ef37ea22df9f59dc5207fe51b075b6ccf1c9cdfd09fa566dc1d5
+gzip_integrity=pass
+binaryfile_path=data/itch/unzipped/S061226-v50.txt
+binaryfile_bytes=41662444846
+binaryfile_sha256=8aab04f1f6e1287ef73acd7405a5f8487b131a5c6a7ae0f5c8d6d134c2f32238
+first_itch_message=system_event_O
+final_itch_message=system_event_C
+zero_length_terminator_present=false
+sender_completion_setting=ASTRA_BINARYFILE_COMPLETION=legacy-sc-eof
+profiler_completion_flag=--allow-legacy-eof-after-sc

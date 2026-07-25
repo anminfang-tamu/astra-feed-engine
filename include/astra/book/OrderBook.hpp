@@ -41,19 +41,25 @@ public:
 
   astra::book::MutationResult
   addOrder(std::uint64_t order_id, std::uint64_t price, std::uint32_t qty,
-           char side) noexcept;
+           char side, std::uint64_t timestamp = 0) noexcept;
   astra::book::MutationResult cancelShares(std::uint64_t order_id,
-                                           std::uint32_t canceled_qty) noexcept;
-  astra::book::MutationResult deleteOrder(std::uint64_t order_id) noexcept;
+                                           std::uint32_t canceled_qty,
+                                           std::uint64_t timestamp = 0) noexcept;
+  astra::book::MutationResult
+  deleteOrder(std::uint64_t order_id,
+              std::uint64_t timestamp = 0) noexcept;
   astra::book::MutationResult executeOrder(std::uint64_t order_id,
-                                           std::uint32_t executed_qty) noexcept;
-  bool trade(std::uint64_t order_id, std::uint32_t executed_qty) noexcept {
-    return executeOrder(order_id, executed_qty) ==
+                                           std::uint32_t executed_qty,
+                                           std::uint64_t timestamp = 0) noexcept;
+  bool trade(std::uint64_t order_id, std::uint32_t executed_qty,
+             std::uint64_t timestamp = 0) noexcept {
+    return executeOrder(order_id, executed_qty, timestamp) ==
            astra::book::MutationResult::Applied;
   }
   astra::book::MutationResult
   replaceOrder(std::uint64_t old_id, std::uint64_t new_id,
-               std::uint64_t new_price, std::uint32_t new_qty) noexcept;
+               std::uint64_t new_price, std::uint32_t new_qty,
+               std::uint64_t timestamp = 0) noexcept;
 
   TopOfBook getTopOfBook() const noexcept;
   BookUpdate getBookUpdate() const noexcept;
@@ -94,4 +100,5 @@ private:
   std::size_t order_capacity_{0};
   std::size_t live_order_count_{0};
   std::uint64_t allocation_failures_{0};
+  std::uint64_t latest_update_timestamp_{0};
 };

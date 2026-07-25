@@ -1,5 +1,6 @@
 #include "astra/book/OrderBook.hpp"
 #include "astra/book/TopOfBook.hpp"
+#include "astra/protocol/ItchPrice.hpp"
 
 #include <gtest/gtest.h>
 
@@ -73,6 +74,33 @@ TEST(OrderBookTest, ReplaceOrderMovesToNewPrice) {
   const TopOfBook top = book.getTopOfBook();
   EXPECT_EQ(top.bid_price, 12u);
   EXPECT_EQ(top.bid_qty,   75u);
+}
+
+TEST(OrderBookTest, ReplaceIntoOccupiedLevelMergesAndRemainsMutable) {
+  OrderBook book(42);
+  ASSERT_EQ(book.addOrder(1, 10, 100, 'B'),
+            astra::book::MutationResult::Applied);
+  ASSERT_EQ(book.addOrder(2, 20, 200, 'B'),
+            astra::book::MutationResult::Applied);
+
+  ASSERT_EQ(book.replaceOrder(1, 3, 20, 75),
+            astra::book::MutationResult::Applied);
+  BookUpdate update = book.getBookUpdate();
+  ASSERT_EQ(update.bids_depth, 1u);
+  EXPECT_EQ(update.bids[0].price, 20u);
+  EXPECT_EQ(update.bids[0].qty, 275u);
+  EXPECT_EQ(update.bids[0].num_orders, 2u);
+
+  ASSERT_EQ(book.executeOrder(3, 25),
+            astra::book::MutationResult::Applied);
+  ASSERT_EQ(book.deleteOrder(2), astra::book::MutationResult::Applied);
+  update = book.getBookUpdate();
+  ASSERT_EQ(update.bids_depth, 1u);
+  EXPECT_EQ(update.bids[0].qty, 50u);
+  EXPECT_EQ(update.bids[0].num_orders, 1u);
+
+  ASSERT_EQ(book.deleteOrder(3), astra::book::MutationResult::Applied);
+  EXPECT_FALSE(book.getTopOfBook().has_bid);
 }
 
 TEST(OrderBookTest, SameReferenceReplaceChangesQuantityAtSamePrice) {
@@ -255,11 +283,25 @@ TEST(OrderBookTest, BookUpdateCapsAtTopTenLevels) {
   EXPECT_EQ(update.bids[9].price, 12u);
   EXPECT_EQ(update.asks[0].price, 20u);
   EXPECT_EQ(update.asks[9].price, 29u);
+
+  for (std::uint64_t id = 102; id <= 111; ++id) {
+    ASSERT_EQ(book.deleteOrder(id), astra::book::MutationResult::Applied);
+  }
+  for (std::uint64_t id = 200; id <= 209; ++id) {
+    ASSERT_EQ(book.deleteOrder(id), astra::book::MutationResult::Applied);
+  }
+  const BookUpdate deeper = book.getBookUpdate();
+  ASSERT_EQ(deeper.bids_depth, 2u);
+  ASSERT_EQ(deeper.asks_depth, 2u);
+  EXPECT_EQ(deeper.bids[0].price, 11u);
+  EXPECT_EQ(deeper.bids[1].price, 10u);
+  EXPECT_EQ(deeper.asks[0].price, 30u);
+  EXPECT_EQ(deeper.asks[1].price, 31u);
 }
 
-TEST(OrderBookTest, CoversPriceZeroAndUint32MaxWithoutRecentering) {
+TEST(OrderBookTest, CoversPriceZeroAndMaximumItchPriceWithoutRecentering) {
   OrderBook book(42);
-  constexpr uint32_t max_price = std::numeric_limits<uint32_t>::max();
+  constexpr uint32_t max_price = astra::protocol::kMaxItchPrice4;
 
   ASSERT_EQ(book.addOrder(1, 0, 100, 'B'),
             astra::book::MutationResult::Applied);
@@ -366,9 +408,11 @@ TEST(OrderBookTest, RejectsPriceBeyondWireDomainWithoutChangingBook) {
   ASSERT_EQ(book.addOrder(1, 10, 100, 'B'),
             astra::book::MutationResult::Applied);
 
-  EXPECT_EQ(book.addOrder(2, std::uint64_t{1} << 32, 50, 'B'),
+  constexpr std::uint64_t over_max =
+      std::uint64_t{astra::protocol::kMaxItchPrice4} + 1;
+  EXPECT_EQ(book.addOrder(2, over_max, 50, 'B'),
             astra::book::MutationResult::PriceOutOfRange);
-  EXPECT_EQ(book.replaceOrder(1, 3, std::uint64_t{1} << 32, 25),
+  EXPECT_EQ(book.replaceOrder(1, 3, over_max, 25),
             astra::book::MutationResult::PriceOutOfRange);
   EXPECT_EQ(book.getTopOfBook().bid_price, 10u);
   EXPECT_EQ(book.getTopOfBook().bid_qty, 100u);

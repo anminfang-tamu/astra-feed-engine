@@ -2,14 +2,62 @@
 #include "astra/book/BookUpdate.hpp"
 #include "astra/book/TopOfBook.hpp"
 #include "astra/protocol/OrderSide.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <string_view>
 
 TEST(BookManagerTest, UnknownLocateReturnsNull) {
   BookManager manager;
   EXPECT_EQ(manager.getOrderBook(42), nullptr);
+}
+
+TEST(BookManagerTest,
+     AuditsEveryRegisteredBookAndRejectsUnregisteredMaterialization) {
+  astra::symbol::StockDirectory directory;
+  const auto register_symbol =
+      [&directory](std::uint16_t locate, std::string_view ticker) {
+        astra::symbol::StockDirectoryEntry entry{};
+        for (std::size_t index = 0;
+             index < ticker.size() && index < sizeof(entry.ticker) - 1;
+             ++index) {
+          entry.ticker[index] = ticker[index];
+        }
+        return directory.set(locate, entry);
+      };
+
+  ASSERT_TRUE(register_symbol(7, "AAPL"));
+  ASSERT_TRUE(register_symbol(8, "MSFT"));
+
+  BookManager manager;
+  BookDirectoryAudit audit = manager.auditDirectory(directory);
+  EXPECT_FALSE(audit.clean());
+  EXPECT_EQ(audit.registered_symbols, 2u);
+  EXPECT_EQ(audit.materialized_books, 0u);
+  EXPECT_EQ(audit.prepared_books, 0u);
+  EXPECT_EQ(audit.registered_books_missing, 2u);
+  EXPECT_EQ(audit.unregistered_books_present, 0u);
+  EXPECT_EQ(audit.descriptor_price_state_mismatches, 0u);
+  EXPECT_EQ(audit.descriptor_identity_mismatches, 0u);
+
+  ASSERT_NE(manager.getOrCreate(7), nullptr);
+  ASSERT_NE(manager.getOrCreate(8), nullptr);
+  audit = manager.auditDirectory(directory);
+  EXPECT_TRUE(audit.clean());
+  EXPECT_EQ(audit.materialized_books, 2u);
+  EXPECT_EQ(audit.prepared_books, 2u);
+  EXPECT_EQ(audit.registered_books_missing, 0u);
+  EXPECT_EQ(audit.descriptor_identity_mismatches, 0u);
+
+  ASSERT_NE(manager.getOrCreate(9), nullptr);
+  audit = manager.auditDirectory(directory);
+  EXPECT_FALSE(audit.clean());
+  EXPECT_EQ(audit.materialized_books, 3u);
+  EXPECT_EQ(audit.prepared_books, 3u);
+  EXPECT_EQ(audit.unregistered_books_present, 1u);
+  EXPECT_EQ(audit.descriptor_identity_mismatches, 0u);
 }
 
 TEST(BookManagerTest, RoutesOrdersByStockLocate) {
@@ -38,6 +86,36 @@ TEST(BookManagerTest, RoutesOrdersByStockLocate) {
   EXPECT_EQ(top9.bid_qty,     0u);
   EXPECT_EQ(top9.ask_price, 200u);
   EXPECT_EQ(top9.ask_qty,   20u);
+}
+
+TEST(BookManagerTest, SameSideAndPriceRemainIsolatedAcrossSymbols) {
+  BookManager manager;
+  ASSERT_NE(manager.getOrCreate(7), nullptr);
+  ASSERT_NE(manager.getOrCreate(8), nullptr);
+  ASSERT_EQ(manager.addOrder(7, 1, 123'456, 100, 'B'),
+            astra::book::MutationResult::Applied);
+  ASSERT_EQ(manager.addOrder(8, 2, 123'456, 250, 'B'),
+            astra::book::MutationResult::Applied);
+
+  BookUpdate first = manager.getOrderBook(7)->getBookUpdate();
+  BookUpdate second = manager.getOrderBook(8)->getBookUpdate();
+  ASSERT_EQ(first.bids_depth, 1u);
+  ASSERT_EQ(second.bids_depth, 1u);
+  EXPECT_EQ(first.bids[0].price, second.bids[0].price);
+  EXPECT_EQ(first.bids[0].qty, 100u);
+  EXPECT_EQ(first.bids[0].num_orders, 1u);
+  EXPECT_EQ(second.bids[0].qty, 250u);
+  EXPECT_EQ(second.bids[0].num_orders, 1u);
+
+  ASSERT_EQ(manager.executeOrder(7, 1, 40),
+            astra::book::MutationResult::Applied);
+  EXPECT_EQ(manager.getOrderBook(7)->getTopOfBook().bid_qty, 60u);
+  EXPECT_EQ(manager.getOrderBook(8)->getTopOfBook().bid_qty, 250u);
+
+  ASSERT_EQ(manager.deleteOrder(8, 2),
+            astra::book::MutationResult::Applied);
+  EXPECT_TRUE(manager.getOrderBook(7)->getTopOfBook().has_bid);
+  EXPECT_FALSE(manager.getOrderBook(8)->getTopOfBook().has_bid);
 }
 
 TEST(BookManagerTest, DeleteForUnknownLocateIsIgnored) {
@@ -186,6 +264,7 @@ TEST(BookManagerTest, PricePageExhaustionLeavesReplacementSourceIntact) {
 
   EXPECT_EQ(manager.replaceOrder(7, 1, 2, 65'536, 50),
             astra::book::MutationResult::PricePageCapacityExceeded);
+  EXPECT_EQ(manager.priceLevels().counters().page_capacity_failures, 1u);
   EXPECT_EQ(book->getTopOfBook().bid_price, 10u);
   EXPECT_EQ(book->getTopOfBook().bid_qty, 100u);
   EXPECT_EQ(book->liveOrderCount(), 1u);
@@ -242,9 +321,9 @@ TEST(BookManagerTest, OrderStateStoresDirectPriceAddressForExistingMutation) {
   EXPECT_EQ(manager.priceLevels().counters().committed_pages, pages_before);
   EXPECT_EQ(manager.getOrderBook(7)->getTopOfBook().ask_qty, 75u);
 
-  ASSERT_EQ(manager.replaceOrder(7, 55, 55, 0xabcd'0001u, 60u),
+  ASSERT_EQ(manager.replaceOrder(7, 55, 55, 0x6bcd'0001u, 60u),
             astra::book::MutationResult::Applied);
-  EXPECT_EQ(lookup.state->price_page_index, 0xabcdu);
+  EXPECT_EQ(lookup.state->price_page_index, 0x6bcdu);
   EXPECT_EQ(lookup.state->price_level_index, 1u);
   ASSERT_EQ(manager.executeOrder(7, 55, 10u),
             astra::book::MutationResult::Applied);
@@ -294,6 +373,8 @@ TEST(BookManagerTest, AggregateUnderflowRollsBackReplacementAndSealsBook) {
 
   EXPECT_TRUE(manager.orderTable().find(55).found());
   EXPECT_FALSE(manager.orderTable().find(56).found());
+  EXPECT_EQ(manager.orderTable().reserve(56).result,
+            astra::book::MutationResult::DuplicateOrderRef);
   EXPECT_EQ(manager.orderTable().find(55).state->qty, 100u);
   EXPECT_EQ(level->total_qty, 50u);
   EXPECT_EQ(level->order_count, 1u);

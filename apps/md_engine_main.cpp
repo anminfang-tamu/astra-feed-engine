@@ -101,6 +101,18 @@ static uint64_t requiredEnvU64(const char *name, uint64_t minimum,
   return envU64(name, 0, minimum, maximum);
 }
 
+static bool parseUnsignedArgument(const char *value, uint64_t minimum,
+                                  uint64_t maximum,
+                                  uint64_t &parsed) noexcept {
+  if (value == nullptr || *value == '\0')
+    return false;
+  const char *end = value + std::strlen(value);
+  parsed = 0;
+  const auto result = std::from_chars(value, end, parsed, 10);
+  return result.ec == std::errc{} && result.ptr == end &&
+         parsed >= minimum && parsed <= maximum;
+}
+
 static std::string requiredMetadataToken(const char *name,
                                          std::size_t maximum_length) {
   const char *value = std::getenv(name);
@@ -146,20 +158,13 @@ static std::string requiredSha256(const char *name) {
   return digest;
 }
 
-static void rejectEnvironmentOverride(const char *name) {
-  if (const char *value = std::getenv(name); value != nullptr && *value != '\0') {
-    throw std::invalid_argument(
-        std::string(name) +
-        " cannot override the pinned 2019 acceptance profile");
-  }
-}
-
 struct BookDeploymentCapacity {
   std::string name;
   std::string evidence_schema;
   std::string evidence_sha256;
   std::string corpus_manifest_sha256;
   std::string profiler_sha256;
+  std::string profile_output_sha256;
   BookManagerConfig config;
   BookCapacityEvidence evidence;
   BookCapacityHeadroom minimum_headroom;
@@ -185,103 +190,78 @@ static BookDeploymentCapacity bookCapacityFromEnvironment() {
   const std::string profile_name =
       requiredMetadataToken("ASTRA_BOOK_CAPACITY_PROFILE", 128);
 
-  BookCapacityProfile profile;
-  std::string evidence_schema;
-  std::string corpus_manifest_sha256;
-  std::string profiler_sha256;
-  if (profile_name == BookCapacityProfile::kNasdaqItch20190130Name) {
-    rejectEnvironmentOverride("ASTRA_BOOK_CAPACITY_EVIDENCE_FILE");
-    rejectEnvironmentOverride("ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256");
-    rejectEnvironmentOverride("ASTRA_ORDER_DIRECT_SLOTS");
-    rejectEnvironmentOverride("ASTRA_ORDER_FALLBACK_BUCKETS");
-    rejectEnvironmentOverride("ASTRA_PRICE_PAGE_CAPACITY");
-    rejectEnvironmentOverride("ASTRA_PROFILED_MAX_ORDER_REF");
-    rejectEnvironmentOverride("ASTRA_PROFILED_UNIQUE_PRICE_PAGES");
-    rejectEnvironmentOverride("ASTRA_MIN_DIRECT_ORDER_HEADROOM");
-    rejectEnvironmentOverride("ASTRA_MIN_PRICE_PAGE_HEADROOM");
-    profile = BookCapacityProfile::nasdaqItch20190130Acceptance();
-    evidence_schema = "astra_pinned_trace_capacity_evidence_v1";
-    corpus_manifest_sha256 =
-        BookCapacityProfile::kNasdaqItch20190130TraceSha256;
-    profiler_sha256 =
-        BookCapacityProfile::kNasdaqItch20190130ProfilerSha256;
-    if (!envBool("ASTRA_BOOK_PREFAULT", std::getenv("ASTRA_BOOK_PREFAULT"),
-                 true)) {
-      throw std::invalid_argument(
-          "the pinned 2019 acceptance profile requires ASTRA_BOOK_PREFAULT=on");
-    }
-  } else {
-    const std::string expected_evidence_sha256 =
-        requiredSha256("ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256");
-    const std::string evidence_file =
-        requiredEnvironmentValue("ASTRA_BOOK_CAPACITY_EVIDENCE_FILE");
-    const std::uint64_t configured_direct_slots = requiredEnvU64(
-        "ASTRA_ORDER_DIRECT_SLOTS", 1,
-        static_cast<uint64_t>(std::numeric_limits<std::size_t>::max()));
-    const std::uint64_t configured_fallback_buckets = requiredEnvU64(
-        "ASTRA_ORDER_FALLBACK_BUCKETS", 1,
-        std::numeric_limits<uint32_t>::max());
-    const std::uint64_t configured_price_pages = requiredEnvU64(
-        "ASTRA_PRICE_PAGE_CAPACITY", 1,
-        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 1);
-    const std::uint64_t configured_maximum_order_reference = requiredEnvU64(
-        "ASTRA_PROFILED_MAX_ORDER_REF", 1,
-        std::numeric_limits<uint64_t>::max());
-    const std::uint64_t configured_unique_price_pages = requiredEnvU64(
-        "ASTRA_PROFILED_UNIQUE_PRICE_PAGES", 1,
-        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 1);
-    const std::uint64_t configured_minimum_direct_headroom = requiredEnvU64(
-        "ASTRA_MIN_DIRECT_ORDER_HEADROOM", 1,
-        std::numeric_limits<uint64_t>::max());
-    const std::uint64_t configured_minimum_price_headroom = requiredEnvU64(
-        "ASTRA_MIN_PRICE_PAGE_HEADROOM", 1,
-        std::numeric_limits<uint32_t>::max());
-    BookCapacityEvidenceManifest manifest =
-        loadBookCapacityEvidenceManifest(evidence_file, profile_name,
-                                         expected_evidence_sha256);
-    profile = std::move(manifest.profile);
-    evidence_schema = std::string(BookCapacityEvidenceManifest::kSchema);
-    corpus_manifest_sha256 = std::move(manifest.corpus_manifest_sha256);
-    profiler_sha256 = std::move(manifest.profiler_sha256);
-
-    requireManifestValue("ASTRA_ORDER_DIRECT_SLOTS",
-                         configured_direct_slots,
-                         profile.config.orders.direct_slots);
-    requireManifestValue("ASTRA_ORDER_FALLBACK_BUCKETS",
-                         configured_fallback_buckets,
-                         profile.config.orders.fallback_bucket_count);
-    requireManifestValue("ASTRA_PRICE_PAGE_CAPACITY",
-                         configured_price_pages,
-                         profile.config.prices.page_capacity);
-    requireManifestValue(
-        "ASTRA_PROFILED_MAX_ORDER_REF",
-        configured_maximum_order_reference,
-        profile.evidence.profiled_max_order_reference);
-    requireManifestValue(
-        "ASTRA_PROFILED_UNIQUE_PRICE_PAGES",
-        configured_unique_price_pages,
-        profile.evidence.profiled_unique_price_pages);
-    requireManifestValue(
-        "ASTRA_MIN_DIRECT_ORDER_HEADROOM",
-        configured_minimum_direct_headroom,
-        profile.minimum_headroom.direct_order_reference_slots);
-    requireManifestValue("ASTRA_MIN_PRICE_PAGE_HEADROOM",
-                         configured_minimum_price_headroom,
-                         profile.minimum_headroom.price_pages);
-
-    const bool prefault = envBool("ASTRA_BOOK_PREFAULT",
-                                  std::getenv("ASTRA_BOOK_PREFAULT"), true);
-    profile.config.orders.prefault = prefault;
-    profile.config.prices.prefault = prefault;
+  const std::string expected_evidence_sha256 =
+      requiredSha256("ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256");
+  const std::string evidence_file =
+      requiredEnvironmentValue("ASTRA_BOOK_CAPACITY_EVIDENCE_FILE");
+  const std::uint64_t configured_direct_slots = requiredEnvU64(
+      "ASTRA_ORDER_DIRECT_SLOTS", 1,
+      static_cast<uint64_t>(std::numeric_limits<std::size_t>::max()));
+  const std::uint64_t configured_fallback_buckets = requiredEnvU64(
+      "ASTRA_ORDER_FALLBACK_BUCKETS", 1,
+      std::numeric_limits<uint32_t>::max());
+  const std::uint64_t configured_price_pages = requiredEnvU64(
+      "ASTRA_PRICE_PAGE_CAPACITY", 1,
+      static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 1);
+  const std::uint64_t configured_maximum_order_reference = requiredEnvU64(
+      "ASTRA_PROFILED_MAX_ORDER_REF", 1,
+      std::numeric_limits<uint64_t>::max());
+  const std::uint64_t configured_unique_price_pages = requiredEnvU64(
+      "ASTRA_PROFILED_UNIQUE_PRICE_PAGES", 1,
+      static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 1);
+  const std::uint64_t configured_minimum_direct_headroom = requiredEnvU64(
+      "ASTRA_MIN_DIRECT_ORDER_HEADROOM", 1,
+      std::numeric_limits<uint64_t>::max());
+  const std::uint64_t configured_minimum_price_headroom = requiredEnvU64(
+      "ASTRA_MIN_PRICE_PAGE_HEADROOM", 1,
+      std::numeric_limits<uint32_t>::max());
+  BookCapacityEvidenceManifest manifest =
+      loadBookCapacityEvidenceManifest(evidence_file, profile_name,
+                                       expected_evidence_sha256);
+  if (manifest.schema != BookCapacityEvidenceManifest::kSchemaV2) {
+    throw std::invalid_argument(
+        "md_engine startup requires astra_book_capacity_evidence_v2");
   }
+  BookCapacityProfile profile = std::move(manifest.profile);
+
+  requireManifestValue("ASTRA_ORDER_DIRECT_SLOTS",
+                       configured_direct_slots,
+                       profile.config.orders.direct_slots);
+  requireManifestValue("ASTRA_ORDER_FALLBACK_BUCKETS",
+                       configured_fallback_buckets,
+                       profile.config.orders.fallback_bucket_count);
+  requireManifestValue("ASTRA_PRICE_PAGE_CAPACITY",
+                       configured_price_pages,
+                       profile.config.prices.page_capacity);
+  requireManifestValue(
+      "ASTRA_PROFILED_MAX_ORDER_REF",
+      configured_maximum_order_reference,
+      profile.evidence.profiled_max_order_reference);
+  requireManifestValue(
+      "ASTRA_PROFILED_UNIQUE_PRICE_PAGES",
+      configured_unique_price_pages,
+      profile.evidence.profiled_unique_price_pages);
+  requireManifestValue(
+      "ASTRA_MIN_DIRECT_ORDER_HEADROOM",
+      configured_minimum_direct_headroom,
+      profile.minimum_headroom.direct_order_reference_slots);
+  requireManifestValue("ASTRA_MIN_PRICE_PAGE_HEADROOM",
+                       configured_minimum_price_headroom,
+                       profile.minimum_headroom.price_pages);
+
+  const bool prefault = envBool("ASTRA_BOOK_PREFAULT",
+                               std::getenv("ASTRA_BOOK_PREFAULT"), true);
+  profile.config.orders.prefault = prefault;
+  profile.config.prices.prefault = prefault;
 
   const BookCapacityValidation validation =
       validateBookCapacityProfile(profile);
   return {std::string(profile.name),
-          std::move(evidence_schema),
+          std::move(manifest.schema),
           std::string(profile.evidence_sha256),
-          std::move(corpus_manifest_sha256),
-          std::move(profiler_sha256),
+          std::move(manifest.corpus_manifest_sha256),
+          std::move(manifest.profiler_sha256),
+          std::move(manifest.profile_output_sha256),
           profile.config,
           profile.evidence,
           profile.minimum_headroom,
@@ -296,6 +276,10 @@ static void printBookCapacityProfile(
             << " corpus_manifest_sha256="
             << deployment.corpus_manifest_sha256
             << " profiler_sha256=" << deployment.profiler_sha256
+            << " profile_output_sha256="
+            << (deployment.profile_output_sha256.empty()
+                    ? "not-recorded-v1"
+                    : deployment.profile_output_sha256)
             << " order_direct_slots="
             << deployment.config.orders.direct_slots
             << " order_fallback_buckets="
@@ -346,6 +330,28 @@ static const char *channelHealthName(ChannelHealth status) noexcept {
   return "Unknown";
 }
 
+static const char *channelPhaseName(ChannelPhase phase) noexcept {
+  switch (phase) {
+  case ChannelPhase::WaitingStartOfMessages:
+    return "WaitingStartOfMessages";
+  case ChannelPhase::StartupDirectorySpin:
+    return "StartupDirectorySpin";
+  case ChannelPhase::StartupAdminSpin:
+    return "StartupAdminSpin";
+  case ChannelPhase::SystemHours:
+    return "SystemHours";
+  case ChannelPhase::MarketHours:
+    return "MarketHours";
+  case ChannelPhase::PostMarketHours:
+    return "PostMarketHours";
+  case ChannelPhase::PostSystemHours:
+    return "PostSystemHours";
+  case ChannelPhase::EndOfMessages:
+    return "EndOfMessages";
+  }
+  return "Unknown";
+}
+
 int main(int argc, char *argv[]) {
   if (argc == 2 &&
       std::strcmp(argv[1], "--book-storage-plan-only") == 0) {
@@ -375,13 +381,45 @@ int main(int argc, char *argv[]) {
 
   const bool dual_feed = argc == 5 || argc == 6;
   const char *ip = argv[1];
-  const uint16_t port = static_cast<uint16_t>(std::atoi(argv[2]));
-  const uint8_t channel_id =
-      (!dual_feed && argc == 4)
-          ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 10))
-      : (dual_feed && argc == 6)
-          ? static_cast<uint8_t>(std::strtoul(argv[5], nullptr, 10))
-          : 0;
+  uint64_t parsed_argument = 0;
+  if (!parseUnsignedArgument(
+          argv[2], 1, std::numeric_limits<uint16_t>::max(),
+          parsed_argument)) {
+    std::cerr << "port_a must be an integer from 1 through "
+              << std::numeric_limits<uint16_t>::max() << "\n";
+    return EXIT_FAILURE;
+  }
+  const uint16_t port = static_cast<uint16_t>(parsed_argument);
+
+  uint16_t port_b = 0;
+  if (dual_feed &&
+      !parseUnsignedArgument(
+          argv[4], 1, std::numeric_limits<uint16_t>::max(),
+          parsed_argument)) {
+    std::cerr << "port_b must be an integer from 1 through "
+              << std::numeric_limits<uint16_t>::max() << "\n";
+    return EXIT_FAILURE;
+  }
+  if (dual_feed)
+    port_b = static_cast<uint16_t>(parsed_argument);
+
+  uint8_t channel_id = 0;
+  const char *channel_argument =
+      (!dual_feed && argc == 4) ? argv[3]
+      : (dual_feed && argc == 6) ? argv[5]
+                                 : nullptr;
+  if (channel_argument != nullptr) {
+    if (!parseUnsignedArgument(
+            channel_argument, 0, std::numeric_limits<uint8_t>::max(),
+            parsed_argument)) {
+      std::cerr << "channel_id must be an integer from 0 through "
+                << static_cast<unsigned>(
+                       std::numeric_limits<uint8_t>::max())
+                << "\n";
+      return EXIT_FAILURE;
+    }
+    channel_id = static_cast<uint8_t>(parsed_argument);
+  }
 
   try {
     const char *rx_transport = std::getenv("ASTRA_RX");
@@ -398,12 +436,31 @@ int main(int argc, char *argv[]) {
     const bool use_recvmmsg =
         rx_mode != nullptr && (std::strcmp(rx_mode, "recvmmsg") == 0 ||
                                std::strcmp(rx_mode, "batch") == 0);
-    std::size_t batch_size = UdpBatchReceiver::kDefaultBatchSize;
-    if (const char *batch_env = std::getenv("ASTRA_UDP_BATCH_SIZE")) {
-      const auto parsed = std::strtoul(batch_env, nullptr, 10);
-      if (parsed > 0)
-        batch_size = static_cast<std::size_t>(parsed);
+    if (rx_mode != nullptr && rx_mode[0] != '\0' && !use_recvmmsg &&
+        std::strcmp(rx_mode, "recv") != 0) {
+      throw std::runtime_error(std::string("Unknown ASTRA_UDP_RX: ") +
+                               rx_mode);
     }
+    std::size_t batch_size = UdpBatchReceiver::kDefaultBatchSize;
+    if (std::getenv("ASTRA_UDP_BATCH_SIZE") != nullptr) {
+      batch_size = static_cast<std::size_t>(
+          envU64("ASTRA_UDP_BATCH_SIZE",
+                 UdpBatchReceiver::kDefaultBatchSize, 1,
+                 UdpBatchReceiver::kMaxBatchSize));
+    }
+    EngineConfig config;
+    config.enable_latency_metrics = envBool(
+        "ASTRA_LATENCY_METRICS", std::getenv("ASTRA_LATENCY_METRICS"),
+        config.enable_latency_metrics);
+
+    // Capacity provenance is a pure startup gate. Validate and report it
+    // before binding a kernel socket or initializing a DPDK device.
+    const BookDeploymentCapacity deployment = bookCapacityFromEnvironment();
+    const BookManagerConfig &book_config = deployment.config;
+    const BookStorageFootprint planned_storage =
+        estimateBookStorageFootprint(book_config);
+    printBookCapacityProfile(deployment);
+    printBookStoragePlan(planned_storage);
 
     // DPDK EAL may replace the calling thread's affinity. Kernel receivers do
     // not, so pin them before opening sockets; the DPDK path is pinned again
@@ -426,8 +483,7 @@ int main(int argc, char *argv[]) {
 #else
       if (dual_feed) {
         auto receiver = std::make_unique<DpdkReceiver>(
-            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-            static_cast<uint16_t>(std::atoi(argv[4])));
+            argv[1], port, argv[3], port_b);
         dpdk_receiver = receiver.get();
         source = std::move(receiver);
       } else {
@@ -439,14 +495,12 @@ int main(int argc, char *argv[]) {
     } else if (dual_feed) {
       if (use_recvmmsg) {
         auto receiver = std::make_unique<DualUdpBatchReceiver>(
-            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-            static_cast<uint16_t>(std::atoi(argv[4])), batch_size);
+            argv[1], port, argv[3], port_b, batch_size);
         dual_batch_receiver = receiver.get();
         source = std::move(receiver);
       } else {
         auto receiver = std::make_unique<DualUdpReceiver>(
-            argv[1], static_cast<uint16_t>(std::atoi(argv[2])), argv[3],
-            static_cast<uint16_t>(std::atoi(argv[4])));
+            argv[1], port, argv[3], port_b);
         dual_receiver = receiver.get();
         source = std::move(receiver);
       }
@@ -462,12 +516,6 @@ int main(int argc, char *argv[]) {
       pinRequestedCpu("post_dpdk_eal");
 
     astra::symbol::StockDirectory symbols;
-    const BookDeploymentCapacity deployment = bookCapacityFromEnvironment();
-    const BookManagerConfig &book_config = deployment.config;
-    const BookStorageFootprint planned_storage =
-        estimateBookStorageFootprint(book_config);
-    printBookCapacityProfile(deployment);
-    printBookStoragePlan(planned_storage);
     BookManager book_manager(book_config);
     const BookManagerConfig &effective_config = book_manager.config();
     const BookStorageFootprint &effective_storage =
@@ -492,10 +540,6 @@ int main(int argc, char *argv[]) {
 
     LatencyRecorder latency_recorder;
     // StageLatencyRecorder stage_latency_recorder;
-    EngineConfig config;
-    config.enable_latency_metrics = envBool(
-        "ASTRA_LATENCY_METRICS", std::getenv("ASTRA_LATENCY_METRICS"),
-        config.enable_latency_metrics);
     // config.enable_stage_latency_metrics =
     //     config.enable_latency_metrics &&
     //     envBool(std::getenv("ASTRA_STAGE_LATENCY_METRICS"),
@@ -549,15 +593,51 @@ int main(int argc, char *argv[]) {
                 // << (config.enable_stage_latency_metrics ? "on" : "off")
                 << " — press Ctrl+C to stop\n";
     }
+    std::cout << std::flush;
 
     engine.run();
 
     const auto &channel = decoder.channelState();
+    const std::uint64_t final_live_orders =
+        book_manager.totalLiveOrderCount();
+    const bool end_of_stream_accepted = decoder.endOfStreamAccepted();
+    const BookDirectoryAudit book_directory_audit =
+        book_manager.auditDirectory(symbols);
+    const astra::book::PriceLevelStoreCounters price_counters =
+        book_manager.priceLevels().counters();
 
     std::cout << "Engine stopped  symbols=" << symbols.size() << "\n";
     std::cout << "engine_stats channel_next_seq=" << channel.next_expected_seq
               << " channel_status=" << static_cast<int>(channel.status)
               << " channel_status_name=" << channelHealthName(channel.status)
+              << " channel_phase_name=" << channelPhaseName(channel.phase)
+              << " identical_buffered_redundant_packets="
+              << channel.identical_buffered_redundant_packets
+              << " conflicting_buffered_redundant_packets="
+              << channel.conflicting_buffered_redundant_packets
+              << " final_live_orders=" << final_live_orders
+              << " registered_symbols="
+              << book_directory_audit.registered_symbols
+              << " materialized_books="
+              << book_directory_audit.materialized_books
+              << " prepared_books="
+              << book_directory_audit.prepared_books
+              << " registered_books_missing="
+              << book_directory_audit.registered_books_missing
+              << " unregistered_books_present="
+              << book_directory_audit.unregistered_books_present
+              << " descriptor_price_state_mismatches="
+              << book_directory_audit.descriptor_price_state_mismatches
+              << " descriptor_identity_mismatches="
+              << book_directory_audit.descriptor_identity_mismatches
+              << " committed_price_pages="
+              << price_counters.committed_pages
+              << " price_page_capacity="
+              << price_counters.page_capacity
+              << " price_page_capacity_failures="
+              << price_counters.page_capacity_failures
+              << " end_of_stream_accepted="
+              << (end_of_stream_accepted ? "true" : "false")
               << "\n";
 
     if (channel.status != ChannelHealth::Good || !channel.gap_buffer.empty()) {
@@ -630,9 +710,34 @@ int main(int argc, char *argv[]) {
       //   stage_latency_recorder.report();
     }
 
-    if (channel.status != ChannelHealth::Good) {
-      std::cerr << "channel did not finish healthy: "
-                << channelHealthName(channel.status) << "\n";
+    if (channel.status != ChannelHealth::Good ||
+        !channel.gap_buffer.empty() ||
+        channel.phase != ChannelPhase::EndOfMessages ||
+        final_live_orders != 0 || !book_directory_audit.clean() ||
+        price_counters.page_capacity_failures != 0 ||
+        !end_of_stream_accepted) {
+      std::cerr << "channel did not finish a complete healthy session:"
+                << " status=" << channelHealthName(channel.status)
+                << " phase=" << channelPhaseName(channel.phase)
+                << " final_live_orders=" << final_live_orders
+                << " registered_symbols="
+                << book_directory_audit.registered_symbols
+                << " materialized_books="
+                << book_directory_audit.materialized_books
+                << " prepared_books="
+                << book_directory_audit.prepared_books
+                << " registered_books_missing="
+                << book_directory_audit.registered_books_missing
+                << " unregistered_books_present="
+                << book_directory_audit.unregistered_books_present
+                << " descriptor_price_state_mismatches="
+                << book_directory_audit.descriptor_price_state_mismatches
+                << " descriptor_identity_mismatches="
+                << book_directory_audit.descriptor_identity_mismatches
+                << " price_page_capacity_failures="
+                << price_counters.page_capacity_failures
+                << " end_of_stream_accepted="
+                << (end_of_stream_accepted ? "true" : "false") << "\n";
       return EXIT_FAILURE;
     }
 

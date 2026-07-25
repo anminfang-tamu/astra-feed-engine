@@ -1,5 +1,6 @@
 #include "astra/book/OrderBook.hpp"
 
+#include "astra/protocol/ItchPrice.hpp"
 #include "astra/symbol/StockLocate.hpp"
 
 #include <algorithm>
@@ -147,7 +148,8 @@ OrderBook::validateState(astra::book::OrderState *state) noexcept {
 
 astra::book::MutationResult
 OrderBook::addOrder(std::uint64_t order_id, std::uint64_t price,
-                    std::uint32_t qty, char side) noexcept {
+                    std::uint32_t qty, char side,
+                    std::uint64_t timestamp) noexcept {
   if (local_invalid_)
     return astra::book::MutationResult::BookInvalid;
   if (orders_ == nullptr || prices_ == nullptr ||
@@ -159,7 +161,7 @@ OrderBook::addOrder(std::uint64_t order_id, std::uint64_t price,
     return reject(astra::book::MutationResult::InvalidSide);
   if (qty == 0)
     return reject(astra::book::MutationResult::InvalidQuantity);
-  if (price > std::numeric_limits<std::uint32_t>::max())
+  if (!astra::protocol::isValidItchPrice4(price))
     return reject(astra::book::MutationResult::PriceOutOfRange);
 
   const astra::book::OrderSlotReservation order_reservation =
@@ -200,12 +202,14 @@ OrderBook::addOrder(std::uint64_t order_id, std::uint64_t price,
   }
 
   ++live_order_count_;
+  latest_update_timestamp_ = timestamp;
   return astra::book::MutationResult::Applied;
 }
 
 astra::book::MutationResult
 OrderBook::cancelShares(std::uint64_t order_id,
-                        std::uint32_t canceled_qty) noexcept {
+                        std::uint32_t canceled_qty,
+                        std::uint64_t timestamp) noexcept {
   if (local_invalid_)
     return astra::book::MutationResult::BookInvalid;
   if (canceled_qty == 0)
@@ -240,11 +244,13 @@ OrderBook::cancelShares(std::uint64_t order_id,
   if (result != astra::book::MutationResult::Applied)
     return reject(result);
   state->qty = remaining_qty;
+  latest_update_timestamp_ = timestamp;
   return astra::book::MutationResult::Applied;
 }
 
 astra::book::MutationResult
-OrderBook::deleteOrder(std::uint64_t order_id) noexcept {
+OrderBook::deleteOrder(std::uint64_t order_id,
+                       std::uint64_t timestamp) noexcept {
   if (local_invalid_)
     return astra::book::MutationResult::BookInvalid;
   astra::book::OrderState *const state = orders_->findState(order_id);
@@ -261,12 +267,14 @@ OrderBook::deleteOrder(std::uint64_t order_id) noexcept {
   if (table_result != astra::book::MutationResult::Applied)
     return reject(astra::book::MutationResult::InvariantViolation);
   --live_order_count_;
+  latest_update_timestamp_ = timestamp;
   return astra::book::MutationResult::Applied;
 }
 
 astra::book::MutationResult
 OrderBook::executeOrder(std::uint64_t order_id,
-                        std::uint32_t executed_qty) noexcept {
+                        std::uint32_t executed_qty,
+                        std::uint64_t timestamp) noexcept {
   if (local_invalid_)
     return astra::book::MutationResult::BookInvalid;
   if (executed_qty == 0)
@@ -312,18 +320,20 @@ OrderBook::executeOrder(std::uint64_t order_id,
       return reject(level_result);
     state->qty = remaining_qty;
   }
+  latest_update_timestamp_ = timestamp;
   return astra::book::MutationResult::Applied;
 }
 
 astra::book::MutationResult
 OrderBook::replaceOrder(std::uint64_t old_id, std::uint64_t new_id,
                         std::uint64_t new_price,
-                        std::uint32_t new_qty) noexcept {
+                        std::uint32_t new_qty,
+                        std::uint64_t timestamp) noexcept {
   if (local_invalid_)
     return astra::book::MutationResult::BookInvalid;
   if (new_qty == 0)
     return reject(astra::book::MutationResult::InvalidQuantity);
-  if (new_price > std::numeric_limits<std::uint32_t>::max())
+  if (!astra::protocol::isValidItchPrice4(new_price))
     return reject(astra::book::MutationResult::PriceOutOfRange);
 
   astra::book::OrderState *const old_state = orders_->findState(old_id);
@@ -363,6 +373,7 @@ OrderBook::replaceOrder(std::uint64_t old_id, std::uint64_t new_id,
     old_state->price_level_index =
         price_reservation.address.level_index;
     old_state->price_page_index = price_reservation.page_index;
+    latest_update_timestamp_ = timestamp;
     return astra::book::MutationResult::Applied;
   }
 
@@ -397,11 +408,13 @@ OrderBook::replaceOrder(std::uint64_t old_id, std::uint64_t new_id,
     }
     return reject(astra::book::MutationResult::InvariantViolation);
   }
+  latest_update_timestamp_ = timestamp;
   return astra::book::MutationResult::Applied;
 }
 
 TopOfBook OrderBook::getTopOfBook() const noexcept {
   TopOfBook top{};
+  top.timestamp = latest_update_timestamp_;
   top.symbol_id = symbol_id_;
   if (prices_ == nullptr)
     return top;
@@ -426,6 +439,7 @@ TopOfBook OrderBook::getTopOfBook() const noexcept {
 
 BookUpdate OrderBook::getBookUpdate() const noexcept {
   BookUpdate update{};
+  update.timestamp = latest_update_timestamp_;
   update.symbol_id = symbol_id_;
   if (prices_ == nullptr)
     return update;

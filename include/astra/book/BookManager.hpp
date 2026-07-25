@@ -4,6 +4,7 @@
 #include "astra/book/OrderBook.hpp"
 #include "astra/book/OrderTable.hpp"
 #include "astra/book/PriceLevelStore.hpp"
+#include "astra/symbol/StockDirectory.hpp"
 #include "astra/symbol/StockLocate.hpp"
 #include "astra/utils/MappedObjectArray.hpp"
 
@@ -18,15 +19,6 @@ struct BookManagerConfig {
   astra::book::PriceLevelStoreConfig prices{512, false};
 
   static constexpr BookManagerConfig compact() noexcept { return {}; }
-
-  // Reproducibility profile for the pinned 2019-01-30 acceptance trace. This
-  // is deliberately not a universal production default: md_engine requires
-  // a named deployment profile and explicit sizing evidence at startup.
-  static constexpr BookManagerConfig
-  pinnedNasdaqItch20190130Acceptance() noexcept {
-    return {{std::uint64_t{1} << 29, std::uint32_t{1} << 20, true},
-            {80'000, true}};
-  }
 };
 
 // Capacity evidence is measured over the entire lifetime of one process.
@@ -55,29 +47,6 @@ struct BookCapacityProfile {
   BookManagerConfig config;
   BookCapacityEvidence evidence;
   BookCapacityHeadroom minimum_headroom;
-
-  static constexpr std::string_view kNasdaqItch20190130Name =
-      "nasdaq-itch-20190130-acceptance-v1";
-  static constexpr std::string_view kNasdaqItch20190130TraceSha256 =
-      "1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3";
-  static constexpr std::string_view kNasdaqItch20190130ProfilerSha256 =
-      "c7f468bd3bc784398626997329f01653ac54b8691af822419931f23e95907956";
-
-  static BookCapacityProfile nasdaqItch20190130Acceptance() {
-    constexpr BookManagerConfig config =
-        BookManagerConfig::pinnedNasdaqItch20190130Acceptance();
-    constexpr BookCapacityEvidence evidence{329'176'641, 68'941};
-    return {
-        std::string{kNasdaqItch20190130Name},
-        std::string{kNasdaqItch20190130TraceSha256},
-        config,
-        evidence,
-        {config.orders.direct_slots -
-             (evidence.profiled_max_order_reference + 1),
-         config.prices.page_capacity -
-             evidence.profiled_unique_price_pages},
-    };
-  }
 };
 
 // Canonical custom-profile evidence is an exact UTF-8/ASCII, LF-terminated
@@ -85,12 +54,20 @@ struct BookCapacityProfile {
 // against the deployment's independently configured expected digest, and makes
 // the manifest's capacity/evidence values authoritative.
 struct BookCapacityEvidenceManifest {
-  static constexpr std::string_view kSchema =
+  static constexpr std::string_view kSchemaV1 =
       "astra_book_capacity_evidence_v1";
+  static constexpr std::string_view kSchemaV2 =
+      "astra_book_capacity_evidence_v2";
+  static constexpr std::string_view kSchema =
+      kSchemaV2;
 
   BookCapacityProfile profile;
   std::string corpus_manifest_sha256;
   std::string profiler_sha256;
+  // v2 binds the capacity values to the exact profiler stdout bytes. Empty
+  // only when loading a backward-compatible v1 manifest.
+  std::string profile_output_sha256;
+  std::string schema;
 };
 
 BookCapacityEvidenceManifest loadBookCapacityEvidenceManifest(
@@ -129,6 +106,28 @@ struct BookStorageFootprint {
   std::size_t planned_storage_bytes{0};
 };
 
+// Cold end-of-session audit proving the one-directory-entry/one-book
+// production contract. This is intentionally separate from the mutation hot
+// path and scans the fixed Stock Locate domain only when requested.
+struct BookDirectoryAudit {
+  std::size_t registered_symbols{0};
+  std::size_t materialized_books{0};
+  std::uint32_t prepared_books{0};
+  std::size_t registered_books_missing{0};
+  std::size_t unregistered_books_present{0};
+  std::size_t descriptor_price_state_mismatches{0};
+  std::size_t descriptor_identity_mismatches{0};
+
+  bool clean() const noexcept {
+    return registered_books_missing == 0 &&
+           unregistered_books_present == 0 &&
+           descriptor_price_state_mismatches == 0 &&
+           descriptor_identity_mismatches == 0 &&
+           registered_symbols == materialized_books &&
+           registered_symbols == prepared_books;
+  }
+};
+
 // The explicit-page-size overload is deterministic and makes footprint tests
 // independent of the host. Both overloads validate all size arithmetic before
 // BookManager attempts any mmap or descriptor allocation.
@@ -155,26 +154,38 @@ public:
 
   astra::book::MutationResult
   addOrder(std::uint16_t stock_locate, std::uint64_t order_id,
-           std::uint64_t price, std::uint32_t qty, char side) noexcept;
+           std::uint64_t price, std::uint32_t qty, char side,
+           std::uint64_t timestamp = 0) noexcept;
   astra::book::MutationResult
   cancelShares(std::uint16_t stock_locate, std::uint64_t order_id,
-               std::uint32_t canceled_qty) noexcept;
-  astra::book::MutationResult deleteOrder(std::uint16_t stock_locate,
-                                          std::uint64_t order_id) noexcept;
+               std::uint32_t canceled_qty,
+               std::uint64_t timestamp = 0) noexcept;
+  astra::book::MutationResult
+  deleteOrder(std::uint16_t stock_locate, std::uint64_t order_id,
+              std::uint64_t timestamp = 0) noexcept;
   astra::book::MutationResult
   executeOrder(std::uint16_t stock_locate, std::uint64_t order_id,
-               std::uint32_t executed_qty) noexcept;
+               std::uint32_t executed_qty,
+               std::uint64_t timestamp = 0) noexcept;
   bool trade(std::uint16_t stock_locate, std::uint64_t order_id,
-             std::uint32_t executed_qty) noexcept {
-    return executeOrder(stock_locate, order_id, executed_qty) ==
+             std::uint32_t executed_qty,
+             std::uint64_t timestamp = 0) noexcept {
+    return executeOrder(stock_locate, order_id, executed_qty, timestamp) ==
            astra::book::MutationResult::Applied;
   }
   astra::book::MutationResult
   replaceOrder(std::uint16_t stock_locate, std::uint64_t old_id,
                std::uint64_t new_id, std::uint64_t new_price,
-               std::uint32_t new_qty) noexcept;
+               std::uint32_t new_qty,
+               std::uint64_t timestamp = 0) noexcept;
 
   const OrderBook *getOrderBook(std::uint16_t stock_locate) const noexcept;
+  // End-of-session validation only. This cold scan proves that Nasdaq's
+  // end-of-day teardown mutations removed every displayed order before
+  // System Event C is accepted.
+  std::uint64_t totalLiveOrderCount() const noexcept;
+  BookDirectoryAudit auditDirectory(
+      const astra::symbol::StockDirectory &directory) const noexcept;
 
   const BookManagerConfig &config() const noexcept { return config_; }
   const BookStorageFootprint &storageFootprint() const noexcept {

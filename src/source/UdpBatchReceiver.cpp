@@ -18,6 +18,23 @@
 namespace {
 
 #ifdef __linux__
+class ScopedFileDescriptor {
+public:
+  explicit ScopedFileDescriptor(int fd) noexcept : fd_(fd) {}
+  ~ScopedFileDescriptor() {
+    if (fd_ >= 0)
+      ::close(fd_);
+  }
+
+  ScopedFileDescriptor(const ScopedFileDescriptor &) = delete;
+  ScopedFileDescriptor &operator=(const ScopedFileDescriptor &) = delete;
+
+  void release() noexcept { fd_ = -1; }
+
+private:
+  int fd_;
+};
+
 inline bool is_multicast(const struct in_addr &addr) noexcept {
   return (ntohl(addr.s_addr) >> 28) == 0xEu;
 }
@@ -40,6 +57,7 @@ UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
   fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
   if (fd_ < 0)
     throw_errno("socket");
+  ScopedFileDescriptor constructor_fd(fd_);
 
   int flags = ::fcntl(fd_, F_GETFL, 0);
   if (flags < 0 || ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) < 0)
@@ -71,7 +89,13 @@ UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
 
 #ifdef SO_RXQ_OVFL
   int overflow = 1;
-  ::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
+  if (::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow,
+                   sizeof(overflow)) < 0) {
+    throw_errno("SO_RXQ_OVFL");
+  }
+#else
+  throw std::runtime_error(
+      "UdpBatchReceiver requires Linux SO_RXQ_OVFL support");
 #endif
 
   struct sockaddr_in local{};
@@ -84,7 +108,6 @@ UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
 
   struct in_addr group{};
   if (::inet_pton(AF_INET, ip, &group) != 1) {
-    ::close(fd_);
     fd_ = -1;
     throw std::runtime_error(std::string("inet_pton: bad address: ") + ip);
   }
@@ -106,6 +129,7 @@ UdpBatchReceiver::UdpBatchReceiver(const char *ip, uint16_t port,
     msgs_[i].msg_hdr.msg_control = controls_[i].data();
     msgs_[i].msg_hdr.msg_controllen = controls_[i].size();
   }
+  constructor_fd.release();
 #endif
 }
 

@@ -1,4 +1,5 @@
 #include "astra/book/BookManager.hpp"
+#include "NasdaqItch20190130Fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -36,7 +37,7 @@ TEST(BookStorageFootprintTest, CalculatesCompactLayoutWithoutMappingIt) {
   EXPECT_EQ(footprint.price_book_occupancy_mapped_bytes, 1'098'907'648ull);
   EXPECT_EQ(footprint.mapped_array_bytes, 19'390'267'392ull);
   EXPECT_EQ(footprint.descriptor_slot_bytes, descriptorSlotBytes());
-  EXPECT_EQ(footprint.descriptor_mapped_bytes, 4'194'304u);
+  EXPECT_EQ(footprint.descriptor_mapped_bytes, 6'291'456u);
   EXPECT_EQ(footprint.planned_storage_bytes,
             footprint.mapped_array_bytes +
                 footprint.descriptor_mapped_bytes);
@@ -45,7 +46,7 @@ TEST(BookStorageFootprintTest, CalculatesCompactLayoutWithoutMappingIt) {
 TEST(BookStorageFootprintTest,
      CalculatesPinned20190130AcceptanceLayoutWithoutMappingIt) {
   const BookStorageFootprint footprint = estimateBookStorageFootprint(
-      BookManagerConfig::pinnedNasdaqItch20190130Acceptance(),
+      astra::benchmark_fixture::nasdaqItch20190130AcceptanceConfig(),
       kTestPageBytes);
 
   EXPECT_EQ(footprint.system_page_bytes, 4'096u);
@@ -61,7 +62,7 @@ TEST(BookStorageFootprintTest,
   EXPECT_EQ(footprint.price_book_occupancy_mapped_bytes, 1'098'907'648ull);
   EXPECT_EQ(footprint.mapped_array_bytes, 196'058'546'176ull);
   EXPECT_EQ(footprint.descriptor_slot_bytes, descriptorSlotBytes());
-  EXPECT_EQ(footprint.descriptor_mapped_bytes, 4'194'304u);
+  EXPECT_EQ(footprint.descriptor_mapped_bytes, 6'291'456u);
   EXPECT_EQ(footprint.planned_storage_bytes,
             footprint.mapped_array_bytes +
                 footprint.descriptor_mapped_bytes);
@@ -70,12 +71,11 @@ TEST(BookStorageFootprintTest,
 TEST(BookStorageFootprintTest,
      PinnedAcceptanceProfileCarriesTraceEvidenceAndExactHeadroom) {
   const BookCapacityProfile profile =
-      BookCapacityProfile::nasdaqItch20190130Acceptance();
+      astra::benchmark_fixture::nasdaqItch20190130AcceptanceProfile();
 
-  EXPECT_EQ(profile.name,
-            BookCapacityProfile::kNasdaqItch20190130Name);
+  EXPECT_EQ(profile.name, astra::benchmark_fixture::kNasdaqItch20190130Name);
   EXPECT_EQ(profile.evidence_sha256,
-            BookCapacityProfile::kNasdaqItch20190130TraceSha256);
+            astra::benchmark_fixture::kNasdaqItch20190130TraceSha256);
   EXPECT_EQ(profile.config.orders.direct_slots, std::uint64_t{1} << 29);
   EXPECT_EQ(profile.config.orders.fallback_bucket_count,
             std::uint32_t{1} << 20);
@@ -170,7 +170,7 @@ TEST(BookStorageFootprintTest, RejectsProfileWithoutEvidenceOrReserve) {
 TEST(BookStorageFootprintTest, EveryMappedHotArenaUsesWholeHugePageExtents) {
   constexpr std::size_t huge_page_bytes = 2u * 1024u * 1024u;
   const BookStorageFootprint footprint = estimateBookStorageFootprint(
-      BookManagerConfig::pinnedNasdaqItch20190130Acceptance(),
+      astra::benchmark_fixture::nasdaqItch20190130AcceptanceConfig(),
       kTestPageBytes);
   const std::array arenas{
       footprint.order_direct_mapped_bytes,

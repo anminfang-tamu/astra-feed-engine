@@ -116,7 +116,8 @@ TEST(OrderTableTest, DuplicateReservationPreservesOriginalState) {
   EXPECT_EQ(table.find(3).state->qty, 100u);
 }
 
-TEST(OrderTableTest, EraseAndReuseDoNotShiftAnyOtherRecord) {
+TEST(OrderTableTest,
+     EraseLeavesLifetimeTombstoneWithoutShiftingAnyOtherRecord) {
   OrderTable table(OrderTableConfig{8, 2, false});
   const auto refs = colliders(table, 0, 3);
   insert(table, refs[0], state(10));
@@ -128,10 +129,23 @@ TEST(OrderTableTest, EraseAndReuseDoNotShiftAnyOtherRecord) {
   EXPECT_EQ(table.find(refs[0]).result, MutationResult::OrderNotFound);
   EXPECT_EQ(table.find(refs[1]).state, second_before);
 
-  const auto replacement = table.reserve(refs[0]);
-  ASSERT_EQ(replacement.result, MutationResult::Applied);
-  ASSERT_EQ(table.commit(replacement, state(40)), MutationResult::Applied);
-  EXPECT_EQ(table.find(refs[0]).state->qty, 40u);
+  const auto duplicate = table.reserve(refs[0]);
+  EXPECT_EQ(duplicate.result, MutationResult::DuplicateOrderRef);
+  EXPECT_EQ(table.commit(duplicate, state(40)),
+            MutationResult::DuplicateOrderRef);
+  EXPECT_FALSE(table.find(refs[0]).found());
+}
+
+TEST(OrderTableTest, DirectReferenceCannotBeReusedAfterErase) {
+  OrderTable table(OrderTableConfig{8, 2, false});
+  insert(table, 3, state(30));
+
+  ASSERT_EQ(table.erase(3), MutationResult::Applied);
+  EXPECT_FALSE(table.find(3).found());
+  EXPECT_TRUE(astra::book::wasSeen(table.directData()[3]));
+  EXPECT_FALSE(astra::book::isActive(table.directData()[3]));
+  EXPECT_EQ(table.reserve(3).result, MutationResult::DuplicateOrderRef);
+  EXPECT_EQ(table.erase(3), MutationResult::OrderNotFound);
 }
 
 TEST(OrderTableTest, FallbackUsesAtMostTwoFixedTwoWayBuckets) {

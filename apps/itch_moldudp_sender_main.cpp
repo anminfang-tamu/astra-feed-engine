@@ -1,12 +1,15 @@
 #include "astra/protocol/PacketHeader.hpp"
 #include "astra/protocol/MoldUdpControlPacket.hpp"
+#include "astra/protocol/MoldUdpControlSchedule.hpp"
 #include "astra/source/UdpSender.hpp"
 #include "astra/utils/CpuAffinity.hpp"
 #include "replay/itch/ItchMoldUdpSource.hpp"
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +19,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,10 +32,22 @@ namespace {
 std::atomic<bool> g_running{true};
 constexpr uint64_t kDefaultLineBDelayNs = 1'000;
 constexpr uint64_t kMaxLineBDelayNs = 1'000'000'000;
-constexpr uint64_t kDefaultStartupHeartbeatCount = 100;
-constexpr uint64_t kDefaultStartupHeartbeatIntervalMs = 10;
+constexpr uint64_t kDefaultStartupHeartbeatCount = 0;
+constexpr uint64_t kDefaultStartupHeartbeatIntervalMs = 1'000;
 constexpr uint64_t kMaxStartupHeartbeatCount = 1'000'000;
 constexpr uint64_t kMaxStartupHeartbeatIntervalMs = 60'000;
+constexpr uint64_t kDefaultIdleHeartbeatIntervalMs = 1'000;
+constexpr uint64_t kMaxIdleHeartbeatIntervalMs = 60'000;
+constexpr uint64_t kDefaultEndOfSessionPacketCount = 10;
+constexpr uint64_t kDefaultEndOfSessionIntervalMs = 100;
+constexpr uint64_t kMaxEndOfSessionPacketCount = 1'000'000;
+constexpr uint64_t kMaxEndOfSessionIntervalMs = 60'000;
+constexpr uint64_t kMaxPacketsPerSecond =
+    astra::protocol::MoldUdpPacketRateSchedule::kMaximumPacketsPerSecond;
+constexpr uint64_t kMaxSchedulingSeconds = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::duration::max())
+        .count());
 
 void onSignal(int) { g_running.store(false, std::memory_order_relaxed); }
 
@@ -48,6 +64,18 @@ bool sleepUntilOrStopped(std::chrono::steady_clock::time_point deadline) {
                                                           : max_sleep);
     }
     return false;
+}
+
+std::chrono::steady_clock::time_point checkedDeadlineAfter(
+    std::chrono::steady_clock::time_point base,
+    std::chrono::steady_clock::duration delay,
+    const char *label) {
+    if (delay < std::chrono::steady_clock::duration::zero() ||
+        base > std::chrono::steady_clock::time_point::max() - delay) {
+        throw std::out_of_range(std::string(label) +
+                                " exceeds steady-clock range");
+    }
+    return base + delay;
 }
 
 bool parseU64Strict(const char *value, uint64_t &parsed_value) {
@@ -75,26 +103,51 @@ bool parseCpuId(const char *value, int &cpu_id) {
     return true;
 }
 
-uint64_t parseU64(const char *value, uint64_t fallback) {
-    if (value == nullptr) return fallback;
-    return std::strtoull(value, nullptr, 10);
+bool parseU64InRange(const char *value,
+                     uint64_t minimum,
+                     uint64_t maximum,
+                     uint64_t &parsed_value) {
+    uint64_t parsed = 0;
+    if (!parseU64Strict(value, parsed) || parsed < minimum ||
+        parsed > maximum) {
+        return false;
+    }
+    parsed_value = parsed;
+    return true;
 }
 
-double parseDouble(const char *value, double fallback) {
-    if (value == nullptr) return fallback;
+bool parsePositiveDoubleStrict(const char *value, double &parsed_value) {
+    if (value == nullptr || value[0] == '\0') return false;
+
+    errno = 0;
     char *end = nullptr;
     const double parsed = std::strtod(value, &end);
-    if (end == value || parsed <= 0.0) return fallback;
-    return parsed;
+    if (end == value || *end != '\0' || errno == ERANGE ||
+        !std::isfinite(parsed) || parsed <= 0.0) {
+        return false;
+    }
+    parsed_value = parsed;
+    return true;
 }
 
-uint16_t parsePort(const char *value) {
-    return static_cast<uint16_t>(std::strtoul(value, nullptr, 10));
+bool parsePort(const char *value, uint16_t &port) {
+    uint64_t parsed = 0;
+    if (!parseU64InRange(
+            value, 1, std::numeric_limits<uint16_t>::max(), parsed)) {
+        return false;
+    }
+    port = static_cast<uint16_t>(parsed);
+    return true;
 }
 
-uint16_t parseMsgsPerPacket(const char *value) {
-    return static_cast<uint16_t>(
-        parseU64(value, ItchMoldUdpSource::kDefaultMsgsPerPacket));
+bool parseMsgsPerPacket(const char *value, uint16_t &msgs_per_packet) {
+    uint64_t parsed = 0;
+    if (!parseU64InRange(
+            value, 1, std::numeric_limits<uint16_t>::max(), parsed)) {
+        return false;
+    }
+    msgs_per_packet = static_cast<uint16_t>(parsed);
+    return true;
 }
 
 uint16_t readU16BE(const std::byte *p) {
@@ -129,20 +182,31 @@ enum class PremarketReplayMode {
     Timestamp,
 };
 
-PremarketReplayMode parseReplayMode(const char *value,
-                                    uint64_t premarket_seconds) {
-    if (value == nullptr || value[0] == '\0')
-        return premarket_seconds > 0 ? PremarketReplayMode::Flat
+bool parseReplayMode(const char *value,
+                     uint64_t premarket_seconds,
+                     PremarketReplayMode &mode) {
+    if (value == nullptr || value[0] == '\0') {
+        mode = premarket_seconds > 0 ? PremarketReplayMode::Flat
                                      : PremarketReplayMode::Off;
+        return true;
+    }
 
-    const std::string_view mode(value);
-    if (mode == "flat") return PremarketReplayMode::Flat;
-    if (mode == "timestamp") return PremarketReplayMode::Timestamp;
-    if (mode == "off" || mode == "none" || mode == "disabled")
-        return PremarketReplayMode::Off;
+    const std::string_view value_view(value);
+    if (value_view == "flat") {
+        mode = PremarketReplayMode::Flat;
+        return true;
+    }
+    if (value_view == "timestamp") {
+        mode = PremarketReplayMode::Timestamp;
+        return true;
+    }
+    if (value_view == "off" || value_view == "none" ||
+        value_view == "disabled") {
+        mode = PremarketReplayMode::Off;
+        return true;
+    }
 
-    return premarket_seconds > 0 ? PremarketReplayMode::Flat
-                                 : PremarketReplayMode::Off;
+    return false;
 }
 
 const char *replayModeName(PremarketReplayMode mode) {
@@ -152,6 +216,19 @@ const char *replayModeName(PremarketReplayMode mode) {
     case PremarketReplayMode::Off: return "off";
     }
     return "off";
+}
+
+const char *completionKindName(
+    ItchMoldUdpSource::CompletionKind kind) noexcept {
+    switch (kind) {
+    case ItchMoldUdpSource::CompletionKind::None:
+        return "none";
+    case ItchMoldUdpSource::CompletionKind::Terminator:
+        return "terminator";
+    case ItchMoldUdpSource::CompletionKind::LegacyEndOfMessagesEof:
+        return "legacy_sc_eof";
+    }
+    return "none";
 }
 
 struct PacketTiming {
@@ -225,6 +302,7 @@ PremarketWindow scanPremarketWindow(const std::string &path,
     uint64_t packet_index = 1;
     uint16_t packet_count = 0;
     std::size_t packet_offset = ItchMoldUdpSource::kMoldHeaderSize;
+    bool force_next_packet = false;
     std::vector<char> msg;
 
     while (input) {
@@ -237,11 +315,12 @@ PremarketWindow scanPremarketWindow(const std::string &path,
             (static_cast<uint16_t>(len_bytes[0]) << 8) | len_bytes[1];
         if (msg_len == 0) break;
 
-        if (packet_count == msgs_per_packet ||
+        if (force_next_packet || packet_count == msgs_per_packet ||
             packet_offset + 2u + msg_len > ItchMoldUdpSource::kMaxPacketBytes) {
             ++packet_index;
             packet_count = 0;
             packet_offset = ItchMoldUdpSource::kMoldHeaderSize;
+            force_next_packet = false;
         }
 
         msg.resize(msg_len);
@@ -260,6 +339,7 @@ PremarketWindow scanPremarketWindow(const std::string &path,
         if (type == 'S' && event_code == 'S') {
             window.ss_packet = packet_index;
             window.ss_timestamp_ns = timestamp_ns;
+            force_next_packet = true;
         } else if (type == 'S' && event_code == 'Q' && window.ss_packet != 0) {
             window.sq_packet = packet_index;
             window.sq_timestamp_ns = timestamp_ns;
@@ -274,15 +354,20 @@ PremarketWindow scanPremarketWindow(const std::string &path,
 std::chrono::nanoseconds intervalFor(uint64_t seconds, uint64_t packets) {
     if (seconds == 0 || packets == 0) return std::chrono::nanoseconds(0);
 
-    const long double total_ns =
-        static_cast<long double>(seconds) * 1'000'000'000.0L;
-    const long double interval_ns = total_ns / static_cast<long double>(packets);
-    if (interval_ns < 1.0L) return std::chrono::nanoseconds(1);
-    if (interval_ns >
-        static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+    constexpr uint64_t kNanosecondsPerSecond = 1'000'000'000;
+    if (seconds >
+        std::numeric_limits<uint64_t>::max() / kNanosecondsPerSecond) {
         return std::chrono::nanoseconds(std::numeric_limits<int64_t>::max());
     }
-    return std::chrono::nanoseconds(static_cast<int64_t>(interval_ns));
+    const uint64_t total_ns = seconds * kNanosecondsPerSecond;
+    const uint64_t whole_ns = total_ns / packets;
+    const uint64_t remainder = total_ns % packets;
+    const uint64_t ceiling_ns = whole_ns + (remainder == 0 ? 0u : 1u);
+    if (ceiling_ns >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return std::chrono::nanoseconds(std::numeric_limits<int64_t>::max());
+    }
+    return std::chrono::nanoseconds(static_cast<int64_t>(ceiling_ns));
 }
 
 std::chrono::nanoseconds scaledDelay(uint64_t ns_delta, double speedup) {
@@ -290,12 +375,13 @@ std::chrono::nanoseconds scaledDelay(uint64_t ns_delta, double speedup) {
 
     const long double scaled_ns =
         static_cast<long double>(ns_delta) / static_cast<long double>(speedup);
-    if (scaled_ns < 1.0L) return std::chrono::nanoseconds(0);
+    if (scaled_ns < 1.0L) return std::chrono::nanoseconds(1);
     if (scaled_ns >
         static_cast<long double>(std::numeric_limits<int64_t>::max())) {
         return std::chrono::nanoseconds(std::numeric_limits<int64_t>::max());
     }
-    return std::chrono::nanoseconds(static_cast<int64_t>(scaled_ns));
+    return std::chrono::nanoseconds(
+        static_cast<int64_t>(std::ceil(scaled_ns)));
 }
 
 struct RedundantPacketHandoff {
@@ -303,6 +389,7 @@ struct RedundantPacketHandoff {
     std::size_t      size{0};
     uint16_t         msg_count{0};
     std::chrono::steady_clock::time_point line_b_not_before{};
+    bool             line_b_send_succeeded{false};
 
     // A completes before generation is published. The producer cannot reuse
     // the source buffer until B acknowledges that generation.
@@ -362,20 +449,22 @@ public:
     RedundantUdpSender(const RedundantUdpSender &) = delete;
     RedundantUdpSender &operator=(const RedundantUdpSender &) = delete;
 
-    void send(const std::byte *data, std::size_t size, uint16_t msg_count) {
+    [[nodiscard]] bool
+    send(const std::byte *data, std::size_t size, uint16_t msg_count) {
         if (worker_failed_.load(std::memory_order_acquire))
             throw std::runtime_error("line B sender failed: " + worker_error_);
 
-        if (sender_a_->send(data, size)) {
+        const bool line_a_sent = sender_a_->send(data, size);
+        if (line_a_sent) {
             ++states_[0].packets_sent;
             states_[0].messages_sent += msg_count;
         } else {
             ++states_[0].send_failures;
         }
-
         handoff_.data = data;
         handoff_.size = size;
         handoff_.msg_count = msg_count;
+        handoff_.line_b_send_succeeded = false;
         handoff_.line_b_not_before =
             std::chrono::steady_clock::now() +
             std::chrono::nanoseconds(
@@ -395,6 +484,7 @@ public:
             line_b_completed = handoff_.line_b_completed_generation.load(
                 std::memory_order_acquire);
         }
+        return line_a_sent && handoff_.line_b_send_succeeded;
     }
 
     [[nodiscard]] const RedundantLineState &line(std::size_t index) const {
@@ -467,7 +557,9 @@ private:
                     }
                 }
 
-                if (sender.send(handoff_.data, handoff_.size)) {
+                handoff_.line_b_send_succeeded =
+                    sender.send(handoff_.data, handoff_.size);
+                if (handoff_.line_b_send_succeeded) {
                     ++state.packets_sent;
                     state.messages_sent += handoff_.msg_count;
                 } else {
@@ -540,7 +632,8 @@ int main(int argc, char *argv[]) {
                      " (default " << ItchMoldUdpSource::kDefaultMsgsPerPacket << ")\n"
                   << "  session          10-char MoldUDP64 session id"
                      " (default \"ASTRA     \")\n"
-                  << "  pkt/s            packet rate limit; 0 = max speed\n"
+                  << "  pkt/s            packet upper rate limit;"
+                     " 0 = max speed\n"
                   << "  premarket_seconds"
                      "  stretch traffic after SS until SQ to this duration;"
                      " 0 = disabled (default, or ASTRA_PREMARKET_SECONDS)\n"
@@ -558,10 +651,19 @@ int main(int argc, char *argv[]) {
                      " ASTRA_CPU_B to distinct CPUs\n"
                   << "  redundant line skew: ASTRA_LINE_B_DELAY_NS"
                      " (default 1000; 0 disables)\n"
-                  << "  cold-path preamble: ASTRA_STARTUP_HEARTBEAT_COUNT"
-                     " (default 100) and"
+                  << "  optional receiver-readiness preamble:"
+                     " ASTRA_STARTUP_HEARTBEAT_COUNT"
+                     " (default 0) and"
                      " ASTRA_STARTUP_HEARTBEAT_INTERVAL_MS"
-                     " (default 10; count 0 disables)\n";
+                     " (default 1000; count 0 disables)\n"
+                  << "  idle Mold traffic: ASTRA_HEARTBEAT_INTERVAL_MS"
+                     " (default 1000; 0 disables)\n"
+                  << "  end-of-session announcement:"
+                     " ASTRA_EOS_PACKET_COUNT (default 10) and"
+                     " ASTRA_EOS_INTERVAL_MS (default 100)\n"
+                  << "  BinaryFILE completion:"
+                     " ASTRA_BINARYFILE_COMPLETION=strict|legacy-sc-eof"
+                     " (default strict)\n";
         return EXIT_FAILURE;
     }
 
@@ -579,36 +681,87 @@ int main(int argc, char *argv[]) {
 
     const std::string path = argv[path_arg];
     const char *ip = argv[ip_arg];
-    const uint16_t port_a = parsePort(argv[port_a_arg]);
-    const uint16_t port_b = redundant ? parsePort(argv[port_b_arg]) : 0;
-    const uint16_t msgs_per_packet =
-        argc > msgs_per_packet_arg
-            ? parseMsgsPerPacket(argv[msgs_per_packet_arg])
-            : ItchMoldUdpSource::kDefaultMsgsPerPacket;
+    uint16_t port_a = 0;
+    if (!parsePort(argv[port_a_arg], port_a)) {
+        std::cerr << "port must be an integer from 1 through "
+                  << std::numeric_limits<uint16_t>::max() << "\n";
+        return EXIT_FAILURE;
+    }
+    uint16_t port_b = 0;
+    if (redundant && !parsePort(argv[port_b_arg], port_b)) {
+        std::cerr << "port_b must be an integer from 1 through "
+                  << std::numeric_limits<uint16_t>::max() << "\n";
+        return EXIT_FAILURE;
+    }
+    if (redundant && port_a == port_b) {
+        std::cerr << "port_a and port_b must be distinct when redundant mode"
+                     " shares one destination IP\n";
+        return EXIT_FAILURE;
+    }
+    uint16_t msgs_per_packet = ItchMoldUdpSource::kDefaultMsgsPerPacket;
+    if (argc > msgs_per_packet_arg &&
+        !parseMsgsPerPacket(argv[msgs_per_packet_arg], msgs_per_packet)) {
+        std::cerr << "msgs_per_packet must be an integer from 1 through "
+                  << std::numeric_limits<uint16_t>::max() << "\n";
+        return EXIT_FAILURE;
+    }
     const std::string session =
         argc > session_arg ? argv[session_arg] : "ASTRA     ";
-    const uint64_t pkts_per_second =
-        argc > rate_arg ? parseU64(argv[rate_arg], 0) : 0;
-    const uint64_t    premarket_seconds =
+    if (session.size() > MoldUdpPacketHeader::kSessionSize) {
+        std::cerr << "session must not exceed "
+                  << MoldUdpPacketHeader::kSessionSize << " bytes\n";
+        return EXIT_FAILURE;
+    }
+    uint64_t pkts_per_second = 0;
+    if (argc > rate_arg &&
+        !parseU64InRange(argv[rate_arg], 0, kMaxPacketsPerSecond,
+                         pkts_per_second)) {
+        std::cerr << "pkt/s must be an integer from 0 through "
+                  << kMaxPacketsPerSecond << "\n";
+        return EXIT_FAILURE;
+    }
+    uint64_t premarket_seconds = 0;
+    const char *premarket_seconds_value =
         argc > premarket_seconds_arg
-            ? parseU64(argv[premarket_seconds_arg], 0)
-            : parseU64(std::getenv("ASTRA_PREMARKET_SECONDS"), 0);
-    const uint64_t    ss_pause_seconds =
+            ? argv[premarket_seconds_arg]
+            : std::getenv("ASTRA_PREMARKET_SECONDS");
+    if (premarket_seconds_value != nullptr &&
+        !parseU64InRange(premarket_seconds_value, 0,
+                         kMaxSchedulingSeconds, premarket_seconds)) {
+        std::cerr << "premarket_seconds must be an integer from 0 through "
+                  << kMaxSchedulingSeconds << "\n";
+        return EXIT_FAILURE;
+    }
+    uint64_t ss_pause_seconds = 0;
+    const char *ss_pause_seconds_value =
         argc > ss_pause_seconds_arg
-            ? parseU64(argv[ss_pause_seconds_arg], 0)
-            : parseU64(std::getenv("ASTRA_SS_PAUSE_SECONDS"), 0);
-    const PremarketReplayMode replay_mode =
-        parseReplayMode(argc > replay_mode_arg
-                            ? argv[replay_mode_arg]
-                            : std::getenv("ASTRA_PREMARKET_REPLAY_MODE"),
-                        premarket_seconds);
-    const double premarket_speedup =
-        argc > speedup_arg
-            ? parseDouble(argv[speedup_arg], 1.0)
-            : parseDouble(std::getenv("ASTRA_PREMARKET_SPEEDUP"), 1.0);
-
-    if (msgs_per_packet == 0) {
-        std::cerr << "msgs_per_packet must be greater than zero\n";
+            ? argv[ss_pause_seconds_arg]
+            : std::getenv("ASTRA_SS_PAUSE_SECONDS");
+    if (ss_pause_seconds_value != nullptr &&
+        !parseU64InRange(ss_pause_seconds_value, 0,
+                         kMaxSchedulingSeconds, ss_pause_seconds)) {
+        std::cerr << "ss_pause_seconds must be an integer from 0 through "
+                  << kMaxSchedulingSeconds << "\n";
+        return EXIT_FAILURE;
+    }
+    PremarketReplayMode replay_mode = PremarketReplayMode::Off;
+    if (!parseReplayMode(argc > replay_mode_arg
+                             ? argv[replay_mode_arg]
+                             : std::getenv("ASTRA_PREMARKET_REPLAY_MODE"),
+                         premarket_seconds, replay_mode)) {
+        std::cerr << "premarket_replay_mode must be flat, timestamp, off,"
+                     " none, or disabled\n";
+        return EXIT_FAILURE;
+    }
+    double premarket_speedup = 1.0;
+    const char *premarket_speedup_value =
+        argc > speedup_arg ? argv[speedup_arg]
+                           : std::getenv("ASTRA_PREMARKET_SPEEDUP");
+    if (premarket_speedup_value != nullptr &&
+        !parsePositiveDoubleStrict(premarket_speedup_value,
+                                   premarket_speedup)) {
+        std::cerr << "premarket_speedup must be a finite number greater"
+                     " than zero\n";
         return EXIT_FAILURE;
     }
 
@@ -619,6 +772,14 @@ int main(int argc, char *argv[]) {
     uint64_t startup_heartbeat_count = kDefaultStartupHeartbeatCount;
     uint64_t startup_heartbeat_interval_ms =
         kDefaultStartupHeartbeatIntervalMs;
+    uint64_t idle_heartbeat_interval_ms =
+        kDefaultIdleHeartbeatIntervalMs;
+    uint64_t end_of_session_packet_count =
+        kDefaultEndOfSessionPacketCount;
+    uint64_t end_of_session_interval_ms =
+        kDefaultEndOfSessionIntervalMs;
+    auto binary_file_completion_policy =
+        ItchMoldUdpSource::CompletionPolicy::RequireTerminator;
     if (redundant) {
         const char *cpu_a_env = std::getenv("ASTRA_CPU_A");
         const char *cpu_b_env = std::getenv("ASTRA_CPU_B");
@@ -678,6 +839,56 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
     }
+    if (const char *interval_env =
+            std::getenv("ASTRA_HEARTBEAT_INTERVAL_MS")) {
+        if (!parseU64Strict(interval_env, idle_heartbeat_interval_ms) ||
+            idle_heartbeat_interval_ms >
+                kMaxIdleHeartbeatIntervalMs) {
+            std::cerr << "ASTRA_HEARTBEAT_INTERVAL_MS must be an integer"
+                         " from 0 through "
+                      << kMaxIdleHeartbeatIntervalMs << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+    if (const char *count_env =
+            std::getenv("ASTRA_EOS_PACKET_COUNT")) {
+        if (!parseU64Strict(count_env, end_of_session_packet_count) ||
+            end_of_session_packet_count == 0 ||
+            end_of_session_packet_count >
+                kMaxEndOfSessionPacketCount) {
+            std::cerr << "ASTRA_EOS_PACKET_COUNT must be an integer"
+                         " from 1 through "
+                      << kMaxEndOfSessionPacketCount << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+    if (const char *interval_env =
+            std::getenv("ASTRA_EOS_INTERVAL_MS")) {
+        if (!parseU64Strict(interval_env, end_of_session_interval_ms) ||
+            end_of_session_interval_ms >
+                kMaxEndOfSessionIntervalMs) {
+            std::cerr << "ASTRA_EOS_INTERVAL_MS must be an integer"
+                         " from 0 through "
+                      << kMaxEndOfSessionIntervalMs << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+    if (const char *completion_env =
+            std::getenv("ASTRA_BINARYFILE_COMPLETION")) {
+        const std::string_view value(completion_env);
+        if (value == "strict") {
+            binary_file_completion_policy =
+                ItchMoldUdpSource::CompletionPolicy::RequireTerminator;
+        } else if (value == "legacy-sc-eof") {
+            binary_file_completion_policy =
+                ItchMoldUdpSource::CompletionPolicy::
+                    AllowEofAfterEndOfMessages;
+        } else {
+            std::cerr << "ASTRA_BINARYFILE_COMPLETION must be"
+                         " strict or legacy-sc-eof\n";
+            return EXIT_FAILURE;
+        }
+    }
 
     try {
         if (!redundant) {
@@ -722,7 +933,8 @@ int main(int argc, char *argv[]) {
             (replay_mode == PremarketReplayMode::Timestamp && premarket.found &&
              premarket.durationNs() > 0 && premarket_speedup > 0.0);
 
-        ItchMoldUdpSource source(path, session, msgs_per_packet);
+        ItchMoldUdpSource source(path, session, msgs_per_packet,
+                                 binary_file_completion_policy);
         if (!source.isOpen()) {
             std::cerr << source.lastError() << "\n";
             return EXIT_FAILURE;
@@ -794,14 +1006,24 @@ int main(int argc, char *argv[]) {
             std::cout << "  ss_pause_seconds=" << ss_pause_seconds;
         std::cout << "  startup_heartbeats=" << startup_heartbeat_count
                   << " startup_heartbeat_interval_ms="
-                  << startup_heartbeat_interval_ms;
+                  << startup_heartbeat_interval_ms
+                  << " heartbeat_interval_ms="
+                  << idle_heartbeat_interval_ms
+                  << " eos_packet_count="
+                  << end_of_session_packet_count
+                  << " eos_interval_ms="
+                  << end_of_session_interval_ms
+                  << " binaryfile_completion="
+                  << (binary_file_completion_policy ==
+                              ItchMoldUdpSource::CompletionPolicy::
+                                  RequireTerminator
+                          ? "strict"
+                          : "legacy-sc-eof");
         std::cout << "\n  (press Ctrl+C to stop)\n";
+        std::cout << std::flush;
 
-        const auto interval =
-            pkts_per_second > 0
-                ? std::chrono::nanoseconds(1'000'000'000ULL / pkts_per_second)
-                : std::chrono::nanoseconds(0);
-        auto next_send = std::chrono::steady_clock::now();
+        astra::protocol::MoldUdpPacketRateSchedule packet_rate_schedule(
+            pkts_per_second);
         auto next_premarket_send = std::chrono::steady_clock::now();
         auto premarket_start = std::chrono::steady_clock::now();
         bool premarket_active = false;
@@ -819,7 +1041,68 @@ int main(int argc, char *argv[]) {
         uint64_t logical_first_seq = 0;
         uint64_t logical_next_seq = 0;
         uint64_t startup_heartbeats_sent = 0;
+        uint64_t periodic_heartbeats_sent = 0;
+        uint64_t end_of_session_packets_sent = 0;
+        bool transmission_failed = false;
         PacketView packet;
+
+        astra::protocol::MoldUdpHeartbeatSchedule heartbeat_schedule{
+            std::chrono::milliseconds(idle_heartbeat_interval_ms)};
+        const astra::protocol::MoldUdpEndOfSessionSchedule
+            end_of_session_schedule(
+                end_of_session_packet_count,
+                std::chrono::milliseconds(end_of_session_interval_ms));
+
+        const auto send_control_packet =
+            [&](const astra::protocol::MoldUdpControlPacket &control_packet,
+                uint64_t next_sequence) {
+                bool sent = false;
+                if (redundant_sender != nullptr) {
+                    sent = redundant_sender->send(control_packet.data(),
+                                                  control_packet.size(), 0);
+                } else {
+                    sent = sender_a->send(control_packet.data(),
+                                          control_packet.size());
+                    if (sent)
+                        ++line_a_pkts_sent;
+                    else
+                        ++line_a_send_failures;
+                }
+                if (!sent) {
+                    transmission_failed = true;
+                    return false;
+                }
+                ++logical_packets;
+                logical_next_seq = next_sequence;
+                return true;
+            };
+
+        const auto wait_until_with_heartbeats =
+            [&](std::chrono::steady_clock::time_point deadline,
+                uint64_t next_sequence) {
+                while (g_running.load(std::memory_order_relaxed)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= deadline) return true;
+
+                    const auto heartbeat_deadline =
+                        heartbeat_schedule.nextHeartbeatBefore(deadline);
+                    if (!heartbeat_deadline.has_value())
+                        return sleepUntilOrStopped(deadline);
+
+                    if (!sleepUntilOrStopped(*heartbeat_deadline))
+                        return false;
+
+                    const auto heartbeat =
+                        astra::protocol::makeMoldHeartbeatPacket(
+                            session, next_sequence);
+                    if (!send_control_packet(heartbeat, next_sequence))
+                        return false;
+                    ++periodic_heartbeats_sent;
+                    heartbeat_schedule.observeTraffic(
+                        std::chrono::steady_clock::now());
+                }
+                return false;
+            };
 
         if (startup_heartbeat_count != 0) {
             const auto startup_heartbeat =
@@ -833,40 +1116,28 @@ int main(int argc, char *argv[]) {
                  index < startup_heartbeat_count &&
                  g_running.load(std::memory_order_relaxed);
                  ++index) {
-                ++logical_packets;
-                logical_next_seq = source.nextSequence();
-
-                if (redundant_sender != nullptr) {
-                    const uint64_t line_a_packets_before =
-                        redundant_sender->line(0).packets_sent;
-                    const uint64_t line_b_packets_before =
-                        redundant_sender->line(1).packets_sent;
-                    redundant_sender->send(startup_heartbeat.data(),
-                                           startup_heartbeat.size(), 0);
-                    if (redundant_sender->line(0).packets_sent ==
-                            line_a_packets_before + 1 &&
-                        redundant_sender->line(1).packets_sent ==
-                            line_b_packets_before + 1) {
-                        ++startup_heartbeats_sent;
-                    }
-                } else if (sender_a->send(startup_heartbeat.data(),
-                                          startup_heartbeat.size())) {
-                    ++line_a_pkts_sent;
-                    ++startup_heartbeats_sent;
-                } else {
-                    ++line_a_send_failures;
-                }
+                if (!send_control_packet(startup_heartbeat,
+                                         source.nextSequence()))
+                    break;
+                ++startup_heartbeats_sent;
 
                 if (heartbeat_interval.count() > 0) {
-                    heartbeat_deadline += heartbeat_interval;
+                    heartbeat_deadline = checkedDeadlineAfter(
+                        heartbeat_deadline, heartbeat_interval,
+                        "startup heartbeat deadline");
                     if (!sleepUntilOrStopped(heartbeat_deadline))
                         break;
                 }
             }
-            next_send = std::chrono::steady_clock::now();
         }
+        if (heartbeat_schedule.enabled() && !transmission_failed) {
+            heartbeat_schedule.observeTraffic(
+                std::chrono::steady_clock::now());
+        }
+        packet_rate_schedule.reset(std::chrono::steady_clock::now());
 
-        while (g_running.load(std::memory_order_relaxed)) {
+        while (g_running.load(std::memory_order_relaxed) &&
+               !transmission_failed) {
             if (!source.next(packet)) break;
 
             const uint64_t first_seq = readU64BE(packet.data + 10);
@@ -879,23 +1150,53 @@ int main(int argc, char *argv[]) {
 
             if (premarket_active) {
                 if (replay_mode == PremarketReplayMode::Flat) {
-                    if (!sleepUntilOrStopped(next_premarket_send)) break;
-                    next_premarket_send += premarket_interval;
+                    if (!wait_until_with_heartbeats(next_premarket_send,
+                                                    first_seq)) {
+                        break;
+                    }
+                    next_premarket_send = checkedDeadlineAfter(
+                        next_premarket_send, premarket_interval,
+                        "flat premarket deadline");
                 } else if (replay_mode == PremarketReplayMode::Timestamp) {
                     uint64_t packet_timestamp = packet_timing.first_timestamp_ns;
                     if (packet_timing.contains_sq)
                         packet_timestamp = packet_timing.sq_timestamp_ns;
                     if (packet_timing.has_timestamp &&
                         packet_timestamp > premarket.ss_timestamp_ns) {
-                        if (!sleepUntilOrStopped(
-                                premarket_start +
-                                scaledDelay(packet_timestamp -
-                                                premarket.ss_timestamp_ns,
-                                            premarket_speedup))) {
+                        const auto packet_deadline = checkedDeadlineAfter(
+                            premarket_start,
+                            scaledDelay(packet_timestamp -
+                                            premarket.ss_timestamp_ns,
+                                        premarket_speedup),
+                            "timestamp premarket deadline");
+                        if (!wait_until_with_heartbeats(packet_deadline,
+                                                        first_seq)) {
                             break;
                         }
                     }
                 }
+            }
+
+            bool packet_sent = false;
+            if (redundant_sender != nullptr) {
+                // PacketView aliases the source's reusable packet buffer.
+                // This call returns only after A and B have completed sendto,
+                // so source.next() cannot mutate bytes still used by a line.
+                packet_sent =
+                    redundant_sender->send(packet.data, packet.size,
+                                           msg_count);
+            } else {
+                packet_sent = sender_a->send(packet.data, packet.size);
+                if (packet_sent) {
+                    ++line_a_pkts_sent;
+                    line_a_msgs_sent += msg_count;
+                } else {
+                    ++line_a_send_failures;
+                }
+            }
+            if (!packet_sent) {
+                transmission_failed = true;
+                break;
             }
 
             ++logical_packets;
@@ -904,87 +1205,124 @@ int main(int argc, char *argv[]) {
                 logical_first_seq = first_seq;
             logical_next_seq = first_seq + msg_count;
 
-            if (redundant_sender != nullptr) {
-                // PacketView aliases the source's reusable packet buffer.
-                // This call returns only after A and B have completed sendto,
-                // so source.next() cannot mutate bytes still used by a line.
-                redundant_sender->send(packet.data, packet.size, msg_count);
-            } else {
-                if (sender_a->send(packet.data, packet.size)) {
-                    ++line_a_pkts_sent;
-                    line_a_msgs_sent += msg_count;
-                } else {
-                    ++line_a_send_failures;
+            const auto data_sent_at = std::chrono::steady_clock::now();
+            if (heartbeat_schedule.enabled()) {
+                heartbeat_schedule.observeTraffic(data_sent_at);
+            }
+
+            std::optional<std::chrono::steady_clock::time_point>
+                next_ordinary_send;
+            if (packet_rate_schedule.enabled() &&
+                (!premarket_active || contains_sq)) {
+                if (contains_sq)
+                    packet_rate_schedule.reset(data_sent_at);
+                next_ordinary_send =
+                    packet_rate_schedule.checkedDeadlineAfterPacket(
+                        data_sent_at);
+                if (!next_ordinary_send.has_value()) {
+                    throw std::out_of_range(
+                        "packet-rate deadline exceeds steady-clock range");
                 }
             }
 
             if (contains_ss) {
                 if (ss_pause_pending) {
-                    const bool pause_completed = sleepUntilOrStopped(
-                        std::chrono::steady_clock::now() +
-                        std::chrono::seconds(ss_pause_seconds));
+                    const auto pause_deadline = checkedDeadlineAfter(
+                        std::chrono::steady_clock::now(),
+                        std::chrono::seconds(ss_pause_seconds),
+                        "System Event S pause deadline");
+                    const bool pause_completed = wait_until_with_heartbeats(
+                        pause_deadline, source.nextSequence());
                     ss_pause_pending = false;
-                    // Do not let the regular rate limiter "catch up" against
-                    // deadlines accumulated before a long SS pause.
-                    next_send = std::chrono::steady_clock::now();
                     if (!pause_completed) break;
                 }
                 if (premarket_enabled && !premarket_active) {
                     premarket_active = true;
                     premarket_start = std::chrono::steady_clock::now();
-                    next_premarket_send = premarket_start + premarket_interval;
+                    next_premarket_send = checkedDeadlineAfter(
+                        premarket_start, premarket_interval,
+                        "initial premarket deadline");
+                    if (replay_mode == PremarketReplayMode::Timestamp &&
+                        !source.setMessagesPerPacket(1)) {
+                        throw std::logic_error(
+                            "failed to enable timestamp packetization");
+                    }
                 }
             }
 
             if (contains_sq) {
                 premarket_active = false;
-                next_send = std::chrono::steady_clock::now();
+                if (replay_mode == PremarketReplayMode::Timestamp &&
+                    !source.setMessagesPerPacket(msgs_per_packet)) {
+                    throw std::logic_error(
+                        "failed to restore configured packetization");
+                }
             }
 
-            if (!premarket_active && !contains_ss && !contains_sq &&
-                interval.count() > 0) {
-                next_send += interval;
-                if (!sleepUntilOrStopped(next_send)) break;
+            if (!premarket_active && next_ordinary_send.has_value() &&
+                !source.completed() && source.lastError().empty() &&
+                !transmission_failed) {
+                if (!wait_until_with_heartbeats(*next_ordinary_send,
+                                                source.nextSequence())) {
+                    break;
+                }
             }
         }
 
         bool end_of_session_sent = false;
-        if (source.completed()) {
+        if (source.completed() && !transmission_failed) {
             const uint64_t end_sequence = source.nextSequence();
             const auto end_packet =
                 astra::protocol::makeMoldEndOfSessionPacket(
                     session, end_sequence);
-            ++logical_packets;
-            if (logical_first_seq == 0)
-                logical_first_seq = end_sequence;
-            logical_next_seq = end_sequence;
 
-            if (redundant_sender != nullptr) {
-                const uint64_t line_a_packets_before =
-                    redundant_sender->line(0).packets_sent;
-                const uint64_t line_b_packets_before =
-                    redundant_sender->line(1).packets_sent;
-                redundant_sender->send(end_packet.data(), end_packet.size(), 0);
-                end_of_session_sent =
-                    redundant_sender->line(0).packets_sent ==
-                        line_a_packets_before + 1 &&
-                    redundant_sender->line(1).packets_sent ==
-                        line_b_packets_before + 1;
-            } else if (sender_a->send(end_packet.data(), end_packet.size())) {
-                ++line_a_pkts_sent;
-                end_of_session_sent = true;
-            } else {
-                ++line_a_send_failures;
+            std::optional<std::chrono::steady_clock::time_point>
+                previous_end_of_session_send;
+            for (uint64_t index = 0;
+                 index < end_of_session_schedule.packetCount() &&
+                 g_running.load(std::memory_order_relaxed);
+                 ++index) {
+                if (previous_end_of_session_send.has_value()) {
+                    // Rebase every copy on the preceding successful send. A
+                    // delayed wakeup must not compress later EOS copies into
+                    // a catch-up burst.
+                    const auto deadline =
+                        end_of_session_schedule.checkedDeadlineAfterSend(
+                            *previous_end_of_session_send);
+                    if (!deadline.has_value()) {
+                        throw std::out_of_range(
+                            "end-of-session deadline exceeds "
+                            "steady-clock range");
+                    }
+                    if (!sleepUntilOrStopped(*deadline))
+                        break;
+                }
+                if (!send_control_packet(end_packet, end_sequence))
+                    break;
+                previous_end_of_session_send =
+                    std::chrono::steady_clock::now();
+                if (index == 0) {
+                    if (logical_first_seq == 0)
+                        logical_first_seq = end_sequence;
+                }
+                ++end_of_session_packets_sent;
             }
+            end_of_session_sent =
+                end_of_session_packets_sent ==
+                end_of_session_schedule.packetCount();
         }
 
         const bool interrupted =
             !g_running.load(std::memory_order_relaxed);
         const char *completion = "source_error";
-        if (source.completed())
+        if (transmission_failed)
+            completion = "send_error";
+        else if (source.completed() && end_of_session_sent)
             completion = "complete";
-        else if (source.lastError().empty() && interrupted)
+        else if (interrupted)
             completion = "interrupted";
+        else if (source.completed())
+            completion = "eos_incomplete";
         if (!source.lastError().empty()) {
             std::cerr << "Replay source error: " << source.lastError() << "\n";
         }
@@ -1013,8 +1351,16 @@ int main(int argc, char *argv[]) {
                       << " logical_messages=" << logical_messages
                       << " startup_heartbeats_sent="
                       << startup_heartbeats_sent
+                      << " periodic_heartbeats_sent="
+                      << periodic_heartbeats_sent
+                      << " eos_packets_sent="
+                      << end_of_session_packets_sent
+                      << " eos_packets_expected="
+                      << end_of_session_schedule.packetCount()
                       << " first_seq=" << logical_first_seq
                       << " next_seq=" << logical_next_seq
+                      << " binaryfile_completion="
+                      << completionKindName(source.completionKind())
                       << " end_of_session_sent="
                       << (end_of_session_sent ? "true" : "false") << "\n";
         } else {
@@ -1023,9 +1369,17 @@ int main(int argc, char *argv[]) {
                       << " msgs_sent=" << line_a_msgs_sent
                       << " startup_heartbeats_sent="
                       << startup_heartbeats_sent
+                      << " periodic_heartbeats_sent="
+                      << periodic_heartbeats_sent
+                      << " eos_packets_sent="
+                      << end_of_session_packets_sent
+                      << " eos_packets_expected="
+                      << end_of_session_schedule.packetCount()
                       << " first_seq=" << logical_first_seq
                       << " next_seq=" << logical_next_seq
                       << " send_failures=" << line_a_send_failures
+                      << " binaryfile_completion="
+                      << completionKindName(source.completionKind())
                       << " end_of_session_sent="
                       << (end_of_session_sent ? "true" : "false") << "\n";
         }
@@ -1035,7 +1389,8 @@ int main(int argc, char *argv[]) {
              line_b_pkts_sent == logical_packets &&
              line_a_msgs_sent == logical_messages &&
              line_b_msgs_sent == logical_messages);
-        return source.completed() && end_of_session_sent &&
+        return source.completed() && !transmission_failed &&
+                       end_of_session_sent &&
                        line_a_send_failures == 0 &&
                        line_b_send_failures == 0 && redundant_counts_clean
                    ? EXIT_SUCCESS

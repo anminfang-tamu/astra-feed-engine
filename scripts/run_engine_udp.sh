@@ -23,6 +23,15 @@ Default: dual-feed A/B receiver on 0.0.0.0:9000 and 0.0.0.0:9001.
 
 Required deployment environment:
   ASTRA_BOOK_CAPACITY_PROFILE=<approved-profile>
+  ASTRA_BOOK_CAPACITY_EVIDENCE_FILE=<canonical-manifest>
+  ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256=<manifest-sha256>
+  ASTRA_ORDER_DIRECT_SLOTS=<manifest-value>
+  ASTRA_ORDER_FALLBACK_BUCKETS=<manifest-value>
+  ASTRA_PRICE_PAGE_CAPACITY=<manifest-value>
+  ASTRA_PROFILED_MAX_ORDER_REF=<manifest-value>
+  ASTRA_PROFILED_UNIQUE_PRICE_PAGES=<manifest-value>
+  ASTRA_MIN_DIRECT_ORDER_HEADROOM=<manifest-value>
+  ASTRA_MIN_PRICE_PAGE_HEADROOM=<manifest-value>
 
 Useful environment:
   ASTRA_CPU=2
@@ -59,12 +68,25 @@ case "$#" in
     ;;
 esac
 
-if [[ -z "${ASTRA_BOOK_CAPACITY_PROFILE:-}" ]]; then
-  echo "ASTRA_BOOK_CAPACITY_PROFILE is required." >&2
-  echo "For the pinned full trace, use:" >&2
-  echo "  ASTRA_BOOK_CAPACITY_PROFILE=nasdaq-itch-20190130-acceptance-v1" >&2
-  exit 2
-fi
+required_capacity_environment=(
+  ASTRA_BOOK_CAPACITY_PROFILE
+  ASTRA_BOOK_CAPACITY_EVIDENCE_FILE
+  ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256
+  ASTRA_ORDER_DIRECT_SLOTS
+  ASTRA_ORDER_FALLBACK_BUCKETS
+  ASTRA_PRICE_PAGE_CAPACITY
+  ASTRA_PROFILED_MAX_ORDER_REF
+  ASTRA_PROFILED_UNIQUE_PRICE_PAGES
+  ASTRA_MIN_DIRECT_ORDER_HEADROOM
+  ASTRA_MIN_PRICE_PAGE_HEADROOM
+)
+for variable_name in "${required_capacity_environment[@]}"; do
+  if [[ -z "${!variable_name-}" ]]; then
+    echo "${variable_name} is required." >&2
+    echo "Load every value from one checksum-backed capacity manifest." >&2
+    exit 2
+  fi
+done
 
 warn_cpu_numa_mismatch() {
   local cpu="$1"
@@ -139,6 +161,7 @@ echo "Build provenance: git_sha=${git_sha} worktree=${worktree_state} build_type
 
 build_numa_command "${ASTRA_CPU:-}"
 
+export ASTRA_RX=udp
 echo "Starting UDP engine: ${ENGINE_ARGS[*]} — press Ctrl+C to stop"
 if [[ -n "${NUMA_NODE}" ]]; then
   echo "  numa_node=${NUMA_NODE} numa_mem_policy=${NUMA_MEM_POLICY}"

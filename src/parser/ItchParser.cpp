@@ -1,5 +1,6 @@
 #include "astra/parser/ItchParser.hpp"
 #include "astra/protocol/ItchMessageLength.hpp"
+#include "astra/protocol/ItchPrice.hpp"
 
 #include <cstring>
 #include <string_view>
@@ -7,7 +8,10 @@
 namespace {
 
 constexpr std::size_t kStockLen = 8;
+constexpr std::size_t kTimestampOffset = 5;
+constexpr std::size_t kAddStockOffset = 24;
 constexpr std::size_t kSystemEventCodeOffset = 11;
+constexpr std::uint64_t kNanosecondsPerDay = 86'400'000'000'000ULL;
 
 std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
                            std::size_t len) {
@@ -16,6 +20,25 @@ std::string_view fixedText(std::span<const std::byte> msg, std::size_t off,
   while (n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\0'))
     --n;
   return {p, n};
+}
+
+bool wireStockMatches(const astra::symbol::StockDirectoryEntry &entry,
+                      std::span<const std::byte> msg,
+                      std::size_t offset) noexcept {
+  std::size_t ticker_length = 0;
+  while (ticker_length < kStockLen &&
+         entry.ticker[ticker_length] != '\0') {
+    ++ticker_length;
+  }
+  for (std::size_t index = 0; index < kStockLen; ++index) {
+    const char expected =
+        index < ticker_length ? entry.ticker[index] : ' ';
+    const char observed =
+        static_cast<char>(std::to_integer<std::uint8_t>(msg[offset + index]));
+    if (observed != expected)
+      return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -36,6 +59,14 @@ uint32_t ItchParser::readU32BE(std::span<const std::byte> msg,
          (static_cast<uint32_t>(std::to_integer<uint8_t>(msg[off + 1])) << 16) |
          (static_cast<uint32_t>(std::to_integer<uint8_t>(msg[off + 2])) << 8) |
          static_cast<uint32_t>(std::to_integer<uint8_t>(msg[off + 3]));
+}
+
+uint64_t ItchParser::readU48BE(std::span<const std::byte> msg,
+                              std::size_t off) {
+  uint64_t v = 0;
+  for (std::size_t i = 0; i < 6; ++i)
+    v = (v << 8) | std::to_integer<uint8_t>(msg[off + i]);
+  return v;
 }
 
 uint64_t ItchParser::readU64BE(std::span<const std::byte> msg,
@@ -75,9 +106,33 @@ bool ItchParser::handlePrevalidatedMessage(
 bool ItchParser::dispatchMessage(std::span<const std::byte> msg) {
   const char type = static_cast<char>(std::to_integer<uint8_t>(msg[0]));
   const uint16_t locate = readU16BE(msg, 1);
+  if (readU48BE(msg, kTimestampOffset) >= kNanosecondsPerDay)
+    return fail("ITCH timestamp is outside trading day");
+  const char system_event_code =
+      type == 'S'
+          ? static_cast<char>(
+                std::to_integer<uint8_t>(msg[kSystemEventCodeOffset]))
+          : '\0';
+
+  if (type == 'S' && locate != 0)
+    return fail("System Event stock locate is not zero");
+
+  if (channel_phase_ == ChannelPhase::WaitingStartOfMessages &&
+      (type != 'S' || system_event_code != 'O')) {
+    return fail("first ITCH message is not System Event O");
+  }
 
   if (channel_phase_ == ChannelPhase::EndOfMessages) {
     return fail("ITCH message after end of messages");
+  }
+  // Nasdaq's specification names B and D as possible after System Event E,
+  // but the checksum-pinned official 2026-06-12 archive also contains valid
+  // partial X cancels interleaved with deletes in its teardown tail. Admit
+  // only those existing-order mutations; adds/executions/replaces stay closed.
+  if (channel_phase_ == ChannelPhase::PostSystemHours &&
+      type != 'X' && type != 'D' && type != 'B' &&
+      !(type == 'S' && system_event_code == 'C')) {
+    return fail("ITCH message is not permitted after System Event E");
   }
 
   switch (type) {
@@ -122,6 +177,10 @@ bool ItchParser::dispatchMessage(std::span<const std::byte> msg) {
   case 'h': // Operational Halt
     markStartupAdminMessage(type);
     return false;
+  case 'O': // Direct Listing with Capital Raise Price Discovery
+    // This is an intraday reference/auction message. It does not mutate the
+    // displayed order book and must not be confused with System Event code O.
+    return skip();
   // System / non-book messages — skip silently
   default:
     return skip();
@@ -140,16 +199,22 @@ bool ItchParser::dispatchMessage(std::span<const std::byte> msg) {
 // [32-35] Price
 // [36-39] Attribution (F only)
 void ItchParser::handleAdd(std::span<const std::byte> msg, uint16_t locate) {
+  const astra::symbol::StockDirectoryEntry *const directory_entry =
+      symbols_.get(locate);
+  if (directory_entry == nullptr)
+    return (void)fail("add order uses unregistered stock locate");
+  if (!wireStockMatches(*directory_entry, msg, kAddStockOffset))
+    return (void)fail("add order stock does not match registered ticker");
 
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t qty = readU32BE(msg, 20);
   const uint64_t price = static_cast<uint64_t>(readU32BE(msg, 32));
+  const uint64_t timestamp = readU48BE(msg, kTimestampOffset);
 
-  // The manager's resident descriptor is the authoritative preparation bit.
-  // Avoid separate directory and parser-side flag reads on every hot add.
   applyBookResult(books_.addOrder(locate, order_id, price, qty,
                                   static_cast<char>(
-                                      std::to_integer<uint8_t>(msg[19]))),
+                                      std::to_integer<uint8_t>(msg[19])),
+                                  timestamp),
                   "add order");
 }
 
@@ -166,6 +231,9 @@ void ItchParser::handleOrderExecuted(std::span<const std::byte> msg,
 
 void ItchParser::handleOrderExecutedWithPrice(
     std::span<const std::byte> msg, uint16_t locate) {
+  const std::uint32_t execution_price = readU32BE(msg, 32);
+  if (!astra::protocol::isValidItchPrice4(execution_price))
+    return (void)fail("order execution with price: price out of range");
   applyExecution(msg, locate);
 }
 
@@ -173,8 +241,10 @@ void ItchParser::applyExecution(std::span<const std::byte> msg,
                                 uint16_t locate) {
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t executed_qty = readU32BE(msg, 19);
+  const uint64_t timestamp = readU48BE(msg, kTimestampOffset);
 
-  applyBookResult(books_.executeOrder(locate, order_id, executed_qty),
+  applyBookResult(
+      books_.executeOrder(locate, order_id, executed_qty, timestamp),
                   "order execution");
 }
 
@@ -184,8 +254,10 @@ void ItchParser::applyExecution(std::span<const std::byte> msg,
 void ItchParser::handleCancel(std::span<const std::byte> msg, uint16_t locate) {
   const uint64_t order_id = readU64BE(msg, 11);
   const uint32_t canceled_qty = readU32BE(msg, 19);
+  const uint64_t timestamp = readU48BE(msg, kTimestampOffset);
 
-  applyBookResult(books_.cancelShares(locate, order_id, canceled_qty),
+  applyBookResult(
+      books_.cancelShares(locate, order_id, canceled_qty, timestamp),
                   "order cancel");
 }
 
@@ -193,7 +265,9 @@ void ItchParser::handleCancel(std::span<const std::byte> msg, uint16_t locate) {
 // [11-18] Order Reference Number
 void ItchParser::handleDelete(std::span<const std::byte> msg, uint16_t locate) {
   const uint64_t order_id = readU64BE(msg, 11);
-  applyBookResult(books_.deleteOrder(locate, order_id), "order delete");
+  const uint64_t timestamp = readU48BE(msg, kTimestampOffset);
+  applyBookResult(books_.deleteOrder(locate, order_id, timestamp),
+                  "order delete");
 }
 
 // 'U' (35 bytes)
@@ -207,9 +281,14 @@ void ItchParser::handleReplace(std::span<const std::byte> msg,
   const uint64_t new_id = readU64BE(msg, 19);
   const uint32_t new_qty = readU32BE(msg, 27);
   const uint64_t new_price = static_cast<uint64_t>(readU32BE(msg, 31));
+  const uint64_t timestamp = readU48BE(msg, kTimestampOffset);
+
+  if (new_id == old_id)
+    return (void)fail("replacement order reference is not new");
 
   applyBookResult(
-      books_.replaceOrder(locate, old_id, new_id, new_price, new_qty),
+      books_.replaceOrder(locate, old_id, new_id, new_price, new_qty,
+                          timestamp),
       "order replace");
 }
 
@@ -243,6 +322,12 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
       existing != nullptr && std::string_view(existing->ticker) != sym) {
     return (void)fail("conflicting ticker for stock locate");
   }
+  if (const std::uint16_t existing_locate =
+          symbols_.locateForTicker(sym);
+      existing_locate != astra::symbol::kInvalidStockLocate &&
+      existing_locate != locate) {
+    return (void)fail("ticker is already registered to another stock locate");
+  }
 
   if (channel_phase_ == ChannelPhase::WaitingStartOfMessages) {
     channel_phase_ = ChannelPhase::StartupDirectorySpin;
@@ -260,7 +345,8 @@ void ItchParser::handleStockDirectory(std::span<const std::byte> msg) {
   entry.issue_classification =
       static_cast<char>(std::to_integer<uint8_t>(msg[26]));
   entry.is_test = std::to_integer<uint8_t>(msg[29]) == 'T';
-  symbols_.set(locate, entry);
+  if (!symbols_.set(locate, entry))
+    return (void)fail("unable to register stock-directory identity");
   if (books_prepared_ && !createRegisteredBook(locate)) {
     return (void)fail("unable to prepare stock-directory book");
   }
@@ -291,7 +377,16 @@ void ItchParser::handleSystemEvent(std::span<const std::byte> msg) {
     (void)advancePhase(ChannelPhase::PostSystemHours);
     break;
   case 'C':
+    if (books_.totalLiveOrderCount() != 0) {
+      (void)fail("end of messages with live orders");
+      break;
+    }
     (void)advancePhase(ChannelPhase::EndOfMessages);
+    break;
+  case 'A': // Emergency Market Condition - Halt
+  case 'R': // Emergency Market Condition - Quote Only
+  case 'B': // Emergency Market Condition - Resumption
+    // These as-needed System Event codes do not alter the daily lifecycle.
     break;
   default:
     (void)fail("unsupported system event code");
@@ -311,10 +406,33 @@ void ItchParser::handleSystemHoursStart() {
 }
 
 bool ItchParser::advancePhase(ChannelPhase next_phase) {
-  if (static_cast<unsigned>(next_phase) <
-      static_cast<unsigned>(channel_phase_)) {
-    return fail("out-of-order system event");
+  bool allowed = false;
+  switch (next_phase) {
+  case ChannelPhase::StartupDirectorySpin:
+    allowed = channel_phase_ == ChannelPhase::WaitingStartOfMessages;
+    break;
+  case ChannelPhase::SystemHours:
+    allowed = channel_phase_ == ChannelPhase::StartupDirectorySpin ||
+              channel_phase_ == ChannelPhase::StartupAdminSpin;
+    break;
+  case ChannelPhase::MarketHours:
+    allowed = channel_phase_ == ChannelPhase::SystemHours;
+    break;
+  case ChannelPhase::PostMarketHours:
+    allowed = channel_phase_ == ChannelPhase::MarketHours;
+    break;
+  case ChannelPhase::PostSystemHours:
+    allowed = channel_phase_ == ChannelPhase::PostMarketHours;
+    break;
+  case ChannelPhase::EndOfMessages:
+    allowed = channel_phase_ == ChannelPhase::PostSystemHours;
+    break;
+  case ChannelPhase::WaitingStartOfMessages:
+  case ChannelPhase::StartupAdminSpin:
+    break;
   }
+  if (!allowed)
+    return fail("out-of-order or duplicate system event");
   channel_phase_ = next_phase;
   return true;
 }

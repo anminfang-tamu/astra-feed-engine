@@ -141,7 +141,7 @@ OrderSlotReservation
 OrderTable::reserve(std::uint64_t order_ref) const noexcept {
   if (order_ref < config_.direct_slots) {
     const OrderState &state = direct_[static_cast<std::size_t>(order_ref)];
-    return isActive(state)
+    return wasSeen(state)
                ? OrderSlotReservation{MutationResult::DuplicateOrderRef,
                                       LookupPath::Direct, order_ref, 0, 0}
                : OrderSlotReservation{MutationResult::Applied,
@@ -160,7 +160,7 @@ OrderTable::reserve(std::uint64_t order_ref) const noexcept {
        ++candidate) {
     for (std::uint8_t way = 0; way < kFallbackWays; ++way) {
       const FallbackEntry *entry = fallbackEntry(buckets[candidate], way);
-      if (isActive(entry->state)) {
+      if (wasSeen(entry->state)) {
         if (entry->order_ref == order_ref) {
           return {MutationResult::DuplicateOrderRef,
                   candidate == 0 ? LookupPath::FallbackPrimary
@@ -184,13 +184,14 @@ MutationResult OrderTable::commit(const OrderSlotReservation &reservation,
   if (!reservation.valid())
     return reservation.result;
 
-  state.flags = static_cast<std::uint8_t>(state.flags | kOrderStateActive);
+  state.flags = static_cast<std::uint8_t>(
+      state.flags | kOrderStateActive | kOrderStateSeen);
   if (reservation.path == LookupPath::Direct) {
     if (reservation.order_ref >= config_.direct_slots)
       return MutationResult::StaleReservation;
     OrderState &destination =
         direct_[static_cast<std::size_t>(reservation.order_ref)];
-    if (isActive(destination))
+    if (wasSeen(destination))
       return MutationResult::StaleReservation;
     destination = state;
     return MutationResult::Applied;
@@ -214,7 +215,7 @@ MutationResult OrderTable::commit(const OrderSlotReservation &reservation,
 
   FallbackEntry &destination =
       *fallbackEntry(reservation.bucket, reservation.way);
-  if (isActive(destination.state))
+  if (wasSeen(destination.state))
     return MutationResult::StaleReservation;
   destination.order_ref = reservation.order_ref;
   destination.state = state;
@@ -222,9 +223,10 @@ MutationResult OrderTable::commit(const OrderSlotReservation &reservation,
 }
 
 MutationResult OrderTable::erase(OrderState *state) noexcept {
-  if (state == nullptr)
+  if (state == nullptr || !isActive(*state))
     return MutationResult::OrderNotFound;
   *state = OrderState{};
+  state->flags = kOrderStateSeen;
   return MutationResult::Applied;
 }
 

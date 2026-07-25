@@ -3,7 +3,8 @@
 #include <cstdint>
 
 struct TopOfBook {
-  uint64_t timestamp; // optional publication timestamp
+  // Exchange timestamp from the latest successful mutation of this book.
+  uint64_t timestamp;
   uint64_t bid_price; // best (highest) buy price
   uint64_t bid_qty;   // aggregate quantity can exceed one wire-order quantity
   uint64_t ask_price; // best (lowest) sell price

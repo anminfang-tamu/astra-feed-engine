@@ -73,7 +73,7 @@ PriceAddress preparePrice(PriceLevelStore &store, std::uint16_t locate,
 
 } // namespace
 
-TEST(PriceLevelStoreTest, LayoutAndPriceAddressingCoverFullWireDomain) {
+TEST(PriceLevelStoreTest, LayoutAndPriceAddressingCoverFullInternalUint32Domain) {
   using namespace astra::book;
 
   static_assert(sizeof(PriceLevelState) == 16);
@@ -375,6 +375,7 @@ TEST(PriceLevelStoreTest, CapacityFailureDoesNotChangeExistingState) {
   EXPECT_EQ(failed.result, MutationResult::PricePageCapacityExceeded);
   EXPECT_EQ(store.pageHandle(7, 1), 0u);
   EXPECT_EQ(store.counters().committed_pages, 1u);
+  EXPECT_EQ(store.counters().page_capacity_failures, 1u);
 
   const auto best = store.view(store.best(7, OrderSide::Buy), OrderSide::Buy);
   ASSERT_TRUE(best.valid);
@@ -615,10 +616,11 @@ TEST(PriceLevelStoreTest, NextWorseAndTopTenCrossPageBoundaries) {
 
   PriceLevelStore store(PriceLevelStoreConfig{12, false});
   ASSERT_EQ(store.prepareBook(7), MutationResult::Applied);
+  std::array<PriceAddress, 12> addresses{};
   for (std::uint32_t i = 0; i < 12; ++i) {
     const std::uint32_t price = (i << 16) | (i * 17u);
-    const PriceAddress address = preparePrice(store, 7, price);
-    ASSERT_EQ(store.add(address, OrderSide::Buy, i + 1),
+    addresses[i] = preparePrice(store, 7, price);
+    ASSERT_EQ(store.add(addresses[i], OrderSide::Buy, i + 1),
               MutationResult::Applied);
   }
 
@@ -630,6 +632,27 @@ TEST(PriceLevelStoreTest, NextWorseAndTopTenCrossPageBoundaries) {
     EXPECT_EQ(levels[rank].raw_price, (i << 16) | (i * 17u));
     EXPECT_EQ(levels[rank].total_qty, i + 1u);
   }
+
+  auto cursor = store.best(7, OrderSide::Buy);
+  for (std::uint32_t rank = 0; rank < 12; ++rank) {
+    const std::uint32_t i = 11u - rank;
+    const auto level = store.view(cursor, OrderSide::Buy);
+    ASSERT_TRUE(level.valid);
+    EXPECT_EQ(level.raw_price, (i << 16) | (i * 17u));
+    cursor = store.nextWorse(7, OrderSide::Buy, cursor);
+  }
+  EXPECT_FALSE(cursor.valid);
+
+  for (std::uint32_t i = 11; i >= 2; --i) {
+    ASSERT_EQ(store.erase(addresses[i], OrderSide::Buy, i + 1u),
+              MutationResult::Applied);
+  }
+  levels = {};
+  ASSERT_EQ(store.topTen(7, OrderSide::Buy, levels), 2u);
+  EXPECT_EQ(levels[0].raw_price, (1u << 16) | 17u);
+  EXPECT_EQ(levels[0].total_qty, 2u);
+  EXPECT_EQ(levels[1].raw_price, 0u);
+  EXPECT_EQ(levels[1].total_qty, 1u);
 }
 
 TEST(PriceLevelStoreTest, MoveIsTransactionalForLogicalState) {

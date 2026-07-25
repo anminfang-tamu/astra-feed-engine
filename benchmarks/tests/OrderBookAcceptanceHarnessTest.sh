@@ -30,9 +30,19 @@ COMMON_ARGS=(
   --max-p99-ns 250
   --max-p99-9-ns 350
 )
-REDESIGN_ARGS=(
+REDESIGN_BASE_ARGS=(
   "${COMMON_ARGS[@]}"
   --expect-hot-arena-schema redesign_v1
+)
+CAPACITY_SHA=1ff9b1ecf60795a4be02975adbc6ab084202f95354bdedadbe77a4f5b511fb31
+CAPACITY_ARGS=(
+  --capacity-profile-name acceptance-harness-test-v1
+  --capacity-evidence-file "${FIXTURE_ROOT}/capacity evidence.txt"
+  --capacity-evidence-sha256 "${CAPACITY_SHA}"
+)
+REDESIGN_ARGS=(
+  "${REDESIGN_BASE_ARGS[@]}"
+  "${CAPACITY_ARGS[@]}"
 )
 
 DISCOVERY_OUTPUT_DIR="${FIXTURE_ROOT}/must-not-exist-discovery"
@@ -54,8 +64,17 @@ EXPECTED_OUTPUT="$("${HARNESS}" "${REDESIGN_ARGS[@]}" \
 grep -Fq -- '--expect-mutation-digest=42' <<<"${EXPECTED_OUTPUT}"
 grep -Fq -- '--expect-semantic-mutation-digest=43' <<<"${EXPECTED_OUTPUT}"
 
-CAPACITY_SHA=1ff9b1ecf60795a4be02975adbc6ab084202f95354bdedadbe77a4f5b511fb31
-CAPACITY_DRY_RUN="$("${HARNESS}" "${REDESIGN_ARGS[@]}" \
+LEGACY_OUTPUT="$("${HARNESS}" "${REDESIGN_ARGS[@]}" \
+  --allow-legacy-eof-after-sc --no-perf-stat \
+  --output-dir "${FIXTURE_ROOT}/must-not-exist-legacy" --dry-run)"
+[[ "$(grep -o -- '--allow-legacy-eof-after-sc' <<<"${LEGACY_OUTPUT}" |
+  wc -l | tr -d ' ')" -eq 6 ]]
+if grep -Fq -- '--allow-legacy-eof-after-sc' <<<"${EXPECTED_OUTPUT}"; then
+  echo "strict-default dry run unexpectedly enabled legacy EOF acceptance" >&2
+  exit 1
+fi
+
+CAPACITY_DRY_RUN="$("${HARNESS}" "${REDESIGN_BASE_ARGS[@]}" \
   --capacity-profile-name nasdaq-prod-multiday-2026q3-v1 \
   --capacity-evidence-file "${FIXTURE_ROOT}/capacity evidence.txt" \
   --capacity-evidence-sha256 "${CAPACITY_SHA}" \
@@ -69,17 +88,17 @@ grep -Fq -- '--capacity-evidence-file=' <<<"${CAPACITY_DRY_RUN}"
 grep -Fq -- "--capacity-evidence-sha256=${CAPACITY_SHA}" \
   <<<"${CAPACITY_DRY_RUN}"
 
-if "${HARNESS}" "${REDESIGN_ARGS[@]}" \
+if "${HARNESS}" "${REDESIGN_BASE_ARGS[@]}" \
    --capacity-profile-name incomplete-v1 --dry-run \
    >"${FIXTURE_ROOT}/capacity-incomplete.stdout" \
    2>"${FIXTURE_ROOT}/capacity-incomplete.stderr"; then
   echo "harness accepted an incomplete capacity identity" >&2
   exit 1
 fi
-grep -Fq -- 'must be supplied together' \
+grep -Fq -- 'are required together' \
   "${FIXTURE_ROOT}/capacity-incomplete.stderr"
 
-if "${HARNESS}" "${REDESIGN_ARGS[@]}" \
+if "${HARNESS}" "${REDESIGN_BASE_ARGS[@]}" \
    --capacity-profile-name invalid-sha-v1 \
    --capacity-evidence-file "${FIXTURE_ROOT}/unused" \
    --capacity-evidence-sha256 ABCDEF --dry-run \
@@ -90,6 +109,15 @@ if "${HARNESS}" "${REDESIGN_ARGS[@]}" \
 fi
 grep -Fq -- 'exactly 64 lowercase hex digits' \
   "${FIXTURE_ROOT}/capacity-sha.stderr"
+
+if "${HARNESS}" "${REDESIGN_BASE_ARGS[@]}" --dry-run \
+   >"${FIXTURE_ROOT}/capacity-missing.stdout" \
+   2>"${FIXTURE_ROOT}/capacity-missing.stderr"; then
+  echo "harness accepted a missing capacity evidence identity" >&2
+  exit 1
+fi
+grep -Fq -- 'live acceptance has no built-in capacity profile' \
+  "${FIXTURE_ROOT}/capacity-missing.stderr"
 
 REJECTED_OUTPUT_DIR="${FIXTURE_ROOT}/must-not-exist-rejected"
 if "${HARNESS}" "${REDESIGN_ARGS[@]}" --runs 4 \
@@ -129,6 +157,10 @@ grep -Fq -- 'single-variant harness' <<<"${HELP_OUTPUT}"
 grep -Fq -- 'explicit supported hot-arena schema' <<<"${HELP_OUTPUT}"
 grep -Fq -- '--expect-hot-arena-schema NAME' <<<"${HELP_OUTPUT}"
 grep -Fq -- 'fresh out-of-tree benchmark-only build graph' <<<"${HELP_OUTPUT}"
+grep -Fq -- '--allow-legacy-eof-after-sc' <<<"${HELP_OUTPUT}"
+grep -Fq -- 'filename, date, and age are irrelevant' <<<"${HELP_OUTPUT}"
+grep -Fq -- 'Required redesign capacity-profile name' <<<"${HELP_OUTPUT}"
+grep -Fq -- 'Required canonical capacity evidence manifest' <<<"${HELP_OUTPUT}"
 
 # `set -u` makes schema-dependent live policy invalid before the probe assigns
 # this variable. Keep the assignment as its first executable occurrence.

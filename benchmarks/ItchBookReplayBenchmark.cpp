@@ -40,6 +40,7 @@ constexpr std::string_view kUsage =
     "[--price-page-capacity=N] [--sample-capacity=N] "
     "[--start-gate-file=PATH] [--start-gate-timeout-ms=N] "
     "[--storage-plan-only] "
+    "[--allow-legacy-eof-after-sc] "
     "[--require-zero-post-warmup-faults] "
     "[--mutation-digest] [--expect-mutation-digest=N] "
     "[--expect-semantic-mutation-digest=N]";
@@ -66,15 +67,9 @@ struct Options {
   std::optional<std::uint64_t> expected_bytes;
   std::optional<std::uint64_t> expected_mutation_digest;
   std::optional<std::uint64_t> expected_semantic_mutation_digest;
-  std::uint64_t direct_order_slots{
-      BookManagerConfig::pinnedNasdaqItch20190130Acceptance()
-          .orders.direct_slots};
-  std::uint32_t fallback_bucket_count{
-      BookManagerConfig::pinnedNasdaqItch20190130Acceptance()
-          .orders.fallback_bucket_count};
-  std::uint32_t price_page_capacity{
-      BookManagerConfig::pinnedNasdaqItch20190130Acceptance()
-          .prices.page_capacity};
+  std::uint64_t direct_order_slots{0};
+  std::uint32_t fallback_bucket_count{0};
+  std::uint32_t price_page_capacity{0};
   std::optional<std::string> capacity_profile_name;
   std::optional<std::string> capacity_evidence_file;
   std::optional<std::string> capacity_evidence_sha256;
@@ -84,6 +79,7 @@ struct Options {
   bool prefault{false};
   bool mutation_digest{false};
   bool storage_plan_only{false};
+  bool allow_legacy_eof_after_sc{false};
   bool require_zero_post_warmup_faults{false};
   bool direct_order_slots_explicit{false};
   bool fallback_bucket_count_explicit{false};
@@ -143,6 +139,8 @@ Options parseOptions(int argc, char **argv) {
       options.mutation_digest = true;
     } else if (argument == "--storage-plan-only") {
       options.storage_plan_only = true;
+    } else if (argument == "--allow-legacy-eof-after-sc") {
+      options.allow_legacy_eof_after_sc = true;
     } else if (argument == "--require-zero-post-warmup-faults") {
       options.require_zero_post_warmup_faults = true;
     } else if (argument.starts_with(sample_prefix)) {
@@ -243,16 +241,19 @@ Options parseOptions(int argc, char **argv) {
     throw std::invalid_argument("sample interval must be nonzero");
   if (options.minimum_samples == 0)
     throw std::invalid_argument("minimum samples must be nonzero");
-  if (options.direct_order_slots == 0)
+  if (options.direct_order_slots_explicit && options.direct_order_slots == 0)
     throw std::invalid_argument("direct order slots must be nonzero");
-  if (options.fallback_bucket_count == 0 ||
-      (options.fallback_bucket_count &
-       (options.fallback_bucket_count - 1)) != 0) {
+  if (options.fallback_bucket_count_explicit &&
+      (options.fallback_bucket_count == 0 ||
+       (options.fallback_bucket_count &
+        (options.fallback_bucket_count - 1)) != 0)) {
     throw std::invalid_argument(
         "fallback bucket count must be a nonzero power of two");
   }
-  if (options.price_page_capacity == 0)
+  if (options.price_page_capacity_explicit &&
+      options.price_page_capacity == 0) {
     throw std::invalid_argument("price page capacity must be nonzero");
+  }
   if (options.sample_capacity == 0)
     throw std::invalid_argument("sample capacity must be nonzero");
   if (options.minimum_samples > options.sample_capacity)
@@ -272,6 +273,16 @@ Options parseOptions(int argc, char **argv) {
         "capacity profile name, evidence file, and evidence SHA-256 "
         "must be supplied together");
   }
+  const unsigned int explicit_capacity_fields =
+      static_cast<unsigned int>(options.direct_order_slots_explicit) +
+      static_cast<unsigned int>(options.fallback_bucket_count_explicit) +
+      static_cast<unsigned int>(options.price_page_capacity_explicit);
+  if (capacity_identity_fields == 0 && explicit_capacity_fields != 3) {
+    throw std::invalid_argument(
+        "supply checksum-bound capacity evidence or all of "
+        "--direct-order-slots, --fallback-buckets, and "
+        "--price-page-capacity");
+  }
   const bool latency_gate_enabled = options.maximum_p50_ns != 0 ||
                                     options.maximum_p99_ns != 0 ||
                                     options.maximum_p999_ns != 0;
@@ -289,6 +300,7 @@ struct ReplayCapacityProfile {
   std::string evidence_sha256;
   std::string corpus_manifest_sha256;
   std::string profiler_sha256;
+  std::string profile_output_sha256;
   BookManagerConfig config;
   BookCapacityEvidence evidence;
   BookCapacityHeadroom minimum_headroom;
@@ -327,49 +339,31 @@ ReplayCapacityProfile resolveCapacityProfile(const Options &options) {
     manifest.profile.config.prices.prefault = options.prefault;
     const BookCapacityValidation validation =
         validateBookCapacityProfile(manifest.profile);
+    std::string profile_output_sha256 =
+        manifest.profile_output_sha256.empty()
+            ? "not-recorded-v1"
+            : std::move(manifest.profile_output_sha256);
     return {true,
-            std::string(BookCapacityEvidenceManifest::kSchema),
+            std::move(manifest.schema),
             std::move(manifest.profile.name),
             std::move(manifest.profile.evidence_sha256),
             std::move(manifest.corpus_manifest_sha256),
             std::move(manifest.profiler_sha256),
+            std::move(profile_output_sha256),
             manifest.profile.config,
             manifest.profile.evidence,
             manifest.profile.minimum_headroom,
             validation.effective_headroom};
   }
 
-  const bool capacity_override =
-      options.direct_order_slots_explicit ||
-      options.fallback_bucket_count_explicit ||
-      options.price_page_capacity_explicit;
   BookManagerConfig config{
       {options.direct_order_slots, options.fallback_bucket_count,
        options.prefault},
       {options.price_page_capacity, options.prefault}};
-  if (capacity_override) {
-    // Small, explicit capacities remain useful for unit/development replay, but
-    // live acceptance rejects this deliberately unbound identity.
-    return {false, "unbound_development_v1", "unbound-development", "none",
-            "none", "none", config, {}, {}, {}};
-  }
-
-  BookCapacityProfile profile =
-      BookCapacityProfile::nasdaqItch20190130Acceptance();
-  profile.config.orders.prefault = options.prefault;
-  profile.config.prices.prefault = options.prefault;
-  const BookCapacityValidation validation =
-      validateBookCapacityProfile(profile);
-  return {true,
-          "astra_pinned_trace_capacity_evidence_v1",
-          std::move(profile.name),
-          std::move(profile.evidence_sha256),
-          std::string(BookCapacityProfile::kNasdaqItch20190130TraceSha256),
-          std::string(BookCapacityProfile::kNasdaqItch20190130ProfilerSha256),
-          profile.config,
-          profile.evidence,
-          profile.minimum_headroom,
-          validation.effective_headroom};
+  // Small, explicit capacities remain useful for unit/development replay, but
+  // live acceptance rejects this deliberately unbound identity.
+  return {false, "unbound_development_v1", "unbound-development", "none",
+          "none", "none", "none", config, {}, {}, {}};
 }
 
 void printCapacityProfile(std::ostream &output,
@@ -381,6 +375,8 @@ void printCapacityProfile(std::ostream &output,
          << " capacity_corpus_manifest_sha256="
          << profile.corpus_manifest_sha256
          << " capacity_profiler_sha256=" << profile.profiler_sha256
+         << " capacity_profile_output_sha256="
+         << profile.profile_output_sha256
          << " capacity_profiled_max_order_ref="
          << profile.evidence.profiled_max_order_reference
          << " capacity_profiled_unique_price_pages="
@@ -934,7 +930,10 @@ int main(int argc, char **argv) {
                    "block. The default --min-samples is 1000. A correctness "
                    "replay emits both the same-binary physical mutation "
                    "digest and a versioned, layout-independent semantic "
-                   "mutation digest.\n";
+                   "mutation digest. Capacity has no built-in default: supply "
+                   "the checksum-bound profile/evidence/SHA-256 trio, or all "
+                   "three explicit capacity flags for an unbound development "
+                   "replay.\n";
       return EXIT_SUCCESS;
     }
     const Options options = parseOptions(argc, argv);
@@ -1000,22 +999,40 @@ int main(int argc, char **argv) {
     rusage post_warmup_end{};
     bool post_warmup_usage_started = false;
     bool ready_emitted = false;
+    bool last_message_was_end_of_messages = false;
+    const char *binaryfile_completion = "none";
 
     for (;;) {
       unsigned char length_bytes[2]{};
       input.read(reinterpret_cast<char *>(length_bytes), 2);
-      if (input.gcount() == 0 && input.eof())
+      if (input.gcount() == 0 && input.eof()) {
+        if (!options.allow_legacy_eof_after_sc ||
+            !last_message_was_end_of_messages) {
+          throw std::runtime_error(
+              "physical EOF before zero-length BinaryFILE terminator");
+        }
+        binaryfile_completion = "legacy_sc_eof";
         break;
+      }
       if (input.gcount() != 2)
         throw std::runtime_error("truncated record length");
       const std::uint16_t length = readU16BE(length_bytes);
-      if (length == 0)
-        throw std::runtime_error("zero-length ITCH record");
+      if (length == 0) {
+        bytes += 2;
+        if (input.peek() != std::char_traits<char>::eof()) {
+          throw std::runtime_error(
+              "data follows zero-length BinaryFILE terminator");
+        }
+        binaryfile_completion = "terminator";
+        break;
+      }
       input.read(reinterpret_cast<char *>(message.data()), length);
       if (input.gcount() != static_cast<std::streamsize>(length))
         throw std::runtime_error("truncated ITCH record");
       ++records;
       bytes += static_cast<std::uint64_t>(length) + 2;
+      last_message_was_end_of_messages =
+          length == 12 && message[0] == 'S' && message[11] == 'C';
 
       const bool book_message = isBookMutation(message[0]);
       if (!ready_emitted && book_message) {
@@ -1189,6 +1206,7 @@ int main(int argc, char **argv) {
     std::cout
               << " path=" << std::quoted(options.path)
               << " records=" << records << " bytes=" << bytes
+              << " binaryfile_completion=" << binaryfile_completion
               << " book_messages=" << book_messages
               << " applied_book_mutations=" << applied_book_mutations
               << " sample_count=" << samples.size()

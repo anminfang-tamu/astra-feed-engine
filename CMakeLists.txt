@@ -54,6 +54,7 @@ add_library(astra_feed_engine STATIC
     src/source/UdpReceiver.cpp
     src/source/UdpSender.cpp
     src/utils/CpuAffinity.cpp
+    src/utils/Sha256.cpp
 )
 
 add_library(astra::feed_engine ALIAS astra_feed_engine)
@@ -92,12 +93,19 @@ if(ASTRA_BUILD_APPS)
 
     add_executable(md_engine            apps/md_engine_main.cpp)
     target_link_libraries(md_engine     PRIVATE astra::feed_engine)
+    target_compile_options(md_engine PRIVATE -Wall -Wextra -Wpedantic)
 
     add_executable(itch_moldudp_sender  apps/itch_moldudp_sender_main.cpp)
     target_link_libraries(itch_moldudp_sender
         PRIVATE
             astra::feed_engine
             Threads::Threads
+    )
+    target_compile_options(itch_moldudp_sender
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
     )
 endif()
 

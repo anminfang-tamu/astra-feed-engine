@@ -30,6 +30,7 @@ constexpr std::array<std::uint8_t, 256> makeItchMessageLengths() noexcept {
   lengths[static_cast<std::uint8_t>('B')] = 19;
   lengths[static_cast<std::uint8_t>('I')] = 50;
   lengths[static_cast<std::uint8_t>('N')] = 20;
+  lengths[static_cast<std::uint8_t>('O')] = 48;
   return lengths;
 }
 

@@ -14,6 +14,7 @@ enum class DecodeStatus {
   EndOfStream,
   InvalidSequence,
   InvalidSession,
+  RedundantFeedMismatch,
   InvalidItchMessage,
   IncompleteSession,
 };
@@ -40,6 +41,8 @@ constexpr const char *decodeStatusName(DecodeStatus status) noexcept {
     return "InvalidSequence";
   case DecodeStatus::InvalidSession:
     return "InvalidSession";
+  case DecodeStatus::RedundantFeedMismatch:
+    return "RedundantFeedMismatch";
   case DecodeStatus::InvalidItchMessage:
     return "InvalidItchMessage";
   case DecodeStatus::IncompleteSession:
@@ -57,6 +60,7 @@ constexpr bool isTerminalDecodeFailure(DecodeStatus status) noexcept {
   case DecodeStatus::InvalidSize:
   case DecodeStatus::InvalidSequence:
   case DecodeStatus::InvalidSession:
+  case DecodeStatus::RedundantFeedMismatch:
   case DecodeStatus::InvalidItchMessage:
   case DecodeStatus::IncompleteSession:
     return true;

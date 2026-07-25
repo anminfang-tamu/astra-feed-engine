@@ -94,11 +94,35 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   if (msg_count == MoldUdpPacketHeader::kEndOfSessionMessageCount) {
     // A transport end marker is authoritative only after the sequenced ITCH
     // stream itself reached System Event C.  Otherwise accepting it would
-    // silently discard a missing tail (including valid late R or order E
-    // traffic).  Require exact sequence continuity and a completely recovered
-    // channel before allowing MarketDataEngine to stop normally.
-    if (first_seq != channel_.next_expected_seq ||
-        channel_.status != ChannelHealth::Good ||
+    // silently discard a missing delete/broken-trade cleanup tail. Require
+    // exact sequence continuity and a completely recovered channel before
+    // allowing MarketDataEngine to stop normally.
+    if (first_seq < channel_.next_expected_seq ||
+        (pending_end_sequence_ != 0 &&
+         pending_end_sequence_ != first_seq) ||
+        channel_.heartbeat_next_seq_high_watermark > first_seq) {
+      return terminalFailure(DecodeStatus::InvalidSequence);
+    }
+
+    if (first_seq > channel_.next_expected_seq) {
+      // In a redundant A/B feed, one line's EOS can arrive before the other
+      // line supplies a missing sequenced packet. Retain the advertised end
+      // sequence as a high-water mark and let normal gap recovery finish.
+      // Once System Event C is reconstructed at this exact sequence,
+      // resolvePendingEndOfStream() accepts the pending marker.
+      if (channel_.phase == ChannelPhase::EndOfMessages ||
+          channel_.status == ChannelHealth::Invalid ||
+          channel_.status == ChannelHealth::Stale) {
+        return terminalFailure(DecodeStatus::InvalidSequence);
+      }
+      pending_end_sequence_ = first_seq;
+      channel_.heartbeat_next_seq_high_watermark =
+          std::max(channel_.heartbeat_next_seq_high_watermark, first_seq);
+      channel_.status = ChannelHealth::GapDetected;
+      return {DecodeStatus::Ok, true};
+    }
+
+    if (channel_.status != ChannelHealth::Good ||
         !channel_.gap_buffer.empty() ||
         channel_.heartbeat_next_seq_high_watermark != 0) {
       return terminalFailure(DecodeStatus::InvalidSequence);
@@ -115,6 +139,10 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
   // A heartbeat carries the next sequence.  An ahead heartbeat is evidence
   // of missing traffic even though it has no messages to buffer.
   if (msg_count == 0) {
+    if (pending_end_sequence_ != 0 &&
+        first_seq > pending_end_sequence_) {
+      return terminalFailure(DecodeStatus::InvalidSequence);
+    }
     if (first_seq > channel_.next_expected_seq) {
       channel_.heartbeat_next_seq_high_watermark =
           std::max(channel_.heartbeat_next_seq_high_watermark, first_seq);
@@ -149,6 +177,10 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
 
   const uint64_t expected = channel_.next_expected_seq;
   const uint64_t packet_end = first_seq + msg_count;
+  if (pending_end_sequence_ != 0 &&
+      packet_end > pending_end_sequence_) {
+    return terminalFailure(DecodeStatus::InvalidSequence);
+  }
 
   // duplicate or old packet, ignore
   if (packet_end <= expected) {
@@ -176,9 +208,19 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     if (packet.size > SequencedPacket::kMaxPacketSize) {
       return terminalFailure(DecodeStatus::InvalidSize);
     }
-    if (!channel_.gap_buffer.insert(
+    const GapBuffer::InsertResult insert_result =
+        channel_.gap_buffer.insert(
             packet.data, static_cast<uint16_t>(packet.size), first_seq,
-            msg_count, packet.receive_start_ticks)) {
+            msg_count, packet.receive_start_ticks);
+    if (insert_result ==
+        GapBuffer::InsertResult::ConflictingDuplicate) {
+      ++channel_.conflicting_buffered_redundant_packets;
+      return terminalFailure(DecodeStatus::RedundantFeedMismatch);
+    }
+    if (insert_result ==
+        GapBuffer::InsertResult::DuplicateIdentical) {
+      ++channel_.identical_buffered_redundant_packets;
+    } else if (insert_result != GapBuffer::InsertResult::Inserted) {
       channel_.status = ChannelHealth::Stale;
     }
 
@@ -225,6 +267,14 @@ DecodeResult MoldUdpDecoder::processPacket(const PacketView &packet) {
     }
   }
   result.had_gap = had_gap;
+  const DecodeStatus pending_status = resolvePendingEndOfStream();
+  if (pending_status != DecodeStatus::Ok) {
+    if (pending_status == DecodeStatus::EndOfStream) {
+      result.status = pending_status;
+      return result;
+    }
+    return terminalFailure(pending_status);
+  }
   return result;
 }
 
@@ -233,6 +283,26 @@ MoldUdpDecoder::terminalFailure(DecodeStatus status) noexcept {
   channel_.status = ChannelHealth::Invalid;
   terminal_status_ = status;
   return {status};
+}
+
+DecodeStatus MoldUdpDecoder::resolvePendingEndOfStream() noexcept {
+  if (pending_end_sequence_ == 0 ||
+      channel_.next_expected_seq < pending_end_sequence_) {
+    return DecodeStatus::Ok;
+  }
+  if (channel_.next_expected_seq > pending_end_sequence_)
+    return DecodeStatus::InvalidSequence;
+  if (channel_.status != ChannelHealth::Good ||
+      !channel_.gap_buffer.empty() ||
+      channel_.heartbeat_next_seq_high_watermark != 0) {
+    return DecodeStatus::Ok;
+  }
+  if (channel_.phase != ChannelPhase::EndOfMessages)
+    return DecodeStatus::IncompleteSession;
+
+  pending_end_sequence_ = 0;
+  terminal_status_ = DecodeStatus::EndOfStream;
+  return terminal_status_;
 }
 
 const DecodeStageTiming *MoldUdpDecoder::lastStageTiming() const noexcept {

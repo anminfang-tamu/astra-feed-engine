@@ -1,29 +1,89 @@
+#include "astra/book/PriceLevelStore.hpp"
+#include "astra/protocol/ItchMessageLength.hpp"
+#include "astra/protocol/ItchPrice.hpp"
+#include "astra/symbol/StockLocate.hpp"
+#include "astra/utils/Sha256.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 namespace {
 
 constexpr std::size_t kTickerLength = 8;
 constexpr std::size_t kWireLocateCount = 1u << 16;
-constexpr uint64_t kDensePriceSlotBytes = 32;
-constexpr uint64_t kDensePricePageBytes =
-    kDensePriceSlotBytes * (uint64_t{1} << 16);
-// Mirrors the current three-level 65,536-bit bitmap layout, including its
-// 64-byte alignment padding. Kept explicit so the printed memory model states
-// its assumptions instead of silently depending on a production header.
-constexpr uint64_t kHierarchicalBitmapBytesPerSide = 8'384;
+constexpr std::uint64_t kNanosecondsPerDay = 86'400'000'000'000ULL;
+constexpr std::array<unsigned char, 6> kDailySystemEvents{
+    'O', 'S', 'Q', 'M', 'E', 'C'};
+
+std::filesystem::path resolveExecutablePath(std::string_view argv0) {
+#if defined(__linux__)
+  (void)argv0;
+  return std::filesystem::canonical("/proc/self/exe");
+#elif defined(__APPLE__)
+  (void)argv0;
+  std::vector<char> path_buffer(1024);
+  std::uint32_t required_size =
+      static_cast<std::uint32_t>(path_buffer.size());
+  if (_NSGetExecutablePath(path_buffer.data(), &required_size) != 0) {
+    path_buffer.resize(required_size);
+    if (_NSGetExecutablePath(path_buffer.data(), &required_size) != 0)
+      throw std::runtime_error("cannot resolve running profiler executable");
+  }
+  return std::filesystem::canonical(path_buffer.data());
+#else
+  if (argv0.empty())
+    throw std::runtime_error("profiler executable path is empty");
+
+  const std::filesystem::path supplied(argv0);
+  if (!supplied.has_parent_path()) {
+    throw std::runtime_error(
+        "profiler argv[0] must contain a path on this platform");
+  }
+  return std::filesystem::canonical(supplied);
+#endif
+}
+
+std::string sha256File(const std::filesystem::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input.is_open())
+    throw std::runtime_error("cannot open profiler executable for SHA-256");
+  astra::utils::Sha256 digest;
+  std::array<unsigned char, 1024u * 1024u> buffer{};
+  std::uint64_t bytes = 0;
+  while (input.read(reinterpret_cast<char *>(buffer.data()),
+                    static_cast<std::streamsize>(buffer.size())) ||
+         input.gcount() != 0) {
+    const std::size_t count = static_cast<std::size_t>(input.gcount());
+    digest.update(
+        std::span<const unsigned char>(buffer.data(), count));
+    bytes += count;
+  }
+  if (!input.eof())
+    throw std::runtime_error("cannot read complete profiler executable");
+  if (bytes == 0)
+    throw std::runtime_error("profiler executable is empty");
+  return digest.finalizeHex();
+}
 
 uint16_t readU16BE(const unsigned char *bytes) noexcept {
   return static_cast<uint16_t>((static_cast<uint16_t>(bytes[0]) << 8) |
@@ -35,6 +95,14 @@ uint32_t readU32BE(const unsigned char *bytes) noexcept {
          (static_cast<uint32_t>(bytes[1]) << 16) |
          (static_cast<uint32_t>(bytes[2]) << 8) |
          static_cast<uint32_t>(bytes[3]);
+}
+
+uint64_t readU48BE(const unsigned char *bytes) noexcept {
+  uint64_t value = 0;
+  for (unsigned i = 0; i < 6; ++i) {
+    value = (value << 8) | bytes[i];
+  }
+  return value;
 }
 
 uint64_t readU64BE(const unsigned char *bytes) noexcept {
@@ -62,14 +130,26 @@ struct LevelState {
   uint32_t order_count{0};
 };
 
+// Exact, sparse lifetime set for the 64-bit order-reference domain. Each
+// allocated page covers 65,536 references with one bit per reference, so a
+// sequential full day costs one bit per observed ID while sparse high IDs do
+// not force a giant dense allocation.
+struct SeenOrderReferencePage {
+  static constexpr std::size_t kWordCount = (1u << 16) / 64;
+  std::array<std::uint64_t, kWordCount> words{};
+};
+
 struct Stats {
   std::array<uint64_t, 256> type_counts{};
   std::array<DirectoryIdentity, kWireLocateCount> directory{};
   std::unordered_set<uint32_t> price_pages;
   std::unordered_map<uint64_t, OrderState> live_orders;
+  std::unordered_map<uint64_t, SeenOrderReferencePage>
+      seen_order_reference_pages;
   std::unordered_map<uint64_t, LevelState> active_levels;
   std::unordered_map<uint32_t, uint32_t> active_page_level_counts;
   std::unordered_set<uint32_t> ever_active_pages;
+  std::unordered_map<uint64_t, uint16_t> directory_ticker_locates;
   std::array<uint32_t, kWireLocateCount> live_orders_by_locate{};
   std::array<uint32_t, kWireLocateCount> live_order_hwm_by_locate{};
   std::array<uint32_t, kWireLocateCount> levels_by_locate{};
@@ -84,6 +164,7 @@ struct Stats {
   uint64_t bytes{0};
   uint64_t malformed_records{0};
   uint64_t zero_length_records{0};
+  const char *binaryfile_completion{"none"};
   uint64_t order_refs_above_u32{0};
   uint64_t prices_above_documented_max{0};
   uint64_t directory_before_system_hours{0};
@@ -91,10 +172,22 @@ struct Stats {
   uint64_t new_directory_after_system_hours{0};
   uint64_t repeated_directory_after_system_hours{0};
   uint64_t conflicting_directory_after_system_hours{0};
+  uint64_t conflicting_directory_identities{0};
+  uint64_t invalid_directory_identities{0};
+  uint64_t duplicate_directory_tickers{0};
+  uint64_t invalid_timestamps{0};
+  uint64_t order_adds_before_directory{0};
+  uint64_t order_add_stock_mismatches{0};
+  uint64_t book_messages_before_system_hours{0};
   uint64_t system_event_e{0};
+  uint64_t daily_system_events_seen{0};
+  uint64_t system_event_sequence_errors{0};
+  uint64_t unsupported_system_event_codes{0};
   uint64_t messages_after_system_event_e{0};
+  uint64_t cancels_after_system_event_e{0};
   uint64_t deletes_after_system_event_e{0};
   uint64_t broken_trades_after_system_event_e{0};
+  uint64_t invalid_messages_after_system_event_e{0};
   uint64_t max_order_ref{0};
   uint64_t max_match_number{0};
   uint64_t new_order_refs{0};
@@ -110,6 +203,7 @@ struct Stats {
   uint64_t missing_cancels{0};
   uint64_t missing_executions{0};
   uint64_t missing_replaces{0};
+  uint64_t same_reference_replaces{0};
   uint64_t over_cancels{0};
   uint64_t over_executions{0};
   uint64_t zero_quantity_mutations{0};
@@ -159,7 +253,7 @@ void observePrice(Stats &stats, uint16_t locate, uint32_t price) {
   }
   // Current Nasdaq TotalView-ITCH 5.0 documents Price(4) up to
   // 200,000.0000, or 2,000,000,000 in raw units.
-  if (price > 2'000'000'000u) {
+  if (price > astra::protocol::kMaxItchPrice4) {
     ++stats.prices_above_documented_max;
   }
   const uint32_t locate_and_page =
@@ -200,6 +294,25 @@ void observeNewOrderRef(Stats &stats, uint64_t order_ref) noexcept {
   if (order_ref > std::numeric_limits<uint32_t>::max()) {
     ++stats.new_order_refs_above_u32;
   }
+}
+
+bool claimDayUniqueOrderRef(Stats &stats, uint64_t order_ref) {
+  const std::uint64_t page_index = order_ref >> 16;
+  const std::uint16_t bit_index =
+      static_cast<std::uint16_t>(order_ref);
+  auto [page_it, inserted] =
+      stats.seen_order_reference_pages.try_emplace(page_index);
+  (void)inserted;
+  std::uint64_t &word =
+      page_it->second.words[bit_index >> 6];
+  const std::uint64_t mask =
+      std::uint64_t{1} << (bit_index & 63u);
+  if ((word & mask) != 0) {
+    ++stats.duplicate_order_refs;
+    return false;
+  }
+  word |= mask;
+  return true;
 }
 
 void observeOrderPrice(Stats &stats, uint16_t locate, uint32_t price) noexcept {
@@ -370,6 +483,8 @@ void profileAdd(Stats &stats, uint16_t locate, uint64_t order_ref,
                 uint32_t price, uint32_t qty, unsigned char side) {
   observeNewOrderRef(stats, order_ref);
   observeOrderPrice(stats, locate, price);
+  if (!claimDayUniqueOrderRef(stats, order_ref))
+    return;
   if (qty == 0) {
     ++stats.zero_quantity_mutations;
     return;
@@ -448,6 +563,13 @@ void profileReplace(Stats &stats, uint16_t locate, uint64_t old_order_ref,
   observeNewOrderRef(stats, new_order_ref);
   observeOrderPrice(stats, locate, new_price);
 
+  if (old_order_ref == new_order_ref) {
+    ++stats.same_reference_replaces;
+    return;
+  }
+  if (!claimDayUniqueOrderRef(stats, new_order_ref))
+    return;
+
   const auto old_it = stats.live_orders.find(old_order_ref);
   if (old_it == stats.live_orders.end()) {
     ++stats.missing_replaces;
@@ -477,11 +599,30 @@ bool tickerMatches(const DirectoryIdentity &identity,
   return std::memcmp(identity.ticker.data(), ticker, kTickerLength) == 0;
 }
 
+bool tickerHasIdentity(const unsigned char *ticker) noexcept {
+  for (std::size_t index = 0; index < kTickerLength; ++index) {
+    if (ticker[index] != ' ' && ticker[index] != '\0')
+      return true;
+  }
+  return false;
+}
+
+uint64_t tickerKey(const unsigned char *ticker) noexcept {
+  return readU64BE(ticker);
+}
+
 void observeDirectory(Stats &stats, uint16_t locate,
-                      const unsigned char *message) noexcept {
+                      const unsigned char *message) {
+  if (locate == 0 || !tickerHasIdentity(message + 11)) {
+    ++stats.invalid_directory_identities;
+    return;
+  }
+
   DirectoryIdentity &identity = stats.directory[locate];
   const bool existed = identity.seen;
   const bool same_identity = existed && tickerMatches(identity, message + 11);
+  if (existed && !same_identity)
+    ++stats.conflicting_directory_identities;
 
   if (stats.system_hours_started) {
     ++stats.directory_after_system_hours;
@@ -497,8 +638,59 @@ void observeDirectory(Stats &stats, uint16_t locate,
   }
 
   if (!existed) {
+    const uint64_t ticker_key = tickerKey(message + 11);
+    const auto [ticker_it, inserted] =
+        stats.directory_ticker_locates.emplace(ticker_key, locate);
+    if (!inserted && ticker_it->second != locate) {
+      ++stats.duplicate_directory_tickers;
+    }
     std::memcpy(identity.ticker.data(), message + 11, kTickerLength);
     identity.seen = true;
+  }
+}
+
+void observeAddIdentity(Stats &stats, uint16_t locate,
+                        const unsigned char *message) noexcept {
+  const DirectoryIdentity &identity = stats.directory[locate];
+  if (!identity.seen) {
+    ++stats.order_adds_before_directory;
+  } else if (!tickerMatches(identity, message + 24)) {
+    ++stats.order_add_stock_mismatches;
+  }
+}
+
+void observeSystemEvent(Stats &stats, unsigned char event_code) noexcept {
+  switch (event_code) {
+  case 'O':
+  case 'S':
+  case 'Q':
+  case 'M':
+  case 'E':
+  case 'C':
+    if (stats.daily_system_events_seen >= kDailySystemEvents.size() ||
+        event_code !=
+            kDailySystemEvents[stats.daily_system_events_seen]) {
+      ++stats.system_event_sequence_errors;
+    } else {
+      ++stats.daily_system_events_seen;
+    }
+    break;
+  case 'A': // Emergency Market Condition - Halt
+  case 'R': // Emergency Market Condition - Quote Only
+  case 'B': // Emergency Market Condition - Resumption
+    break;
+  default:
+    ++stats.unsupported_system_event_codes;
+    break;
+  }
+
+  if (event_code == 'S') {
+    stats.system_hours_started = true;
+  } else if (event_code == 'E') {
+    ++stats.system_event_e;
+    stats.system_hours_ended = true;
+  } else if (event_code == 'C') {
+    stats.system_hours_ended = false;
   }
 }
 
@@ -514,15 +706,35 @@ void observeMessage(Stats &stats, const unsigned char *message,
   if (length > stats.max_message_length) {
     stats.max_message_length = length;
   }
+  const std::uint8_t expected_length =
+      astra::protocol::expectedItchMessageLength(type);
+  if (expected_length == 0 || length != expected_length) {
+    ++stats.malformed_records;
+    return;
+  }
 
   const uint16_t locate = length >= 3 ? readU16BE(message + 1) : 0;
+  if (readU48BE(message + 5) >= kNanosecondsPerDay) {
+    ++stats.invalid_timestamps;
+  }
   if (locate > stats.max_stock_locate) {
     stats.max_stock_locate = locate;
   }
   if (stats.system_hours_ended) {
     ++stats.messages_after_system_event_e;
+    // The official 2026-06-12 archive carries valid partial X cancels in the
+    // teardown tail even though the specification calls out only B and D.
+    stats.cancels_after_system_event_e += type == 'X';
     stats.deletes_after_system_event_e += type == 'D';
     stats.broken_trades_after_system_event_e += type == 'B';
+    stats.invalid_messages_after_system_event_e +=
+        type != 'X' && type != 'D' && type != 'B' &&
+        !(type == 'S' && message[11] == 'C');
+  }
+  if (!stats.system_hours_started &&
+      (type == 'A' || type == 'F' || type == 'E' || type == 'C' ||
+       type == 'X' || type == 'D' || type == 'U')) {
+    ++stats.book_messages_before_system_hours;
   }
 
   switch (type) {
@@ -538,6 +750,7 @@ void observeMessage(Stats &stats, const unsigned char *message,
       const uint32_t price = readU32BE(message + 32);
       observeOrderRef(stats, order_ref);
       observePrice(stats, locate, price);
+      observeAddIdentity(stats, locate, message);
       profileAdd(stats, locate, order_ref, price, qty, message[19]);
     }
     return;
@@ -623,14 +836,7 @@ void observeMessage(Stats &stats, const unsigned char *message,
       ++stats.malformed_records;
       return;
     }
-    if (message[11] == 'S') {
-      stats.system_hours_started = true;
-    } else if (message[11] == 'E') {
-      ++stats.system_event_e;
-      stats.system_hours_ended = true;
-    } else if (message[11] == 'C') {
-      stats.system_hours_ended = false;
-    }
+    observeSystemEvent(stats, message[11]);
     return;
   default:
     return;
@@ -721,6 +927,8 @@ void printReconstructionStats(const Stats &stats) {
             << " monotonic_fraction=" << std::setprecision(6)
             << monotonic_fraction
             << " max_forward_gap=" << stats.max_forward_order_ref_gap
+            << " seen_ref_pages="
+            << stats.seen_order_reference_pages.size()
             << " live_final=" << stats.live_orders.size()
             << " live_hwm=" << stats.live_order_hwm
             << " duplicates=" << stats.duplicate_order_refs
@@ -728,6 +936,7 @@ void printReconstructionStats(const Stats &stats) {
             << " missing_X=" << stats.missing_cancels
             << " missing_EC=" << stats.missing_executions
             << " missing_U=" << stats.missing_replaces
+            << " same_ref_U=" << stats.same_reference_replaces
             << " over_X=" << stats.over_cancels
             << " over_EC=" << stats.over_executions
             << " zero_qty=" << stats.zero_quantity_mutations
@@ -751,27 +960,53 @@ void printReconstructionStats(const Stats &stats) {
             << " max_level_qty=" << stats.max_level_qty << '\n';
 
   const uint64_t registered = registeredDirectoryCount(stats);
+  const uint64_t page_capacity = stats.ever_active_pages.size();
+  const uint64_t page_metadata_slots = page_capacity + 1u;
   const uint64_t active_page_hwm_bytes =
-      stats.active_page_hwm * kDensePricePageBytes;
-  const uint64_t ever_page_bytes =
-      stats.ever_active_pages.size() * kDensePricePageBytes;
-  const uint64_t level_bitmap_bytes = stats.ever_active_pages.size() * 2 *
-                                      kHierarchicalBitmapBytesPerSide;
+      stats.active_page_hwm * sizeof(astra::book::PricePage);
+  const uint64_t page_arena_bytes =
+      page_capacity * sizeof(astra::book::PricePage);
+  const uint64_t page_owner_bytes =
+      page_metadata_slots *
+      astra::book::PriceLevelStore::kPageOwnerStorageBytes;
+  const uint64_t page_summary_bytes =
+      page_metadata_slots *
+      astra::book::PriceLevelStore::kPageSummaryStorageBytes;
+  const uint64_t page_occupancy_bytes =
+      page_metadata_slots * astra::book::PriceLevelStore::kSideCount *
+      astra::book::PriceLevelStore::kBitmapStorageBytes;
   const uint64_t root_handle_bytes =
-      registered * (uint64_t{1} << 16) * sizeof(uint32_t);
-  const uint64_t page_bitmap_bytes =
-      registered * 2 * kHierarchicalBitmapBytesPerSide;
-  std::cout << "dense_price_memory_model"
-            << " slot_bytes=" << kDensePriceSlotBytes
-            << " page_bytes=" << kDensePricePageBytes
+      astra::book::kPriceRootSlotCount *
+      sizeof(astra::book::PricePageHandle);
+  const uint64_t prepared_book_bytes =
+      astra::symbol::kStockLocateSlots * sizeof(std::uint8_t);
+  const uint64_t book_summary_bytes =
+      astra::symbol::kStockLocateSlots *
+      astra::book::PriceLevelStore::kBookSummaryStorageBytes;
+  const uint64_t book_occupancy_bytes =
+      astra::symbol::kStockLocateSlots *
+      astra::book::PriceLevelStore::kSideCount *
+      astra::book::PriceLevelStore::kBitmapStorageBytes;
+  const uint64_t total_logical_bytes =
+      page_arena_bytes + page_owner_bytes + page_summary_bytes +
+      page_occupancy_bytes + root_handle_bytes + prepared_book_bytes +
+      book_summary_bytes + book_occupancy_bytes;
+  std::cout << "price_storage_logical_model"
+            << " basis=observed_pages_no_headroom"
+            << " registered_books=" << registered
+            << " page_capacity=" << page_capacity
+            << " page_bytes=" << sizeof(astra::book::PricePage)
             << " active_page_hwm_bytes=" << active_page_hwm_bytes
-            << " ever_page_bytes=" << ever_page_bytes
-            << " level_bitmap_bytes=" << level_bitmap_bytes
-            << " registered_root_handle_bytes=" << root_handle_bytes
-            << " registered_page_bitmap_bytes=" << page_bitmap_bytes
-            << " total_ever_bytes="
-            << ever_page_bytes + level_bitmap_bytes + root_handle_bytes +
-                   page_bitmap_bytes
+            << " page_arena_bytes=" << page_arena_bytes
+            << " page_owner_bytes=" << page_owner_bytes
+            << " page_summary_bytes=" << page_summary_bytes
+            << " page_occupancy_bytes=" << page_occupancy_bytes
+            << " fixed_root_handle_bytes=" << root_handle_bytes
+            << " fixed_prepared_book_bytes=" << prepared_book_bytes
+            << " fixed_book_summary_bytes=" << book_summary_bytes
+            << " fixed_book_occupancy_bytes=" << book_occupancy_bytes
+            << " total_logical_bytes=" << total_logical_bytes
+            << " authoritative_plan=md_engine_book_storage_plan"
             << '\n';
 
   printTopHwm("top_live_hwm", stats.live_order_hwm_by_locate);
@@ -780,7 +1015,9 @@ void printReconstructionStats(const Stats &stats) {
   printTopPriceSpans(stats);
 }
 
-void printStats(const Stats &stats, std::string_view path) {
+void printStats(const Stats &stats, std::string_view path,
+                std::string_view binaryfile_sha256,
+                std::string_view profiler_sha256) {
   const uint32_t min_price =
       stats.min_price == std::numeric_limits<uint32_t>::max()
           ? 0
@@ -790,6 +1027,7 @@ void printStats(const Stats &stats, std::string_view path) {
             << " bytes=" << stats.bytes
             << " malformed_records=" << stats.malformed_records
             << " zero_length_records=" << stats.zero_length_records
+            << " binaryfile_completion=" << stats.binaryfile_completion
             << " max_message_length=" << stats.max_message_length
             << " max_stock_locate=" << stats.max_stock_locate
             << " max_order_ref=" << stats.max_order_ref
@@ -799,6 +1037,8 @@ void printStats(const Stats &stats, std::string_view path) {
             << " prices_above_documented_max="
             << stats.prices_above_documented_max
             << " distinct_locate_price_pages=" << stats.price_pages.size()
+            << " binaryfile_sha256=" << binaryfile_sha256
+            << " profiler_sha256=" << profiler_sha256
             << '\n';
 
   std::cout << "lifecycle"
@@ -812,13 +1052,36 @@ void printStats(const Stats &stats, std::string_view path) {
             << stats.repeated_directory_after_system_hours
             << " conflicting_directory_after_system_hours="
             << stats.conflicting_directory_after_system_hours
+            << " conflicting_directory_identities="
+            << stats.conflicting_directory_identities
+            << " invalid_directory_identities="
+            << stats.invalid_directory_identities
+            << " duplicate_directory_tickers="
+            << stats.duplicate_directory_tickers
+            << " invalid_timestamps=" << stats.invalid_timestamps
+            << " order_adds_before_directory="
+            << stats.order_adds_before_directory
+            << " order_add_stock_mismatches="
+            << stats.order_add_stock_mismatches
+            << " book_messages_before_system_hours="
+            << stats.book_messages_before_system_hours
             << " system_event_e=" << stats.system_event_e
+            << " daily_system_events_seen="
+            << stats.daily_system_events_seen
+            << " system_event_sequence_errors="
+            << stats.system_event_sequence_errors
+            << " unsupported_system_event_codes="
+            << stats.unsupported_system_event_codes
             << " messages_after_system_event_e="
             << stats.messages_after_system_event_e
+            << " cancels_after_system_event_e="
+            << stats.cancels_after_system_event_e
             << " deletes_after_system_event_e="
             << stats.deletes_after_system_event_e
             << " broken_trades_after_system_event_e="
-            << stats.broken_trades_after_system_event_e << '\n';
+            << stats.broken_trades_after_system_event_e
+            << " invalid_messages_after_system_event_e="
+            << stats.invalid_messages_after_system_event_e << '\n';
 
   std::cout << "message_counts";
   for (std::size_t type = 0; type < stats.type_counts.size(); ++type) {
@@ -832,11 +1095,56 @@ void printStats(const Stats &stats, std::string_view path) {
   printReconstructionStats(stats);
 }
 
+bool semanticProfileClean(const Stats &stats) noexcept {
+  return stats.prices_above_documented_max == 0 &&
+         stats.conflicting_directory_after_system_hours == 0 &&
+         stats.conflicting_directory_identities == 0 &&
+         stats.invalid_directory_identities == 0 &&
+         stats.duplicate_directory_tickers == 0 &&
+         stats.invalid_timestamps == 0 &&
+         stats.order_adds_before_directory == 0 &&
+         stats.order_add_stock_mismatches == 0 &&
+         stats.book_messages_before_system_hours == 0 &&
+         stats.daily_system_events_seen == kDailySystemEvents.size() &&
+         stats.system_event_sequence_errors == 0 &&
+         stats.unsupported_system_event_codes == 0 &&
+         stats.system_event_e == 1 &&
+         stats.invalid_messages_after_system_event_e == 0 &&
+         stats.duplicate_order_refs == 0 &&
+         stats.missing_deletes == 0 &&
+         stats.missing_cancels == 0 &&
+         stats.missing_executions == 0 &&
+         stats.missing_replaces == 0 &&
+         stats.same_reference_replaces == 0 &&
+         stats.over_cancels == 0 &&
+         stats.over_executions == 0 &&
+         stats.zero_quantity_mutations == 0 &&
+         stats.invalid_order_sides == 0 &&
+         stats.locate_mismatches == 0 &&
+         stats.reconstruction_invariant_failures == 0 &&
+         stats.live_orders.empty() &&
+         stats.active_level_count == 0 &&
+         stats.active_page_count == 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    std::cerr << "Usage: " << argv[0] << " <NASDAQ_ITCH50_file>\n";
+  const bool allow_legacy_eof_after_sc =
+      argc == 3 &&
+      std::string_view(argv[2]) == "--allow-legacy-eof-after-sc";
+  if (argc < 2 || argc > 3 || (argc == 3 && !allow_legacy_eof_after_sc)) {
+    std::cerr << "Usage: " << argv[0]
+              << " <NASDAQ_ITCH50_file> [--allow-legacy-eof-after-sc]\n";
+    return 2;
+  }
+
+  std::string profiler_sha256;
+  try {
+    profiler_sha256 = sha256File(resolveExecutablePath(argv[0]));
+  } catch (const std::exception &error) {
+    std::cerr << "failed to hash profiler executable: " << error.what()
+              << '\n';
     return 2;
   }
 
@@ -854,40 +1162,141 @@ int main(int argc, char **argv) {
   stats.price_pages.reserve(1u << 20);
   stats.live_orders.max_load_factor(0.70f);
   stats.live_orders.reserve(4u << 20);
+  stats.seen_order_reference_pages.reserve(1u << 15);
   stats.active_levels.max_load_factor(0.70f);
   stats.active_levels.reserve(1u << 20);
   stats.active_page_level_counts.reserve(1u << 17);
   stats.ever_active_pages.reserve(1u << 17);
+  stats.directory_ticker_locates.reserve(1u << 15);
+  bool saw_message = false;
+  bool saw_end_of_messages = false;
+  astra::utils::Sha256 binaryfile_digest;
 
   for (;;) {
     unsigned char length_bytes[2]{};
     input.read(reinterpret_cast<char *>(length_bytes), 2);
+    if (input.gcount() > 0) {
+      binaryfile_digest.update(std::span<const unsigned char>(
+          length_bytes, static_cast<std::size_t>(input.gcount())));
+    }
     if (input.gcount() == 0 && input.eof()) {
+      if (allow_legacy_eof_after_sc && saw_end_of_messages) {
+        stats.binaryfile_completion = "legacy_sc_eof";
+      } else {
+        ++stats.malformed_records;
+        stats.binaryfile_completion = "incomplete_eof";
+        std::cerr
+            << "physical EOF before zero-length BinaryFILE terminator\n";
+      }
       break;
     }
     if (input.gcount() != 2) {
       ++stats.malformed_records;
+      stats.binaryfile_completion = "truncated_length";
+      std::cerr << "truncated BinaryFILE record length\n";
       break;
     }
 
     const uint16_t length = readU16BE(length_bytes);
     if (length == 0) {
-      ++stats.records;
       stats.bytes += 2;
       ++stats.zero_length_records;
-      continue;
+      if (input.peek() != std::char_traits<char>::eof()) {
+        ++stats.malformed_records;
+        stats.binaryfile_completion = "trailing_data";
+        std::cerr
+            << "data follows zero-length BinaryFILE terminator\n";
+      } else if (!saw_end_of_messages) {
+        ++stats.malformed_records;
+        stats.binaryfile_completion = "terminator_before_sc";
+        std::cerr
+            << "BinaryFILE terminator before ITCH System Event C\n";
+      } else {
+        stats.binaryfile_completion = "terminator";
+      }
+      break;
     }
     input.read(reinterpret_cast<char *>(message.data()), length);
+    if (input.gcount() > 0) {
+      binaryfile_digest.update(std::span<const unsigned char>(
+          message.data(), static_cast<std::size_t>(input.gcount())));
+    }
     if (input.gcount() != static_cast<std::streamsize>(length)) {
       ++stats.malformed_records;
+      stats.binaryfile_completion = "truncated_payload";
+      std::cerr << "truncated BinaryFILE record payload\n";
       break;
     }
 
     ++stats.records;
     stats.bytes += static_cast<uint64_t>(length) + 2;
+
+    const std::uint8_t expected_length =
+        astra::protocol::expectedItchMessageLength(message[0]);
+    if (expected_length == 0 || length != expected_length) {
+      ++stats.malformed_records;
+      stats.binaryfile_completion = "malformed_record";
+      std::cerr << "unsupported ITCH type or invalid message length\n";
+      break;
+    }
+
+    if (message[0] == 'S' && readU16BE(message.data() + 1) != 0) {
+      ++stats.malformed_records;
+      stats.binaryfile_completion = "malformed_record";
+      std::cerr << "System Event stock locate is not zero\n";
+      break;
+    }
+
+    const bool is_start_of_messages =
+        length == 12 && message[0] == 'S' && message[11] == 'O';
+    if (!saw_message && !is_start_of_messages) {
+      ++stats.malformed_records;
+      stats.binaryfile_completion = "missing_so";
+      std::cerr << "first ITCH record is not System Event O\n";
+      break;
+    }
+    if (saw_end_of_messages) {
+      ++stats.malformed_records;
+      stats.binaryfile_completion = "record_after_sc";
+      std::cerr << "ITCH record follows System Event C\n";
+      break;
+    }
+
+    saw_message = true;
+    saw_end_of_messages =
+        length == 12 && message[0] == 'S' && message[11] == 'C';
     observeMessage(stats, message.data(), length);
   }
 
-  printStats(stats, argv[1]);
-  return stats.malformed_records == 0 && stats.zero_length_records == 0 ? 0 : 1;
+  // Profiles that fail early still report the digest of the entire physical
+  // input, while successful terminator/legacy-EOF profiles normally have
+  // nothing left to drain. This keeps binaryfile_sha256 unambiguous.
+  input.clear();
+  std::array<unsigned char, 1024u * 1024u> remaining{};
+  while (input.read(reinterpret_cast<char *>(remaining.data()),
+                    static_cast<std::streamsize>(remaining.size())) ||
+         input.gcount() != 0) {
+    binaryfile_digest.update(std::span<const unsigned char>(
+        remaining.data(), static_cast<std::size_t>(input.gcount())));
+  }
+  if (!input.eof()) {
+    ++stats.malformed_records;
+    stats.binaryfile_completion = "read_error";
+    std::cerr << "cannot read complete BinaryFILE for SHA-256\n";
+  }
+  const std::string binaryfile_sha256 = binaryfile_digest.finalizeHex();
+
+  printStats(stats, argv[1], binaryfile_sha256, profiler_sha256);
+  const bool semantic_clean = semanticProfileClean(stats);
+  std::cout << "certification semantic_clean="
+            << (semantic_clean ? 1 : 0) << '\n';
+  if (!semantic_clean)
+    std::cerr << "semantic ITCH reconstruction gate failed\n";
+  // Flush before destroying the potentially very large reconstruction maps so
+  // a full-day run publishes its result immediately after validation.
+  std::cout.flush();
+  const std::string_view completion(stats.binaryfile_completion);
+  const bool complete = completion == "terminator" ||
+                        completion == "legacy_sc_eof";
+  return stats.malformed_records == 0 && complete && semantic_clean ? 0 : 1;
 }

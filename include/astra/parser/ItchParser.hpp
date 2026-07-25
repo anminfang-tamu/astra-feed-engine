@@ -2,6 +2,7 @@
 
 #include "astra/book/BookManager.hpp"
 #include "astra/channel/ChannelPhase.hpp"
+#include "astra/protocol/ItchPrice.hpp"
 #include "astra/symbol/StockDirectory.hpp"
 
 #include <cstddef>
@@ -18,7 +19,7 @@ class MoldUdpDecoder;
 class ItchParser {
 public:
   static constexpr int64_t kPriceScale =
-      10000; // ITCH price unit = 1/10000 dollar
+      astra::protocol::kItchPrice4Scale; // 1/10000 dollar
 
   explicit ItchParser(astra::symbol::StockDirectory &symbols,
                       BookManager &books, uint8_t channel_id = 0);
@@ -74,6 +75,7 @@ private:
 
   static uint16_t readU16BE(std::span<const std::byte> msg, std::size_t off);
   static uint32_t readU32BE(std::span<const std::byte> msg, std::size_t off);
+  static uint64_t readU48BE(std::span<const std::byte> msg, std::size_t off);
   static uint64_t readU64BE(std::span<const std::byte> msg, std::size_t off);
 
   astra::symbol::StockDirectory &symbols_;

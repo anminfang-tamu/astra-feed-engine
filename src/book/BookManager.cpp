@@ -333,50 +333,93 @@ OrderBook *BookManager::getOrCreate(std::uint16_t stock_locate) noexcept {
 astra::book::MutationResult
 BookManager::addOrder(std::uint16_t stock_locate, std::uint64_t order_id,
                       std::uint64_t price, std::uint32_t qty,
-                      char side) noexcept {
+                      char side, std::uint64_t timestamp) noexcept {
   OrderBook *book = find(stock_locate);
   return book != nullptr
-             ? book->addOrder(order_id, price, qty, side)
+             ? book->addOrder(order_id, price, qty, side, timestamp)
              : astra::book::MutationResult::BookNotPrepared;
 }
 
 astra::book::MutationResult BookManager::cancelShares(
     std::uint16_t stock_locate, std::uint64_t order_id,
-    std::uint32_t canceled_qty) noexcept {
+    std::uint32_t canceled_qty, std::uint64_t timestamp) noexcept {
   OrderBook *book = find(stock_locate);
   return book != nullptr
-             ? book->cancelShares(order_id, canceled_qty)
+             ? book->cancelShares(order_id, canceled_qty, timestamp)
              : astra::book::MutationResult::BookNotPrepared;
 }
 
 astra::book::MutationResult
 BookManager::deleteOrder(std::uint16_t stock_locate,
-                         std::uint64_t order_id) noexcept {
+                         std::uint64_t order_id,
+                         std::uint64_t timestamp) noexcept {
   OrderBook *book = find(stock_locate);
-  return book != nullptr ? book->deleteOrder(order_id)
+  return book != nullptr ? book->deleteOrder(order_id, timestamp)
                          : astra::book::MutationResult::BookNotPrepared;
 }
 
 astra::book::MutationResult BookManager::executeOrder(
     std::uint16_t stock_locate, std::uint64_t order_id,
-    std::uint32_t executed_qty) noexcept {
+    std::uint32_t executed_qty, std::uint64_t timestamp) noexcept {
   OrderBook *book = find(stock_locate);
   return book != nullptr
-             ? book->executeOrder(order_id, executed_qty)
+             ? book->executeOrder(order_id, executed_qty, timestamp)
              : astra::book::MutationResult::BookNotPrepared;
 }
 
 astra::book::MutationResult BookManager::replaceOrder(
     std::uint16_t stock_locate, std::uint64_t old_id,
     std::uint64_t new_id, std::uint64_t new_price,
-    std::uint32_t new_qty) noexcept {
+    std::uint32_t new_qty, std::uint64_t timestamp) noexcept {
   OrderBook *book = find(stock_locate);
   return book != nullptr
-             ? book->replaceOrder(old_id, new_id, new_price, new_qty)
+             ? book->replaceOrder(old_id, new_id, new_price, new_qty,
+                                  timestamp)
              : astra::book::MutationResult::BookNotPrepared;
 }
 
 const OrderBook *
 BookManager::getOrderBook(std::uint16_t stock_locate) const noexcept {
   return find(stock_locate);
+}
+
+std::uint64_t BookManager::totalLiveOrderCount() const noexcept {
+  std::uint64_t total = 0;
+  for (std::size_t slot = 1; slot < kMaxStockLocate; ++slot) {
+    const BookSlot &book = books_[slot];
+    if (book.has_value())
+      total += book->liveOrderCount();
+  }
+  return total;
+}
+
+BookDirectoryAudit BookManager::auditDirectory(
+    const astra::symbol::StockDirectory &directory) const noexcept {
+  BookDirectoryAudit audit;
+  audit.registered_symbols = directory.size();
+  audit.prepared_books = prices_.counters().prepared_books;
+
+  for (std::size_t slot = 1; slot < kMaxStockLocate; ++slot) {
+    const auto locate = static_cast<std::uint16_t>(slot);
+    const bool registered = directory.isRegistered(locate);
+    const bool materialized = books_[slot].has_value();
+    const bool price_state_prepared = prices_.isBookPrepared(locate);
+    const OrderBook *const book =
+        materialized ? &*books_[slot] : nullptr;
+
+    if (materialized)
+      ++audit.materialized_books;
+    if (registered && (!materialized || !price_state_prepared))
+      ++audit.registered_books_missing;
+    if (!registered && (materialized || price_state_prepared))
+      ++audit.unregistered_books_present;
+    if (materialized != price_state_prepared)
+      ++audit.descriptor_price_state_mismatches;
+    if (book != nullptr &&
+        (book->stockLocate() != locate || book->symbolId() != locate)) {
+      ++audit.descriptor_identity_mismatches;
+    }
+  }
+
+  return audit;
 }

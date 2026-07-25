@@ -1,11 +1,11 @@
 #include "astra/book/BookManager.hpp"
+#include "astra/protocol/ItchPrice.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <limits>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -58,8 +58,10 @@ std::uint32_t newPrice(std::uint64_t sequence, std::uint64_t &rng) {
   if (sequence % 37 == 0)
     return 0;
   if (sequence % 41 == 0)
-    return std::numeric_limits<std::uint32_t>::max();
-  return static_cast<std::uint32_t>(nextRandom(rng));
+    return astra::protocol::kMaxItchPrice4;
+  return static_cast<std::uint32_t>(
+      nextRandom(rng) %
+      (std::uint64_t{astra::protocol::kMaxItchPrice4} + 1));
 }
 
 void removeLive(std::vector<ModelOrder> &live, std::size_t index) {

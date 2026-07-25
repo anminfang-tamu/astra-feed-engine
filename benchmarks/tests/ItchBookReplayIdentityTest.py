@@ -27,7 +27,7 @@ ARENA_IDS = (
     "price_book_occupancy",
 )
 SEMANTIC_SCHEMA = "applied_itch_book_semantics_v1_fnv1a64le"
-EXPECTED_SEMANTIC_DIGEST = "12141299839370961608"
+EXPECTED_SEMANTIC_DIGEST = "2256280797439952632"
 CAPACITY_IDENTITY_FIELDS = (
     "capacity_profile_bound",
     "capacity_evidence_schema",
@@ -35,6 +35,7 @@ CAPACITY_IDENTITY_FIELDS = (
     "capacity_evidence_sha256",
     "capacity_corpus_manifest_sha256",
     "capacity_profiler_sha256",
+    "capacity_profile_output_sha256",
     "capacity_profiled_max_order_ref",
     "capacity_profiled_unique_price_pages",
     "capacity_minimum_direct_order_headroom",
@@ -112,20 +113,25 @@ def delete(reference: int) -> bytes:
 
 def make_trace() -> bytes:
     messages = [
+        event("O"),
         directory(),
         event("S"),
-        add("A", 1, "B", 100, 0xFFFFFFFF),
+        add("A", 1, "B", 100, 2_000_000_000),
         add("F", 2, "S", 80, 0),
         execute("E", 1, 10),
         execute("C", 2, 20),
         cancel(1, 5),
-        replace(1, 3, 70, 0x7FFF0001),
+        replace(1, 3, 70, 1_999_000_001),
+        event("Q"),
+        event("M"),
+        event("E"),
         delete(2),
         delete(3),
         event("C"),
     ]
-    return b"".join(struct.pack(">H", len(message)) + message
-                    for message in messages)
+    records = b"".join(struct.pack(">H", len(message)) + message
+                       for message in messages)
+    return records + b"\0\0"
 
 
 def invoke(binary: str, arguments, expect_success: bool = True):
@@ -153,7 +159,8 @@ def fields(line: str):
 
 
 def validate_schedule(output: str, sample_every: str = "1",
-                      warmup: str = "0"):
+                      warmup: str = "0",
+                      completion: str = "terminator"):
     storage = fields(record(output, "itch_book_replay_storage_plan"))
     ready = fields(record(output, "itch_book_replay_ready"))
     final = fields(record(output, "itch_book_replay"))
@@ -164,15 +171,17 @@ def validate_schedule(output: str, sample_every: str = "1",
     assert final["sample_schedule_id"] == SCHEDULE_ID
     assert ready["sample_every"] == final["sample_every"] == sample_every
     assert ready["warmup_book_messages"] == final["warmup_book_messages"] == warmup
+    assert final["binaryfile_completion"] == completion
     for key in CAPACITY_IDENTITY_FIELDS:
         assert storage[key] == ready[key] == final[key]
     assert storage["direct_order_slots"] == final["direct_order_slots"]
     assert storage["fallback_buckets"] == final["fallback_buckets"]
     assert storage["price_page_capacity"] == final["price_page_capacity"]
     expected_prelude_bytes = sum(
-        2 + len(message) for message in (directory(), event("S"))
+        2 + len(message)
+        for message in (event("O"), directory(), event("S"))
     )
-    assert ready["prelude_records"] == final["prelude_records"] == "2"
+    assert ready["prelude_records"] == final["prelude_records"] == "3"
     assert ready["prelude_bytes"] == final["prelude_bytes"] == str(
         expected_prelude_bytes
     )
@@ -255,9 +264,6 @@ def main() -> int:
             "--capacity-profile-name=replay-identity-test-v1",
             f"--capacity-evidence-file={capacity_path}",
             f"--capacity-evidence-sha256={capacity_sha256}",
-            "--direct-order-slots=8",
-            "--fallback-buckets=2",
-            "--price-page-capacity=3",
         ])
         bound_fields = fields(
             record(bound_plan.stdout, "itch_book_replay_storage_plan")
@@ -268,8 +274,29 @@ def main() -> int:
         assert bound_fields["capacity_profile_name"] == \
             "replay-identity-test-v1"
         assert bound_fields["capacity_evidence_sha256"] == capacity_sha256
+        assert bound_fields["capacity_profile_output_sha256"] == \
+            "not-recorded-v1"
         assert bound_fields["capacity_effective_direct_order_headroom"] == "2"
         assert bound_fields["capacity_effective_price_page_headroom"] == "2"
+        assert bound_fields["direct_order_slots"] == "8"
+        assert bound_fields["fallback_buckets"] == "2"
+        assert bound_fields["price_page_capacity"] == "3"
+
+        missing_capacity = invoke(
+            binary,
+            [str(trace_path), "--storage-plan-only"],
+            expect_success=False,
+        )
+        assert "supply checksum-bound capacity evidence or all of" in \
+            missing_capacity.stderr
+        partial_capacity = invoke(binary, [
+            str(trace_path),
+            "--storage-plan-only",
+            "--direct-order-slots=8",
+        ], expect_success=False)
+        assert "supply checksum-bound capacity evidence or all of" in \
+            partial_capacity.stderr
+
         mismatched_plan = invoke(binary, [
             str(trace_path),
             "--storage-plan-only",
@@ -287,9 +314,43 @@ def main() -> int:
             "--min-samples=8",
             "--price-page-capacity=3",
             "--sample-capacity=16",
-            "--expect-records=11",
+            "--expect-records=15",
             f"--expect-bytes={len(trace)}",
         ]
+        binaryfile_args = [
+            "--sample-every=1",
+            "--warmup-book-messages=0",
+            "--min-samples=8",
+            "--price-page-capacity=3",
+            "--sample-capacity=16",
+            "--direct-order-slots=8",
+            "--fallback-buckets=2",
+        ]
+
+        unterminated_path = Path(temp) / "unterminated.itch"
+        unterminated_path.write_bytes(trace[:-2])
+        unterminated = invoke(
+            binary, [str(unterminated_path), *binaryfile_args],
+            expect_success=False,
+        )
+        assert "physical EOF before zero-length BinaryFILE terminator" in \
+            unterminated.stderr
+
+        legacy = invoke(binary, [
+            str(unterminated_path),
+            *binaryfile_args,
+            "--allow-legacy-eof-after-sc",
+        ])
+        validate_schedule(legacy.stdout, completion="legacy_sc_eof")
+
+        trailing_path = Path(temp) / "trailing-after-terminator.itch"
+        trailing_path.write_bytes(trace + b"\x7f")
+        trailing = invoke(
+            binary, [str(trailing_path), *binaryfile_args],
+            expect_success=False,
+        )
+        assert "data follows zero-length BinaryFILE terminator" in \
+            trailing.stderr
 
         bound_replay = invoke(binary, [
             *common_args,
@@ -359,7 +420,7 @@ def main() -> int:
             "--min-samples=3",
             "--price-page-capacity=3",
             "--sample-capacity=16",
-            "--expect-records=11",
+            "--expect-records=15",
             f"--expect-bytes={len(trace)}",
             "--direct-order-slots=8",
             "--fallback-buckets=2",

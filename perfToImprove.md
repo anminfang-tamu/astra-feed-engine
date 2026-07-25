@@ -17,7 +17,7 @@ correctness invariants, storage plan, and acceptance procedure are in
 | Aggregate quantity used a 32-bit representation. | Every price level stores a 64-bit aggregate quantity. |
 | Book creation and mutation could allocate or fault unpredictably. | All capacities are fixed at startup; named arenas can be prefaulted and NUMA-verified before the feed is released. |
 | There was no representative order-book performance gate. | Synthetic bounded-work benchmarks, full ITCH replay, semantic and physical digests, a disassembly audit, and a controlled branch-6 acceptance harness are checked in. |
-| Session/lifecycle handling could stop before late directory or cleanup traffic. | Repeated and new `R` messages remain supported after System Hours start; order `E/C` remain independent of system-event `E`; only system-event `C` and a subsequent exact Mold end marker terminate normally. |
+| Session/lifecycle handling could stop before late directory or cleanup traffic. | Repeated and new `R` messages remain supported after System Hours start. After system-event `E`, only valid `X`/`D`/`B` teardown and the final system-event `C` are accepted; order executions and new orders fail closed. A subsequent exact Mold end marker terminates normally. |
 
 ## Work still requiring production evidence
 

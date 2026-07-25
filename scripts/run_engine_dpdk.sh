@@ -22,8 +22,19 @@ Usage:
 
 Default: DPDK A/B receiver on 0.0.0.0:9000 and 0.0.0.0:9001.
 
+Required deployment environment:
+  ASTRA_BOOK_CAPACITY_PROFILE=<approved-profile>
+  ASTRA_BOOK_CAPACITY_EVIDENCE_FILE=<canonical-manifest>
+  ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256=<manifest-sha256>
+  ASTRA_ORDER_DIRECT_SLOTS=<manifest-value>
+  ASTRA_ORDER_FALLBACK_BUCKETS=<manifest-value>
+  ASTRA_PRICE_PAGE_CAPACITY=<manifest-value>
+  ASTRA_PROFILED_MAX_ORDER_REF=<manifest-value>
+  ASTRA_PROFILED_UNIQUE_PRICE_PAGES=<manifest-value>
+  ASTRA_MIN_DIRECT_ORDER_HEADROOM=<manifest-value>
+  ASTRA_MIN_PRICE_PAGE_HEADROOM=<manifest-value>
+
 Useful environment:
-  ASTRA_BOOK_CAPACITY_PROFILE=nasdaq-itch-20190130-acceptance-v1
   ASTRA_BOOK_PREFAULT=on
   ASTRA_DPDK_PORT_ID=0
   ASTRA_DPDK_QUEUE_ID=0
@@ -33,8 +44,10 @@ Useful environment:
   ASTRA_DPDK_FLOW_FILTER=off  # AWS ENA-safe default; set on only if supported
   ASTRA_DPDK_RX_DESC=4096
   ASTRA_DPDK_MEMPOOL_SIZE=65535
+  ASTRA_DPDK_MBUF_CACHE_SIZE=256
   ASTRA_DPDK_PROMISCUOUS=off
   ASTRA_DPDK_ALLMULTICAST=on
+  ASTRA_DPDK_SOCKET_ID=<NUMA node>
   ASTRA_DPDK_SKIP_BUILD=on  # use an already-built binary
   ASTRA_LATENCY_METRICS=on
   ASTRA_BUILD_TYPE=Release  # default
@@ -63,6 +76,26 @@ case "$#" in
     exit 2
     ;;
 esac
+
+required_capacity_environment=(
+  ASTRA_BOOK_CAPACITY_PROFILE
+  ASTRA_BOOK_CAPACITY_EVIDENCE_FILE
+  ASTRA_BOOK_CAPACITY_EVIDENCE_SHA256
+  ASTRA_ORDER_DIRECT_SLOTS
+  ASTRA_ORDER_FALLBACK_BUCKETS
+  ASTRA_PRICE_PAGE_CAPACITY
+  ASTRA_PROFILED_MAX_ORDER_REF
+  ASTRA_PROFILED_UNIQUE_PRICE_PAGES
+  ASTRA_MIN_DIRECT_ORDER_HEADROOM
+  ASTRA_MIN_PRICE_PAGE_HEADROOM
+)
+for variable_name in "${required_capacity_environment[@]}"; do
+  if [[ -z "${!variable_name-}" ]]; then
+    echo "${variable_name} is required." >&2
+    echo "Load every value from one checksum-backed capacity manifest." >&2
+    exit 2
+  fi
+done
 
 warn_cpu_numa_mismatch() {
   local cpu="$1"
@@ -168,7 +201,6 @@ echo "Build provenance: git_sha=${git_sha} worktree=${worktree_state} build_type
 
 build_numa_command "${ASTRA_CPU:-}"
 export ASTRA_RX=dpdk
-export ASTRA_BOOK_CAPACITY_PROFILE="${ASTRA_BOOK_CAPACITY_PROFILE:-nasdaq-itch-20190130-acceptance-v1}"
 export ASTRA_DPDK_FLOW_FILTER="${ASTRA_DPDK_FLOW_FILTER:-off}"
 
 echo "Starting DPDK engine: ${ENGINE_ARGS[*]}"
