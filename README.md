@@ -35,8 +35,8 @@ The sender and kernel-UDP launcher expose their supported configuration:
 ./scripts/run_engine_udp.sh --help
 ```
 
-Use the AWS runbook below for capacity derivation, NUMA, DPDK, sender, replay,
-validation, and recovery commands.
+Use the AWS runbook below for DPDK package installation, engine build, NUMA
+and ENI binding, engine startup, and ENI recovery commands.
 
 ## Performance
 
@@ -58,7 +58,7 @@ measurement and acceptance details.
 
 - [Design and acceptance contract](docs/design.md)
 - [Whole-project correctness review](docs/correctness-review-20260724.md)
-- [AWS EC2 and DPDK replay runbook](docs/dpdk-aws-ec2-setup.md)
+- [AWS EC2 DPDK setup and engine runbook](docs/dpdk-aws-ec2-setup.md)
 - 2026 evidence: [trace manifest](docs/trace-manifest-S061226-v50.txt),
   [semantic profile](docs/trace-profile-S061226-v50.txt),
   [capacity evidence](docs/book-capacity-evidence-S061226-v50.txt), and
