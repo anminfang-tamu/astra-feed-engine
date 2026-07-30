@@ -6,5 +6,7 @@ enum class ChannelPhase {
   StartupAdminSpin,
   SystemHours,
   MarketHours,
-  Live
+  PostMarketHours,
+  PostSystemHours,
+  EndOfMessages
 };

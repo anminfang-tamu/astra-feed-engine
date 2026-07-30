@@ -3,10 +3,14 @@
 #include <cstdint>
 
 struct TopOfBook {
-  uint64_t timestamp; // 8 bytes, optional
-  uint32_t symbol_id; // 4 bytes
-  uint64_t bid_price; // 8 bytes, best (highest) buy price
-  uint32_t bid_qty;   // 4 bytes, total qty at best bid
-  uint64_t ask_price; // 8 bytes, best (lowest) sell price
-  uint32_t ask_qty;   // 4 bytes, total qty at best ask
+  // Exchange timestamp from the latest successful mutation of this book.
+  uint64_t timestamp;
+  uint64_t bid_price; // best (highest) buy price
+  uint64_t bid_qty;   // aggregate quantity can exceed one wire-order quantity
+  uint64_t ask_price; // best (lowest) sell price
+  uint64_t ask_qty;
+  uint32_t symbol_id;
+  // Raw ITCH price zero is valid, so price==0 cannot also mean "no side".
+  bool has_bid;
+  bool has_ask;
 };

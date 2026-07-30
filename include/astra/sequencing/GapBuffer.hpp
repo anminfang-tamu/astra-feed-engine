@@ -6,10 +6,19 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 
 class GapBuffer {
 public:
   static constexpr uint32_t kCapacity = 1024 * 1024;
+
+  enum class InsertResult : std::uint8_t {
+    Inserted,
+    DuplicateIdentical,
+    ConflictingDuplicate,
+    InvalidPacket,
+    CapacityExceeded,
+  };
 
   struct Stats {
     uint32_t size{0};
@@ -25,27 +34,37 @@ public:
   GapBuffer(GapBuffer &&) = delete;
   GapBuffer &operator=(GapBuffer &&) = delete;
 
-  bool insert(const std::byte *data, uint16_t len, uint64_t seq,
-              uint16_t msg_count, uint64_t receive_start_ticks) noexcept {
+  InsertResult insert(const std::byte *data, uint16_t len, uint64_t seq,
+                      uint16_t msg_count,
+                      uint64_t receive_start_ticks) noexcept {
     if (data == nullptr || len > SequencedPacket::kMaxPacketSize)
-      return false;
+      return InsertResult::InvalidPacket;
 
     const uint32_t start = slotFor(seq);
     for (uint32_t probes = 0; probes < kCapacity; ++probes) {
       Slot &slot = slots_[(start + probes) & kMask];
-      if (!slot.occupied || slot.packet.seq == seq) {
-        if (!slot.occupied)
-          ++size_;
+      if (slot.occupied && slot.packet.seq == seq) {
+        if (slot.packet.len != len ||
+            slot.packet.msg_count != msg_count ||
+            std::memcmp(slot.packet.data.data(), data, len) != 0) {
+          return InsertResult::ConflictingDuplicate;
+        }
+        // Preserve the first arrival's receive timestamp for latency
+        // accounting; an identical redundant copy must not replace it.
+        return InsertResult::DuplicateIdentical;
+      }
+      if (!slot.occupied) {
+        ++size_;
         slot.occupied = true;
         slot.packet.seq = seq;
         slot.packet.receive_start_ticks = receive_start_ticks;
         slot.packet.msg_count = msg_count;
         slot.packet.len = len;
         std::memcpy(slot.packet.data.data(), data, len);
-        return true;
+        return InsertResult::Inserted;
       }
     }
-    return false;
+    return InsertResult::CapacityExceeded;
   }
 
   SequencedPacket *find(uint64_t seq) noexcept {
@@ -117,9 +136,12 @@ private:
   static_assert((kCapacity & kMask) == 0);
 
   struct Slot {
-    bool occupied{false};
-    SequencedPacket packet{};
+    bool occupied;
+    SequencedPacket packet;
   };
+
+  static_assert(std::is_trivial_v<Slot>);
+  static_assert(std::is_trivially_copyable_v<Slot>);
 
   static uint64_t hash(uint64_t value) noexcept {
     value ^= value >> 33;

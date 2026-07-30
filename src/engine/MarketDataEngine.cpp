@@ -1,6 +1,8 @@
 #include "astra/engine/MarketDataEngine.hpp"
 #include "astra/source/PacketView.hpp"
 
+#include <iostream>
+
 MarketDataEngine::MarketDataEngine(IMarketDataSource &source,
                                    IPacketProcessor &processor,
                                    LatencyRecorder &latency_recorder,
@@ -34,8 +36,12 @@ void MarketDataEngine::run() {
       break;
     }
     if (result.status != DecodeStatus::Ok) {
-      if (config_.stop_on_decode_error)
+      if (isTerminalDecodeFailure(result.status) ||
+          config_.stop_on_decode_error) {
+        std::cerr << "decode_failure status="
+                  << decodeStatusName(result.status) << "\n";
         stop();
+      }
       continue;
     }
     if (result.had_gap && config_.stop_on_sequence_gap) {

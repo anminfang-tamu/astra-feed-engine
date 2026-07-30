@@ -16,14 +16,27 @@
 // No intermediate structs — raw bytes go straight to the order book.
 class MoldUdpDecoder : public IPacketProcessor {
 public:
+  // A decoder never infers continuity from the first datagram it happens to
+  // receive. Full-session NASDAQ replay starts at 1; a re-numbered test stream
+  // that still contains the complete lifecycle may provide its authoritative
+  // first sequence explicitly. This option does not restore mid-session book
+  // or parser state.
+  static constexpr std::uint64_t kDefaultInitialSequence = 1;
+
   explicit MoldUdpDecoder(astra::symbol::StockDirectory &symbols,
-                          BookManager &books, uint8_t channel_id = 0);
+                          BookManager &books, uint8_t channel_id = 0,
+                          std::uint64_t initial_expected_sequence =
+                              kDefaultInitialSequence);
 
   DecodeResult processPacket(const PacketView &packet) override;
   const DecodeStageTiming *lastStageTiming() const noexcept override;
   void setStageTimingEnabled(bool enabled) noexcept;
   const ChannelState &channelState() const noexcept { return channel_; }
   ChannelState &channelState() noexcept { return channel_; }
+  DecodeStatus terminalStatus() const noexcept { return terminal_status_; }
+  bool endOfStreamAccepted() const noexcept {
+    return terminal_status_ == DecodeStatus::EndOfStream;
+  }
 
 private:
   static uint16_t readU16BE(const std::byte *p) noexcept;
@@ -34,9 +47,15 @@ private:
                                       uint64_t first_seq, uint16_t msg_count,
                                       uint64_t start_seq,
                                       uint64_t receive_start_ticks);
+  DecodeStatus validateSequencedPacket(const std::byte *data, std::size_t size,
+                                       uint16_t msg_count) const noexcept;
   DecodeResult drainGapBuffer();
+  DecodeStatus resolvePendingEndOfStream() noexcept;
+  DecodeResult terminalFailure(DecodeStatus status) noexcept;
 
   bool first_packet_seen_{false};
+  std::uint64_t pending_end_sequence_{0};
+  DecodeStatus terminal_status_{DecodeStatus::Ok};
   // bool stage_timing_enabled_{false};
   // DecodeStageTiming last_timing_;
   ChannelState channel_;

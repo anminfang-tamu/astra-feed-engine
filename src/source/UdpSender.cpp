@@ -9,14 +9,14 @@
 #include <unistd.h>
 
 UdpSender::UdpSender(const char *ip, uint16_t port) {
+  dest_.sin_family = AF_INET;
+  dest_.sin_port = htons(port);
+  if (::inet_pton(AF_INET, ip, &dest_.sin_addr) != 1)
+    throw std::runtime_error(std::string("inet_pton: bad address: ") + ip);
+
   fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
   if (fd_ < 0)
     throw std::runtime_error(std::string("socket: ") + std::strerror(errno));
-
-  dest_.sin_family = AF_INET;
-  dest_.sin_port   = htons(port);
-  if (::inet_pton(AF_INET, ip, &dest_.sin_addr) != 1)
-    throw std::runtime_error(std::string("inet_pton: bad address: ") + ip);
 }
 
 UdpSender::~UdpSender() {

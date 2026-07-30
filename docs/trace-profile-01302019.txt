@@ -1,0 +1,19 @@
+command=build/release-final/benchmarks/astra_itch_trace_profile data/itch/unzipped/01302019.NASDAQ_ITCH50
+recorded_utc=2026-07-23T00:19:38Z
+source_head=bd363cf61e18650aa380202b605ce01ff4b9a9c6
+source_worktree=dirty-redesign-under-review
+profiler_sha256=c7f468bd3bc784398626997329f01653ac54b8691af822419931f23e95907956
+trace_sha256=1d0972ffc25b35902ccc3f9069aae517da56903d5795f872902b8697315f30c3
+trace_size=11245883092
+trace_mtime=2026-05-14T15:13:02-0500
+exit_code=0
+itch_trace_profile path="data/itch/unzipped/01302019.NASDAQ_ITCH50" records=368366634 bytes=11245883092 malformed_records=0 zero_length_records=0 max_message_length=50 max_stock_locate=8713 max_order_ref=329176641 order_refs_above_u32=0 max_match_number=9904481 min_price=1 max_price=1999999900 prices_above_documented_max=0 distinct_locate_price_pages=68941
+lifecycle directory_before_system_hours=8713 directory_after_system_hours=1 new_directory_after_system_hours=0 repeated_directory_after_system_hours=1 conflicting_directory_after_system_hours=0 system_event_e=1 messages_after_system_event_e=31547 deletes_after_system_event_e=31546 broken_trades_after_system_event_e=0
+message_counts A=162970455 B=116 C=158886 D=158273361 E=8096995 F=1725898 H=8805 I=3684511 J=62 L=193769 P=1326184 Q=17430 R=8714 S=6 U=27222746 V=1 X=4669874 Y=8821
+orders new_refs=191919099 id_min=92 id_max=329176641 id_gt_u32=0 monotonic_fraction=0.743618 max_forward_gap=16019999 live_final=0 live_hwm=1742866 duplicates=0 missing_D=0 missing_X=0 missing_EC=0 missing_U=0 over_X=0 over_EC=0 zero_qty=0 invalid_sides=0 locate_mismatches=0 invariant_failures=0
+prices adds=191919099 symbols=8695 min=1 max=1999999900 outside_first_65536_window=123424129 active_levels_final=0 active_levels_hwm=707130 active_price_pages_final=0 active_price_pages_hwm=56395 ever_price_pages=68941 max_level_qty=4822255
+dense_price_memory_model slot_bytes=32 page_bytes=2097152 active_page_hwm_bytes=118268887040 ever_page_bytes=144579756032 level_bitmap_bytes=1156002688 registered_root_handle_bytes=2284060672 registered_page_bitmap_bytes=146099584 total_ever_bytes=148165918976
+top_live_hwm=14:42774,381:39028,5217:22116,2728:20986,5628:18558,7804:18306,331:15286,5430:14071,4118:11853,5265:11059,7677:8931,3420:8769,1699:8333,1718:7860,3419:7743,6449:7679,44:6314,4320:5549,6419:5210,7752:5080
+top_levels_hwm=381:5955,14:5659,2728:3698,5628:3450,7804:3317,5217:2929,5430:2840,3420:2255,6449:2137,7677:2055,5265:2050,331:1855,3419:1845,4118:1802,7752:1572,1718:1412,1630:1366,6419:1357,7843:1333,3312:1293
+top_price_pages_hwm=381:396,3420:209,3419:193,894:168,7804:166,5430:113,4205:99,3716:92,5628:82,14:77,7843:72,272:69,7677:69,6555:67,4049:66,2728:65,33:60,4974:60,855:58,858:58
+top_price_span=2:1999999899,4:1999999899,6:1999999899,7:1999999899,11:1999999899,14:1999999899,19:1999999899,22:1999999899,23:1999999899,26:1999999899,27:1999999899,30:1999999899,31:1999999899,33:1999999899,40:1999999899,43:1999999899,47:1999999899,56:1999999899,57:1999999899,58:1999999899

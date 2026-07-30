@@ -68,6 +68,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+benchmark-results/
+__pycache__/
+*.pyc
 
 # Licensed / large market data
 data/taq/raw/

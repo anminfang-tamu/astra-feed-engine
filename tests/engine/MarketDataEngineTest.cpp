@@ -88,6 +88,21 @@ private:
   int process_calls_{0};
 };
 
+class TerminalFailureProcessor : public IPacketProcessor {
+public:
+  DecodeResult processPacket(const PacketView &) override {
+    ++process_calls_;
+    return process_calls_ == 1
+               ? DecodeResult{DecodeStatus::InvalidSession}
+               : DecodeResult{DecodeStatus::EndOfStream};
+  }
+
+  int processCalls() const noexcept { return process_calls_; }
+
+private:
+  int process_calls_{0};
+};
+
 } // namespace
 
 TEST(MarketDataEngineTest, PacketLatencyModeDoesNotReadStageTiming) {
@@ -138,4 +153,18 @@ TEST(MarketDataEngineTest, StageLatencyModeDoesNotReadStageTiming) {
   EXPECT_EQ(processor.processCalls(), 2);
   EXPECT_EQ(latency_recorder.count(), 2u);
   EXPECT_EQ(processor.lastStageTimingCalls(), 0);
+}
+
+TEST(MarketDataEngineTest, TerminalDecodeFailureAlwaysStopsProcessing) {
+  ScriptedSource source;
+  TerminalFailureProcessor processor;
+  LatencyRecorder latency_recorder;
+  EngineConfig config;
+  config.stop_on_decode_error = false;
+
+  MarketDataEngine engine(source, processor, latency_recorder, config);
+  engine.run();
+
+  EXPECT_FALSE(engine.isRunning());
+  EXPECT_EQ(processor.processCalls(), 1);
 }

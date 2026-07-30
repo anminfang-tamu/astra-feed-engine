@@ -1,184 +1,116 @@
 # astra-feed-engine
 
-AstraFeed is a low-latency C++ market data feed handler for MoldUDP64-wrapped
-NASDAQ ITCH 5.0 replay. The primary benchmark setup uses redundant A/B UDP
-sender lines feeding one `md_engine` receiver.
+AstraFeed is a single-writer C++20 market-data engine for Nasdaq
+TotalView-ITCH 5.0 over MoldUDP64. It merges redundant A/B feeds, validates
+session sequencing and the daily ITCH lifecycle, and maintains an independent
+aggregate L2 order book for every valid Stock Locate.
 
-## Linux A/B Replay
+The repository also includes a deterministic BinaryFILE sender, trace
+profiler, capacity-evidence tooling, benchmarks, and correctness tests.
 
-This runbook assumes:
+## Build and test
 
-- engine host: runs `md_engine`
-- sender host: runs two `itch_moldudp_sender` processes through
-  `scripts/run_itch_ab_senders.sh`
-- ITCH file: `data/itch/unzipped/01302019.NASDAQ_ITCH50`
-- packet shape: `20` ITCH messages per MoldUDP64 packet
-
-### Receiver
-
-Start the engine first. Keep drop metrics enabled for benchmark validation.
+Requirements: CMake 3.20 or newer, a C++20 compiler, and Python 3.
 
 ```bash
-ASTRA_CPU=2 \
-ASTRA_UDP_RX=recv \
-ASTRA_UDP_DROP_METRICS=on \
-ASTRA_STAGE_LATENCY_METRICS=off \
-./build/md_engine 0.0.0.0 9000 0.0.0.0 9001
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DASTRA_BUILD_BENCHMARKS=ON
+
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-`ASTRA_STAGE_LATENCY_METRICS=off` disables the per-stage breakdown. Packet-level
-latency remains enabled unless `ASTRA_LATENCY_METRICS=off` is also set.
+`ASTRA_BUILD_APPS` and `ASTRA_BUILD_TESTS` are enabled by default. DPDK is
+Linux-only and can be enabled with `-DASTRA_ENABLE_DPDK=ON`.
 
-### Sender
+## Run
 
-For a realistic pre-market shape without waiting the full 5.5 hours, use
-timestamp replay mode. It follows the ITCH timestamps from `SS` through `SQ`,
-scaled by `ASTRA_PREMARKET_SPEEDUP`.
+The live engine requires a checksum-bound capacity manifest generated for the
+selected corpus. Do not invent or reuse capacity values from another trace.
+The sender and kernel-UDP launcher expose their supported configuration:
 
 ```bash
-ASTRA_CPU_A=3 \
-ASTRA_CPU_B=4 \
-ASTRA_PREMARKET_REPLAY_MODE=timestamp \
-ASTRA_PREMARKET_SPEEDUP=33 \
-ASTRA_SS_PAUSE_SECONDS=30 \
-./scripts/run_itch_ab_senders.sh \
-  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 \
-  9000 \
-  9001 \
-  20 \
-  "ASTRA     " \
-  10000
+./scripts/run_sender.sh --help
+./scripts/run_engine_udp.sh --help
 ```
 
-The final `10000` is the normal packet rate per line outside the timestamp-paced
-pre-market window.
+Use the AWS runbook below for DPDK package installation, engine build, NUMA
+and ENI binding, engine startup, and ENI recovery commands.
 
-## Replay Modes
+## Performance
 
-### Timestamp Mode
+### Full S061226 AWS DPDK run
 
-Recommended for market-shape simulation.
+The complete `S061226-v50.txt` session was replayed on 2026-07-29 from a
+`c7i.4xlarge` sender into a dedicated secondary ENI on an `r7i.16xlarge`
+receiver. Both hosts reported commit `8651fbc91be3`; the receiver used DPDK
+23.11.4, Release, IPO off, CPU 2 on NUMA node 0, one RX queue, 8,192 RX
+descriptors, burst 32, packet-latency mode, and 20 messages per packet.
 
-```text
-ASTRA_PREMARKET_REPLAY_MODE=timestamp
-ASTRA_PREMARKET_SPEEDUP=33
-ASTRA_SS_PAUSE_SECONDS=30
-```
+The sender's `100,000` packet/s-per-line argument is a ceiling, not a
+guaranteed rate. The observed receiver rate was approximately 28,200 physical
+packets/s, or 14,100 packets/s per line and 282,000 logical messages/s. The
+sender reported 69,338 line-B delay overruns (about 0.11% of packets), so this
+run does not certify a precise 1 us redundant-line skew.
 
-For the sample ITCH file, `SS` is around `04:00:00` and `SQ` is around
-`09:30:00`, so the real pre-market window is about `19,800` seconds.
+| Test file | Messages | Mean (ns) | Min | p50 | p90 | p99 | p99.9 | p99.99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `S061226-v50.txt` | 1,304,894,064 | 158.02 | 6 | 154 | 202 | 281 | 585 | 678 | 206,180 |
 
-| Speedup | Approximate pre-market duration |
-| ------: | ------------------------------: |
-|     `1` |                       5.5 hours |
-|    `10` |                      33 minutes |
-|    `33` |                      10 minutes |
-|   `165` |                       2 minutes |
+The run reached sequence `1,304,894,065` with channel status `Good`, phase
+`EndOfMessages`, the end marker accepted, zero live orders, all 12,809 books
+present and consistent, 156,871 of 156,872 price pages committed, and zero
+capacity failures. Both lines sent 65,244,715 packets with zero send failures.
+The receiver intentionally stopped on the first valid end marker, after
+65,244,706 line-A and 65,244,704 line-B packets. It reported zero gaps,
+conflicting redundant packets, malformed packets, missed packets, RX errors,
+and mbuf exhaustion.
 
-`ASTRA_SS_PAUSE_SECONDS` adds a quiet pause immediately after sending `SS`, so
-the receiver can create and touch registered order books before pre-market order
-flow resumes.
+This is a full live-path correctness pass and a live CPU-processing latency
+observation. It is not the separate five-process
+`run_order_book_acceptance.sh` latency gate, and no absolute live-DPDK p99 or
+p99.9 ceiling has been approved. The metric begins after DPDK dequeue and
+covers frame parsing, Mold sequencing, ITCH dispatch, and book mutation; it is
+not sender-to-book or network latency.
 
-### Flat Stress Mode
+Provenance caveats: the receiver reported a dirty worktree because the
+DPDK-23.11 no-IOMMU compatibility and latency-toggle script changes were
+uncommitted during deployment; those changes are incorporated here. The
+41,662,444,846-byte corpus matched the recorded size and completed with the
+exact profiled record count, but its 41.7 GB SHA-256 was not freshly
+recomputed on the sender before this run.
 
-Use flat mode when you want a deterministic stress window instead of the real
-ITCH burst shape.
+### Historical 2019 load sweep
 
-```bash
-ASTRA_CPU_A=3 \
-ASTRA_CPU_B=4 \
-ASTRA_PREMARKET_SECONDS=600 \
-ASTRA_SS_PAUSE_SECONDS=120 \
-./scripts/run_itch_ab_senders.sh \
-  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 \
-  9000 \
-  9001 \
-  20 \
-  "ASTRA     " \
-  50000
-```
+Historical single-run EC2 DPDK results from Release commit
+`ea08c29863e95bde693240c7ae011308173e3212`, using the 2019 corpus, 20 messages
+per packet, CPU 2, NUMA node 0, burst 8, packet-latency mode, and IPO off:
 
-`ASTRA_PREMARKET_SECONDS=600` spreads the whole `SS` to `SQ` segment evenly
-over 10 minutes. This is smoother than timestamp mode and is useful for capacity
-testing.
+| Packets/s per line | Messages/s | Mean (ns) | Min | p50 | p90 | p99 | p99.9 | p99.99 | Max |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 2,000,000 | 129.13 | 5 | 127 | 175 | 231 | 553 | 682 | 9,552 |
+| 150,000 | 3,000,000 | 123.74 | 5 | 121 | 167 | 220 | 586 | 689 | 10,186 |
+| 200,000 | 4,000,000 | 122.15 | 5 | 120 | 166 | 219 | 611 | 719 | 9,499 |
 
-### Positional Arguments
+The metric is amortized CPU processing time per newly processed message after
+DPDK dequeue, not network or end-to-end latency. See the design document for
+measurement and acceptance details.
 
-The wrapper also supports positional controls:
+## Documentation
 
-```text
-run_itch_ab_senders.sh \
-  <itch_file> <dest_ip> <port_a> <port_b> \
-  <msgs_per_packet> <session> <pkt_per_second> \
-  [premarket_seconds] [ss_pause_seconds] [premarket_replay_mode] [premarket_speedup]
-```
+- [Design and acceptance contract](docs/design.md)
+- [Whole-project correctness review](docs/correctness-review-20260724.md)
+- [AWS EC2 DPDK setup and engine runbook](docs/dpdk-aws-ec2-setup.md)
+- 2026 evidence: [trace manifest](docs/trace-manifest-S061226-v50.txt),
+  [semantic profile](docs/trace-profile-S061226-v50.txt),
+  [capacity evidence](docs/book-capacity-evidence-S061226-v50.txt), and
+  [storage plan](docs/book-storage-plan-S061226-v50.txt)
+- [Historical full-trace verification](docs/full-trace-replay-verification-20260722.txt)
 
-Timestamp-mode example using only positional arguments:
+The large files under `data/itch` are intentionally Git-ignored.
 
-```bash
-ASTRA_CPU_A=3 \
-ASTRA_CPU_B=4 \
-ASTRA_PREMARKET_REPLAY_MODE=timestamp \
-ASTRA_PREMARKET_SPEEDUP=33 \
-ASTRA_SS_PAUSE_SECONDS=120 \
-./scripts/run_itch_ab_senders.sh \
-  ./data/itch/unzipped/01302019.NASDAQ_ITCH50 \
-  172.31.32.91 \
-  9000 \
-  9001 \
-  20 \
-  "ASTRA     " \
-  10000
-```
-
-## Validation
-
-A clean run should end with:
-
-```text
-channel_status_name=Good
-line_a_kernel_drops=0
-line_b_kernel_drops=0
-```
-
-For a completed sender stream, `sender next_seq` should match receiver
-`channel_next_seq`. If the sender is interrupted first, a small tail delta is
-normal. Persistent `GapDetected`, nonzero kernel drops, or a large
-sender/receiver sequence gap means the run should not be used as a clean latency
-baseline.
-
-## Recent Results
-
-### Full-Day Flat Replay
-
-`recv`, A/B lines, `20` messages per packet, `ASTRA_PREMARKET_SECONDS=600`.
-
-| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
-|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |    `102437301` | `170 ns` | `570 ns` | `1535 ns` | `1935 ns` |
-|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `116 ns` | `310 ns` | `1023 ns` | `1775 ns` |
-
-### Timestamp-Shaped Replay
-
-`recv`, A/B lines, `20` messages per packet,
-`ASTRA_PREMARKET_REPLAY_MODE=timestamp`, `ASTRA_PREMARKET_SPEEDUP=33`.
-
-| Post-`SQ` rate per line | SS pause | Status | Kernel drops | Final sequence |      p50 |      p99 |     p99.9 |    p99.99 |
-| ----------------------: | -------: | ------ | -----------: | -------------: | -------: | -------: | --------: | --------: |
-|           `10000 pkt/s` |   `30 s` | `Good` |      `0 / 0` |     `48386301` | `138 ns` | `320 ns` |  `899 ns` | `3759 ns` |
-|           `50000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `140 ns` | `612 ns` |  `870 ns` | `1423 ns` |
-|          `100000 pkt/s` |  `120 s` | `Good` |      `0 / 0` |    `368366635` | `150 ns` | `541 ns` | `1727 ns` | `2127 ns` |
-
-The `max_ns` value in these runs includes the one-time `SS` book creation and
-warmup event, so use the percentile distribution and zero-drop validation when
-comparing steady-state packet processing.
-
-## Test Environment
-
-```text
-Sender: c7i.4xlarge with 100 GB gp3 EBS
-Engine: r7iz.8xlarge
-Transport: regular UDP recv, redundant A/B lines
-```
+This project reconstructs and queries market-data books; it does not yet
+provide a strategy publication pipeline, MoldUDP64 retransmission service, or
+complete live-feed monitoring. See the correctness review for the current
+production-readiness limits.

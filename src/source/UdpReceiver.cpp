@@ -17,6 +17,23 @@
 
 namespace {
 
+class ScopedFileDescriptor {
+public:
+  explicit ScopedFileDescriptor(int fd) noexcept : fd_(fd) {}
+  ~ScopedFileDescriptor() {
+    if (fd_ >= 0)
+      ::close(fd_);
+  }
+
+  ScopedFileDescriptor(const ScopedFileDescriptor &) = delete;
+  ScopedFileDescriptor &operator=(const ScopedFileDescriptor &) = delete;
+
+  void release() noexcept { fd_ = -1; }
+
+private:
+  int fd_;
+};
+
 inline bool is_multicast(const struct in_addr &addr) noexcept {
   // 224.0.0.0/4 — top nibble of host-order address == 0xE
   return (ntohl(addr.s_addr) >> 28) == 0xEu;
@@ -27,11 +44,18 @@ inline bool is_multicast(const struct in_addr &addr) noexcept {
   throw std::runtime_error(std::string(what) + ": " + std::strerror(errno));
 }
 
-bool env_flag_enabled(const char *value) noexcept {
-  if (value == nullptr)
+bool env_flag_enabled(const char *name, const char *value) {
+  if (value == nullptr || value[0] == '\0' ||
+      std::strcmp(value, "0") == 0 || std::strcmp(value, "false") == 0 ||
+      std::strcmp(value, "off") == 0 || std::strcmp(value, "no") == 0) {
     return false;
-  return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
-         std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0;
+  }
+  if (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+      std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0) {
+    return true;
+  }
+  throw std::runtime_error(std::string(name) +
+                           " must be one of on/off, true/false, yes/no, 1/0");
 }
 
 } // namespace
@@ -40,6 +64,7 @@ UdpReceiver::UdpReceiver(const char *ip, uint16_t port) {
   fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
   if (fd_ < 0)
     throw_errno("socket");
+  ScopedFileDescriptor constructor_fd(fd_);
 
   // Non-blocking: recv returns EAGAIN. We also pass MSG_DONTWAIT per-call
   // for clarity, but socket-level O_NONBLOCK is the canonical control.
@@ -75,14 +100,21 @@ UdpReceiver::UdpReceiver(const char *ip, uint16_t port) {
   ::setsockopt(fd_, SOL_SOCKET, SO_PREFER_BUSY_POLL, &prefer, sizeof(prefer));
 #endif
 
-#ifdef SO_RXQ_OVFL
-  drop_metrics_enabled_ =
-      env_flag_enabled(std::getenv("ASTRA_UDP_DROP_METRICS"));
-  if (drop_metrics_enabled_) {
+  const bool drop_metrics_requested = env_flag_enabled(
+      "ASTRA_UDP_DROP_METRICS", std::getenv("ASTRA_UDP_DROP_METRICS"));
+  if (drop_metrics_requested) {
+#if defined(__linux__) && defined(SO_RXQ_OVFL)
     int overflow = 1;
-    ::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
-  }
+    if (::setsockopt(fd_, SOL_SOCKET, SO_RXQ_OVFL, &overflow,
+                     sizeof(overflow)) < 0) {
+      throw_errno("SO_RXQ_OVFL");
+    }
+    drop_metrics_enabled_ = true;
+#else
+    throw std::runtime_error(
+        "ASTRA_UDP_DROP_METRICS=on requires Linux SO_RXQ_OVFL support");
 #endif
+  }
 
 #ifdef SO_INCOMING_CPU
   // Linux only: hint to the kernel that this socket should be steered to
@@ -107,7 +139,6 @@ UdpReceiver::UdpReceiver(const char *ip, uint16_t port) {
   // Join multicast group if the feed address is in 224.0.0.0/4.
   struct in_addr group{};
   if (::inet_pton(AF_INET, ip, &group) != 1) {
-    ::close(fd_);
     fd_ = -1;
     throw std::runtime_error(std::string("inet_pton: bad address: ") + ip);
   }
@@ -124,6 +155,7 @@ UdpReceiver::UdpReceiver(const char *ip, uint16_t port) {
   // Pre-fault the receive buffer so the first packet doesn't take a page
   // fault. Cheap insurance against tail-latency spikes on first use.
   std::memset(buf_, 0, sizeof(buf_));
+  constructor_fd.release();
 }
 
 UdpReceiver::~UdpReceiver() {
