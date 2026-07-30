@@ -9,9 +9,9 @@ usage() {
   cat <<'USAGE'
 Usage: ./scripts/dpdk/dpdk_04_run.sh
 
-Load the checked-in branch-6 capacity configuration and start md_engine on the
-DPDK-owned feed ENI. This script does not run a sender, trace, benchmark,
-logger, or evidence collector.
+Load the checked-in S061226 capacity configuration and start md_engine on the
+DPDK-owned feed ENI. Latency metrics default to on and can be disabled with
+ASTRA_LATENCY_METRICS=off. This script does not run a sender or trace.
 USAGE
 }
 
@@ -146,14 +146,14 @@ if [[ "${CPU_NODE}" != "${ASTRA_FEED_NUMA}" ]]; then
   exit 1
 fi
 
-EAL_ARGS="--main-lcore ${ASTRA_ENGINE_CPU} -l ${ASTRA_ENGINE_CPU} --allow ${ASTRA_FEED_PCI} --huge-dir ${ASTRA_DPDK_HUGE_DIR} --file-prefix ${ASTRA_DPDK_FILE_PREFIX}"
+EAL_ARGS="--main-lcore ${ASTRA_ENGINE_CPU} -l ${ASTRA_ENGINE_CPU} --allow ${ASTRA_FEED_PCI} --huge-dir ${ASTRA_DPDK_HUGE_DIR} --file-prefix ${ASTRA_DPDK_FILE_PREFIX} --huge-unlink=always"
 
 RUNNER=(env)
 if [[ "${EUID}" -ne 0 ]]; then
   RUNNER=(sudo env)
 fi
 
-echo "Starting branch-6 DPDK engine on ${ASTRA_FEED_IP}:9000/9001..."
+echo "Starting DPDK engine on ${ASTRA_FEED_IP}:9000/9001..."
 exec "${RUNNER[@]}" \
   ASTRA_CPU="${ASTRA_ENGINE_CPU}" \
   ASTRA_NUMA_NODE="${ASTRA_FEED_NUMA}" \
@@ -169,7 +169,7 @@ exec "${RUNNER[@]}" \
   ASTRA_MIN_DIRECT_ORDER_HEADROOM="${ASTRA_MIN_DIRECT_ORDER_HEADROOM}" \
   ASTRA_MIN_PRICE_PAGE_HEADROOM="${ASTRA_MIN_PRICE_PAGE_HEADROOM}" \
   ASTRA_BOOK_PREFAULT="${ASTRA_BOOK_PREFAULT}" \
-  ASTRA_LATENCY_METRICS=off \
+  ASTRA_LATENCY_METRICS="${ASTRA_LATENCY_METRICS:-on}" \
   ASTRA_DPDK_PORT_ID=0 \
   ASTRA_DPDK_QUEUE_ID=0 \
   ASTRA_DPDK_BURST_SIZE=32 \

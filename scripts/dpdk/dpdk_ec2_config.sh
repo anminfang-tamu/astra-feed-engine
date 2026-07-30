@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 
-# Host values for the EC2 receiver used by docs/dpdk-aws-ec2-setup.md.
-# Edit these defaults for another instance, or override any value in the
-# environment before running a numbered dpdk_*.sh script.
+# Host values are intentionally explicit. Export them from a host-local file
+# such as build/dpdk-host.env before running a numbered dpdk_*.sh script. See
+# docs/dpdk-aws-ec2-setup.md for the tested r7i.16xlarge example.
 
 DPDK_CONFIG_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ASTRA_REPO_ROOT="${ASTRA_REPO_ROOT:-$(CDPATH= cd -- "${DPDK_CONFIG_DIR}/../.." && pwd)}"
 
-ASTRA_FEED_IFACE="${ASTRA_FEED_IFACE:-enp40s0}"
-ASTRA_FEED_IP="${ASTRA_FEED_IP:-172.31.32.18}"
-ASTRA_FEED_PCI="${ASTRA_FEED_PCI:-0000:28:00.0}"
+ASTRA_FEED_IFACE="${ASTRA_FEED_IFACE:-}"
+ASTRA_FEED_IP="${ASTRA_FEED_IP:-}"
+ASTRA_FEED_PCI="${ASTRA_FEED_PCI:-}"
 ASTRA_FEED_NUMA="${ASTRA_FEED_NUMA:-0}"
 ASTRA_FEED_DRIVER="${ASTRA_FEED_DRIVER:-ena}"
 
 # This is an additional fail-closed guard. The bind script also protects the
 # main-table default-route interfaces and the interface carrying SSH.
-ASTRA_PROTECTED_IFACE="${ASTRA_PROTECTED_IFACE:-enp39s0}"
-ASTRA_PROTECTED_PCI="${ASTRA_PROTECTED_PCI:-0000:27:00.0}"
+ASTRA_PROTECTED_IFACE="${ASTRA_PROTECTED_IFACE:-}"
+ASTRA_PROTECTED_PCI="${ASTRA_PROTECTED_PCI:-}"
 
 ASTRA_ENGINE_CPU="${ASTRA_ENGINE_CPU:-2}"
 ASTRA_ENI_ROUTE_TABLE="${ASTRA_ENI_ROUTE_TABLE:-1001}"
-# Include the legacy table from the branch-5 host. The bind script touches a
-# table only after proving that every route/rule in it belongs to the feed ENI.
+# Include the legacy table used by earlier two-ENI hosts. The bind script
+# touches a table only after proving that every route/rule in it belongs to the
+# feed ENI.
 ASTRA_ENI_ROUTE_TABLES="${ASTRA_ENI_ROUTE_TABLES:-${ASTRA_ENI_ROUTE_TABLE} 101}"
 
 ASTRA_DPDK_HUGE_DIR="${ASTRA_DPDK_HUGE_DIR:-/mnt/huge}"
@@ -32,8 +33,8 @@ ASTRA_DPDK_ROUTES_FILE="${ASTRA_DPDK_ROUTES_FILE:-${ASTRA_DPDK_STATE_FILE}.route
 ASTRA_DPDK_RULES_FILE="${ASTRA_DPDK_RULES_FILE:-${ASTRA_DPDK_STATE_FILE}.rules}"
 ASTRA_DPDK_ADMISSION_FILE="${ASTRA_REPO_ROOT}/build/dpdk-capacity-admission.env"
 
-# Branch 6 requires an approved deployment capacity configuration before
-# md_engine initializes DPDK. This default is only for the checked-in S061226
+# md_engine requires an approved deployment capacity configuration before it
+# initializes DPDK. This default is only for the checked-in S061226
 # profile; override both values together for another approved deployment.
 ASTRA_BOOK_CAPACITY_FILE="${ASTRA_BOOK_CAPACITY_FILE:-${ASTRA_REPO_ROOT}/docs/book-capacity-evidence-S061226-v50.txt}"
 ASTRA_BOOK_CAPACITY_FILE_SHA256="${ASTRA_BOOK_CAPACITY_FILE_SHA256:-55f5ba91d10c74ff28da877c3665a97dca69fe1c5a6572f64332ea56c30a5516}"

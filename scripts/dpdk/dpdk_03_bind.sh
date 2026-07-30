@@ -722,10 +722,10 @@ done
 run_root ip addr flush dev "${ASTRA_FEED_IFACE}"
 run_root ip link set "${ASTRA_FEED_IFACE}" down
 
+# Unsafe no-IOMMU mode, when explicitly allowed, is enabled through VFIO's
+# kernel parameter above. DPDK 23.11 dpdk-devbind.py does not accept a separate
+# --noiommu-mode option.
 DEVBIND_ARGS=(--bind=vfio-pci "${ASTRA_FEED_PCI}")
-if [[ "${USE_UNSAFE_NOIOMMU}" -eq 1 ]]; then
-  DEVBIND_ARGS=(--noiommu-mode "${DEVBIND_ARGS[@]}")
-fi
 if ! run_root "${DPDK_DEVBIND}" "${DEVBIND_ARGS[@]}"; then
   echo "vfio-pci binding failed." >&2
   exit 1

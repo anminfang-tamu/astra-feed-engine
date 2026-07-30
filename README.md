@@ -40,6 +40,49 @@ and ENI binding, engine startup, and ENI recovery commands.
 
 ## Performance
 
+### Full S061226 AWS DPDK run
+
+The complete `S061226-v50.txt` session was replayed on 2026-07-29 from a
+`c7i.4xlarge` sender into a dedicated secondary ENI on an `r7i.16xlarge`
+receiver. Both hosts reported commit `8651fbc91be3`; the receiver used DPDK
+23.11.4, Release, IPO off, CPU 2 on NUMA node 0, one RX queue, 8,192 RX
+descriptors, burst 32, packet-latency mode, and 20 messages per packet.
+
+The sender's `100,000` packet/s-per-line argument is a ceiling, not a
+guaranteed rate. The observed receiver rate was approximately 28,200 physical
+packets/s, or 14,100 packets/s per line and 282,000 logical messages/s. The
+sender reported 69,338 line-B delay overruns (about 0.11% of packets), so this
+run does not certify a precise 1 us redundant-line skew.
+
+| Test file | Messages | Mean (ns) | Min | p50 | p90 | p99 | p99.9 | p99.99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `S061226-v50.txt` | 1,304,894,064 | 158.02 | 6 | 154 | 202 | 281 | 585 | 678 | 206,180 |
+
+The run reached sequence `1,304,894,065` with channel status `Good`, phase
+`EndOfMessages`, the end marker accepted, zero live orders, all 12,809 books
+present and consistent, 156,871 of 156,872 price pages committed, and zero
+capacity failures. Both lines sent 65,244,715 packets with zero send failures.
+The receiver intentionally stopped on the first valid end marker, after
+65,244,706 line-A and 65,244,704 line-B packets. It reported zero gaps,
+conflicting redundant packets, malformed packets, missed packets, RX errors,
+and mbuf exhaustion.
+
+This is a full live-path correctness pass and a live CPU-processing latency
+observation. It is not the separate five-process
+`run_order_book_acceptance.sh` latency gate, and no absolute live-DPDK p99 or
+p99.9 ceiling has been approved. The metric begins after DPDK dequeue and
+covers frame parsing, Mold sequencing, ITCH dispatch, and book mutation; it is
+not sender-to-book or network latency.
+
+Provenance caveats: the receiver reported a dirty worktree because the
+DPDK-23.11 no-IOMMU compatibility and latency-toggle script changes were
+uncommitted during deployment; those changes are incorporated here. The
+41,662,444,846-byte corpus matched the recorded size and completed with the
+exact profiled record count, but its 41.7 GB SHA-256 was not freshly
+recomputed on the sender before this run.
+
+### Historical 2019 load sweep
+
 Historical single-run EC2 DPDK results from Release commit
 `ea08c29863e95bde693240c7ae011308173e3212`, using the 2019 corpus, 20 messages
 per packet, CPU 2, NUMA node 0, burst 8, packet-latency mode, and IPO off:

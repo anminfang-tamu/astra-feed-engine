@@ -2,8 +2,8 @@
 
 ## Implemented decision
 
-This branch replaces both the centered 65,536-level array and the branch-5
-multi-level pooled radix design.  The implementation now uses:
+This implementation replaces both the centered 65,536-level array and the
+branch-5 multi-level pooled radix design.  The implementation now uses:
 
 1. a full-`uint32_t` internal price address space split into fixed page/level
    indices, with wire-facing mutations limited to the valid ITCH Price(4) raw
@@ -19,7 +19,7 @@ session is live. `md_engine` enables prefaulting by default; performance runs
 must leave it enabled on the final NUMA node, while development runs may opt
 into demand-paged mappings.
 
-This branch was created from `main`, not from the tip of `5-to-add-numa`. The
+The redesign was developed from `main`, not from the tip of `5-to-add-numa`. The
 review examined both trees; the architecture below describes the code now in
 `OrderTable`, `PriceLevelStore`, `OrderBook`, and `BookManager`.
 
@@ -889,7 +889,7 @@ acceptance run, add `--expect-records=<exact-records>` and
 hard failure. The replay also fails on a parser error, page-capacity failure,
 nonzero final live orders, an ending phase other than End of Messages, or an
 enabled p50/p99/p99.9 threshold failure. Add `--max-p99-ns=<limit>` and
-`--max-p99-9-ns=<limit>` using approved absolute branch-6 ceilings.
+`--max-p99-9-ns=<limit>` using approved absolute deployment ceilings.
 
 The aggregate `itch_book_replay` line reports `sample_count`, the sample policy
 and warmup, prefault mode, configured direct-slot/fallback-bucket/price-page
@@ -1013,7 +1013,7 @@ loopback integration; they do not execute Linux `recvmmsg` or DPDK.
 
 Portable-clock local benchmark runs completed, but their nanosecond values are
 not acceptance evidence and are intentionally not treated as proof of the
-150 ns target. Only a controlled x86 EC2/NUMA branch-6 run can establish that
+150 ns target. Only a controlled x86 EC2/NUMA run can establish that
 result.
 
 ## Acceptance gates
@@ -1036,7 +1036,7 @@ result.
   in-binary mutation closure. Successful hot paths may not call allocators,
   mapping/syscall, lock, or indirect targets. Post-warmup minor and major fault
   counts must remain zero.
-- Run at least five fresh branch-6 processes with the same EC2 instance, isolated
+- Run at least five fresh processes with the same EC2 instance, isolated
   core, NUMA node, compiler, build flags, clock policy, huge-page policy, trace,
   warmup, and fixed sampling schedule. Every aggregate p50 must be at most
   150 ns. Aggregate and per-message-type p99/p99.9 must meet explicitly
@@ -1048,7 +1048,7 @@ result.
 
 Run the gate with `scripts/run_order_book_acceptance.sh`, supplying the exact
 trace counts, isolated CPU/local NUMA node, and all three absolute latency
-ceilings. It evaluates only the supplied branch-6 binary, runs a minimum of five
+ceilings. It evaluates only the supplied release binary, runs a minimum of five
 latency processes, and retains every result plus the worst distribution. With
 `--correctness-digest`, it performs digest discovery and verification in
 separate processes.
@@ -1062,7 +1062,7 @@ placement; and releases each replay start gate only after ready-marker memory
 evidence passes. The trace and all relevant inputs are hashed before and after
 the run. The final `manifest.sha256` covers every retained artifact.
 
-Branch 6 never seals the stock-directory universe at `SS`. Its 65,536
+The implementation never seals the stock-directory universe at `SS`. Its 65,536
 descriptor slots and backing arenas already exist, so late/repeated `R`
 messages remain an administrative path without hot-path growth while the
 system is open. System event `E` admits only existing-order `X`/`D` teardown
